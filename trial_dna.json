@@ -1,0 +1,194 @@
+[
+  {
+    "name": "Original M30-f _Apt_",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "TTGAGGGTCGCATCCCGTGGAAACAGGTTCATTG",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Terminal hairpin-modified M30-f _TH-Apt_",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "GGCGGGTTTTGAGGGTCGCATCCCGTGGAAACAGGTTCATTGTTCCCGCC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "4 bases mismatched-modified M30-f _4 MM-TH-Apt_",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "GGCGGGTTTTGATTTTCGCATCCCGTGGAAACAGGTTTATTGTTCCCGCC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Scrambled-modified M30-f _Scr-TH-Apt_",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "TTCTCGCAGCCAGATCTGGCCAGGTTGTTACAGCGGAGGTGCTTGGCGTC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Original M30-f _Apt_ run 2",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "TTGAGGGTCGCATCCCGTGGAAACAGGTTCATTG",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Terminal hairpin-modified M30-f _TH-Apt_ run 2",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "GGCGGGTTTTGAGGGTCGCATCCCGTGGAAACAGGTTCATTGTTCCCGCC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "4 bases mismatched-modified M30-f _4 MM-TH-Apt_ run 2",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "GGCGGGTTTTGATTTTCGCATCCCGTGGAAACAGGTTTATTGTTCCCGCC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Scrambled-modified M30-f _Scr-TH-Apt_ run 2",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "TTCTCGCAGCCAGATCTGGCCAGGTTGTTACAGCGGAGGTGCTTGGCGTC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Original M30-f _Apt_ run 3",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "TTGAGGGTCGCATCCCGTGGAAACAGGTTCATTG",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Terminal hairpin-modified M30-f _TH-Apt_ run 3",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "GGCGGGTTTTGAGGGTCGCATCCCGTGGAAACAGGTTCATTGTTCCCGCC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "4 bases mismatched-modified M30-f _4 MM-TH-Apt_ run 3",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "GGCGGGTTTTGATTTTCGCATCCCGTGGAAACAGGTTTATTGTTCCCGCC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  },
+  {
+    "name": "Scrambled-modified M30-f _Scr-TH-Apt_ run 3",
+    "modelSeeds": [],
+    "sequences": [
+      {
+        "dnaSequence": {
+          "sequence": "TTCTCGCAGCCAGATCTGGCCAGGTTGTTACAGCGGAGGTGCTTGGCGTC",
+          "modifications": [
+          ],
+          "count": 1
+        }
+      }
+    ],
+    "dialect": "alphafoldserver",
+    "version": 1
+  }
+]
