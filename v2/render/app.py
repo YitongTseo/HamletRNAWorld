@@ -44,6 +44,7 @@ class RNAApp(mglw.WindowConfig):
         super().__init__(**kwargs)
         self.world = World()
         n = self.world.state.n
+        self._show_strain = False
 
         # --- Shader programs ---
         self.bead_program = self.ctx.program(
@@ -60,6 +61,7 @@ class RNAApp(mglw.WindowConfig):
         self.bond_program["u_proj"].write(proj.tobytes())
         self.bead_program["u_point_size"].value = self.BEAD_PIXEL_SIZE
         self.bond_program["u_intensity"].value = 0.7
+        self.bond_program["u_show_strain"].value = 0
 
         # --- Bead buffers ---
         self.bead_pos_buf = self.ctx.buffer(reserve=n * 2 * 4, dynamic=True)
@@ -74,7 +76,9 @@ class RNAApp(mglw.WindowConfig):
             ],
         )
 
-        # --- Bond buffers --- (size for backbone + worst-case base pairs)
+        # --- Bond buffers --- (size for backbone + worst-case base pairs).
+        # Each segment contributes 2 vertices; per vertex we store position,
+        # kind (backbone/bp), and strain.
         max_segments = (n - 1) + (n // 2) + 4
         self.bond_pos_buf = self.ctx.buffer(
             reserve=max_segments * 2 * 2 * 4, dynamic=True
@@ -82,11 +86,15 @@ class RNAApp(mglw.WindowConfig):
         self.bond_kind_buf = self.ctx.buffer(
             reserve=max_segments * 2 * 4, dynamic=True
         )
+        self.bond_strain_buf = self.ctx.buffer(
+            reserve=max_segments * 2 * 4, dynamic=True
+        )
         self.bond_vao = self.ctx.vertex_array(
             self.bond_program,
             [
                 (self.bond_pos_buf, "2f", "in_pos"),
                 (self.bond_kind_buf, "1i", "in_kind"),
+                (self.bond_strain_buf, "1f", "in_strain"),
             ],
         )
         self._bond_vertex_count = 0
@@ -100,14 +108,23 @@ class RNAApp(mglw.WindowConfig):
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+
     def on_render(self, time: float, frame_time: float) -> None:
         self.world.step(self.SIM_STEPS_PER_FRAME)
         self._upload_geometry()
 
-        self.ctx.clear(0.015, 0.015, 0.03, 1.0)  # near-black with a touch of indigo
+        self.ctx.clear(0.015, 0.015, 0.03, 1.0)
         if self._bond_vertex_count > 0:
             self.bond_vao.render(moderngl.LINES, vertices=self._bond_vertex_count)
         self.bead_vao.render(moderngl.POINTS, vertices=self.world.state.n)
+
+    def on_key_event(self, key, action, modifiers) -> None:
+        # Toggle strain visualization on key press. Both 'S' and SPACE work.
+        keys = self.wnd.keys
+        if action == keys.ACTION_PRESS and key in (keys.S, keys.SPACE):
+            self._show_strain = not self._show_strain
+            self.bond_program["u_show_strain"].value = 1 if self._show_strain else 0
 
     # ------------------------------------------------------------------
 
@@ -136,9 +153,13 @@ class RNAApp(mglw.WindowConfig):
         # Each pair contributes two vertices (one per endpoint).
         verts = s.pos[pairs].reshape(-1, 2).astype("f4")
         kinds_per_vertex = np.repeat(kinds, 2).astype("i4")
+        # Strain is meaningful only on backbone-bond endpoints; for bp endpoints
+        # we still pass s.strain (it will be hidden by the kind gate in shader).
+        strain_per_vertex = s.strain[pairs].reshape(-1).astype("f4")
 
         self.bond_pos_buf.write(verts.tobytes())
         self.bond_kind_buf.write(kinds_per_vertex.tobytes())
+        self.bond_strain_buf.write(strain_per_vertex.tobytes())
         self._bond_vertex_count = verts.shape[0]
 
 

@@ -1,0 +1,16 @@
+[project]
+name = "hamlet-world"
+version = "0.1.0"
+description = "Hamlet sentences extruded as polymers and folded by embedding-affinity bonds."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "moderngl-window>=2.4",
+    "transformers>=4.40",
+    "torch>=2.2",
+    "Pillow>=10.0",
+    "scipy>=1.11",
+]
+
+[tool.setuptools]
+packages = ["sim", "render", "corpus", "embeddings"]

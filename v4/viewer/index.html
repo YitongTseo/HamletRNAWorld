@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>v4 — worm</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+      #c { display: block; width: 100vw; height: 100vh; }
+      #hud {
+        position: fixed; top: 8px; left: 10px;
+        font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #6f6; opacity: 0.6; pointer-events: none;
+        text-shadow: 0 0 4px #0f0a;
+      }
+      #help {
+        position: fixed; bottom: 8px; left: 10px;
+        font: 11px/1.35 ui-monospace, monospace; color: #5a5; opacity: 0.5;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="hud">connecting…</div>
+    <div id="help">click to drop food · shift-click to clear</div>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
