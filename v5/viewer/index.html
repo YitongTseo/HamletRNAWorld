@@ -28,6 +28,15 @@
         pointer-events: none;
         z-index: 10;
       }
+      #textcanvas {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+        z-index: 5;
+      }
     </style>
     <script type="importmap">
       {
@@ -40,9 +49,10 @@
   </head>
   <body>
     <canvas id="c"></canvas>
+    <canvas id="textcanvas"></canvas>
     <canvas id="netcanvas"></canvas>
     <div id="hud">connecting…</div>
-    <div id="help">click to drop food · shift-click to clear</div>
+    <div id="help">click to drop food · shift-click to clear · words drift up as food</div>
     <script type="module" src="./main.js"></script>
   </body>
 </html>

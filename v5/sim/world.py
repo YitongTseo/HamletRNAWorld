@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from sim.connectome import Connectome
 from sim.muscle_body import MuscleBody
 from sim.worm import WormBody
+from sim.text_scroller import TextScroller
+from corpus.hamlet import get_sentences
 
 
 # World extents in the same arbitrary "pixel" units as worm-sim. We pick a
@@ -34,6 +36,9 @@ STIM_LINGER = 2.0
 class Food:
     x: float
     y: float
+    word: str = ""
+    line_id: int = -1
+    word_idx: int = -1
 
 
 @dataclass
@@ -53,6 +58,7 @@ class World:
     body_kind: str = "ik"
     worm: WormBody | MuscleBody = field(init=False)
     food: list[Food] = field(default_factory=list)
+    text_scroller: TextScroller = field(init=False)
 
     # State flags, mirroring worm-sim.
     stim_hunger: bool = True
@@ -60,6 +66,7 @@ class World:
     stim_food_sense: bool = False
     _stim_reset_at: float = 0.0
     _last_brain_tick: float = 0.0
+    _last_step_now: float = 0.0
     paused: bool = False
 
     def __post_init__(self):
@@ -76,6 +83,7 @@ class World:
         else:
             raise ValueError(f"unknown body_kind: {self.body_kind!r}")
         self.brain.rand_excite()
+        self.text_scroller = TextScroller(get_sentences())
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))
@@ -94,6 +102,8 @@ class World:
                 self.stim_food_sense = True
                 self._stim_reset_at = time.monotonic() + STIM_LINGER
                 if d <= FOOD_EAT_RADIUS:
+                    if f.word:  # it's a Hamlet word
+                        self.text_scroller.mark_eaten(f.line_id, f.word_idx)
                     self.food.pop(i)
                     continue
             i += 1
@@ -119,6 +129,18 @@ class World:
     def step(self, now: float) -> None:
         if self.paused:
             return
+
+        # Text scroller tick (before food check)
+        dt = now - self._last_step_now if self._last_step_now else 0.0
+        self._last_step_now = now
+        self.text_scroller.step(dt)
+
+        # Rebuild food from alive scrolling words
+        self.food = [
+            Food(x=w.x, y=w.y, word=w.text, line_id=w.line_id, word_idx=w.word_idx)
+            for w in self.text_scroller.alive_words()
+        ]
+
         # Brain at ~2 Hz.
         if now - self._last_brain_tick >= BRAIN_PERIOD:
             self.brain.tick(
@@ -164,7 +186,16 @@ class World:
             "head": [round(self.worm.target_x, 2), round(self.worm.target_y, 2)],
             "facing": round(self.worm.facing_dir, 4),
             "speed": round(self.worm.speed, 4),
-            "food": [[round(f.x, 2), round(f.y, 2)] for f in self.food],
+            "food": [
+                {
+                    "x": round(f.x, 2),
+                    "y": round(f.y, 2),
+                    "word": f.word,
+                    "line_id": f.line_id,
+                    "word_idx": f.word_idx,
+                }
+                for f in self.food
+            ],
             "motor": {"L": round(self.brain.accum_left, 2),
                       "R": round(self.brain.accum_right, 2)},
             "stim": {"hunger": self.stim_hunger,

@@ -427,13 +427,20 @@ const foodGroup = new THREE.Group();
 foodGroup.renderOrder = 10;
 scene.add(foodGroup);
 
-function setFood(positions) {
+function setFood(items) {
+  wordFoodMap.clear();
   while (foodGroup.children.length) foodGroup.remove(foodGroup.children[0]);
-  for (const [x, y] of positions) {
-    const m = new THREE.Mesh(foodGeom, foodMaterial);
-    m.position.set(x, y, 1);
-    m.renderOrder = 10;
-    foodGroup.add(m);
+  for (const item of items) {
+    if (item.word) {
+      // Hamlet word food — tracked for text canvas
+      wordFoodMap.set(`${item.line_id}_${item.word_idx}`, item);
+    } else {
+      // Manual click food — yellow 3D sphere
+      const m = new THREE.Mesh(foodGeom, foodMaterial);
+      m.position.set(item.x || item[0], item.y || item[1], 1);
+      m.renderOrder = 10;
+      foodGroup.add(m);
+    }
   }
 }
 
@@ -451,6 +458,7 @@ function connect() {
     if (msg.type !== 'state') return;
     setMidline(msg.midline);
     setFood(msg.food);
+    wormHeadPos = { x: msg.head[0], y: msg.head[1] };
     neuronActivity = msg.neurons || {};
     stimFlags = msg.stim;
     const stims = Object.entries(msg.stim).filter(([, v]) => v).map(([k]) => k).join(',');
@@ -461,6 +469,128 @@ function connect() {
   };
 }
 connect();
+
+// ---------------------------------------------------------------------------
+// Text rendering functions
+// ---------------------------------------------------------------------------
+
+function worldToScreen(wx, wy) {
+  const nx = (wx - camera.left) / (camera.right - camera.left);
+  const ny = (wy - camera.top) / (camera.bottom - camera.top);
+  return [nx * textcanvas.width, ny * textcanvas.height];
+}
+
+function screenScale() {
+  return textcanvas.width / (camera.right - camera.left);
+}
+
+async function initEmbeddings() {
+  try {
+    const data = await (await fetch('/embeddings')).json();
+    pcaData = data;
+  } catch (e) {
+    console.warn('embeddings not available', e);
+  }
+}
+initEmbeddings();
+
+function drawTextCanvas() {
+  const w = textcanvas.width, h = textcanvas.height;
+  tctx.clearRect(0, 0, w, h);
+
+  // Find nearest word to mouse cursor
+  let minDist = Infinity;
+  nearestWord = null;
+  for (const [key, item] of wordFoodMap) {
+    const dx = item.x - mouseWorldPos.x, dy = item.y - mouseWorldPos.y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < minDist) {
+      minDist = d;
+      nearestWord = item;
+    }
+  }
+
+  // Draw each word
+  tctx.font = '18px ui-monospace, monospace';
+  for (const [key, item] of wordFoodMap) {
+    const [sx, sy] = worldToScreen(item.x, item.y);
+    const isHovered = nearestWord === item && minDist < 80;
+    tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
+    tctx.textAlign = 'center';
+    tctx.textBaseline = 'middle';
+    tctx.fillText(item.word, sx, sy);
+  }
+
+  // PCA popup for nearest hovered word
+  if (nearestWord && minDist < 80 && pcaData) {
+    drawPcaPopup(nearestWord.word);
+  }
+}
+
+function drawPcaPopup(word) {
+  const PW = 200, PH = 200, PAD_X = 20, PAD_Y = 20;
+  // Position popup at mouse cursor with offset
+  let px = mouseScreenPos.x + PAD_X;
+  let py = mouseScreenPos.y + PAD_Y;
+
+  // Clamp to viewport
+  px = Math.min(px, textcanvas.width - PW - 4);
+  py = Math.min(py, textcanvas.height - PH - 4);
+  px = Math.max(px, 4);
+  py = Math.max(py, 4);
+
+  // Background
+  tctx.fillStyle = 'rgba(0,0,0,0.9)';
+  tctx.fillRect(px, py, PW, PH);
+  tctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  tctx.lineWidth = 1;
+  tctx.strokeRect(px, py, PW, PH);
+
+  // Crosshairs
+  tctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  tctx.beginPath();
+  tctx.moveTo(px + PW / 2, py);
+  tctx.lineTo(px + PW / 2, py + PH);
+  tctx.moveTo(px, py + PH / 2);
+  tctx.lineTo(px + PW, py + PH / 2);
+  tctx.stroke();
+
+  const { tokens, pca, token_to_idx } = pcaData;
+  const margin = 16;
+
+  // All tokens as grey dots
+  tctx.fillStyle = 'rgba(180,180,180,0.35)';
+  for (let i = 0; i < tokens.length; i++) {
+    const [cx, cy] = pca[i];
+    tctx.beginPath();
+    tctx.arc(
+      px + margin + cx * (PW - 2 * margin),
+      py + margin + cy * (PH - 2 * margin),
+      2,
+      0,
+      Math.PI * 2
+    );
+    tctx.fill();
+  }
+
+  // Highlighted word
+  const idx =
+    token_to_idx[word] ?? token_to_idx[word.toLowerCase()];
+  if (idx !== undefined) {
+    const [cx, cy] = pca[idx];
+    const hx = px + margin + cx * (PW - 2 * margin);
+    const hy = py + margin + cy * (PH - 2 * margin);
+    tctx.fillStyle = 'rgba(255,255,255,0.95)';
+    tctx.beginPath();
+    tctx.arc(hx, hy, 4, 0, Math.PI * 2);
+    tctx.fill();
+    // Label
+    tctx.fillStyle = 'rgba(255,255,255,0.9)';
+    tctx.font = '9px ui-monospace, monospace';
+    tctx.textAlign = 'left';
+    tctx.fillText(word, hx + 6, hy + 3);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Neural network graph visualization
@@ -479,11 +609,45 @@ netcanvas.width  = NET_W * dpr;
 netcanvas.height = NET_H * dpr;
 ctx.scale(dpr, dpr);
 
+// Text canvas setup
+const textcanvas = document.getElementById('textcanvas');
+const tctx = textcanvas.getContext('2d');
+function resizeText() {
+  textcanvas.width = window.innerWidth;
+  textcanvas.height = window.innerHeight;
+}
+resizeText();
+window.addEventListener('resize', resizeText);
+
+// Track mouse position in screen coordinates
+let mouseScreenPos = { x: 0, y: 0 };
+
 let netVisible = true;
 let motorLabelsVisible = false;
 let graph = null;
 let neuronActivity = {};
 let stimFlags = { hunger: false, nose_touch: false, food_sense: false };
+
+// Text food and word embedding data
+let wordFoodMap = new Map();  // key: `${line_id}_${word_idx}` → {x, y, word}
+let pcaData = null;           // fetched from /embeddings
+let nearestWord = null;       // the word closest to mouse
+let wormHeadPos = { x: 800, y: 500 };  // updated from snapshot
+let mouseWorldPos = { x: WORLD_W / 2, y: WORLD_H / 2 };  // mouse position in world coords
+
+// Track mouse movement
+document.addEventListener('mousemove', (ev) => {
+  const rect = textcanvas.getBoundingClientRect();
+  const screenX = ev.clientX - rect.left;
+  const screenY = ev.clientY - rect.top;
+  mouseScreenPos.x = screenX;
+  mouseScreenPos.y = screenY;
+  // Transform screen coords to world coords
+  const normX = screenX / textcanvas.width;
+  const normY = screenY / textcanvas.height;
+  mouseWorldPos.x = camera.left + normX * (camera.right - camera.left);
+  mouseWorldPos.y = camera.top + normY * (camera.bottom - camera.top);
+});
 
 window.addEventListener('keydown', ev => {
   if (ev.key === 'n' || ev.key === 'N') {
@@ -732,5 +896,6 @@ function render() {
   organMaterial.uniforms.uTime.value = t;
   composer.render();
   drawNetCanvas();
+  drawTextCanvas();
 }
 render();

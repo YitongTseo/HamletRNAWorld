@@ -28,6 +28,8 @@ from sim.connectome import (
     MUSCLE_PREFIXES, FOOD_SENSE_NEURONS, NOSE_TOUCH_NEURONS, HUNGER_NEURONS,
     SENSORY_NEURONS, CHEMOSENSORY_NEURONS, MOTOR_NEURONS,
 )
+from embeddings.embedder import embed_and_pca
+from corpus.hamlet import get_sentences
 
 VIEWER_DIR = Path(__file__).parent.parent / "viewer"
 
@@ -138,6 +140,20 @@ async def graph():
     if _GRAPH_PAYLOAD is None:
         _GRAPH_PAYLOAD = _build_graph_payload()
     return JSONResponse(_GRAPH_PAYLOAD)
+
+
+# Embeddings (computed once and cached).
+_EMBEDDING_PAYLOAD: dict | None = None
+
+
+@app.get("/embeddings")
+async def embeddings():
+    """Fetch DistilBERT embeddings + PCA for Hamlet words."""
+    global _EMBEDDING_PAYLOAD
+    if _EMBEDDING_PAYLOAD is None:
+        sentences = get_sentences()
+        _EMBEDDING_PAYLOAD = embed_and_pca(sentences)
+    return JSONResponse(_EMBEDDING_PAYLOAD)
 
 
 @app.websocket("/ws")

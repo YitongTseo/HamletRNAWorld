@@ -1,0 +1,12 @@
+[project]
+name = "wormlet"
+version = "0.1.0"
+description = "C. elegans connectome sim with a GFP-fluorescent viewer; eventual home of Hamlet-as-chemosensory-input."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+]
+
+[tool.setuptools]
+packages = ["sim", "server"]
