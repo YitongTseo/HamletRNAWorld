@@ -464,10 +464,29 @@ function connect() {
     neuronActivity = msg.neurons || {};
     stimFlags = msg.stim;
     const stims = Object.entries(msg.stim).filter(([, v]) => v).map(([k]) => k).join(',');
+
+    // Collect active chemosensory neurons from smells
+    const activeChemoNeurons = {};
+    for (const smell of smellsData) {
+      for (const [neuron, activation] of Object.entries(smell.neurons)) {
+        if (activation > 0) {
+          activeChemoNeurons[neuron] = Math.max(activeChemoNeurons[neuron] || 0, activation);
+        }
+      }
+    }
+    const chemoStr = Object.keys(activeChemoNeurons).length > 0
+      ? Object.entries(activeChemoNeurons)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([n, v]) => `${n}(${(v*100|0)}%)`)
+          .join(' ')
+      : '-';
+
     hud.textContent =
       `speed=${msg.speed.toFixed(2)}  ` +
       `motor L=${msg.motor.L.toFixed(1)} R=${msg.motor.R.toFixed(1)}  ` +
-      `food=${msg.food.length}  stim=${stims || '-'}`;
+      `food=${msg.food.length}  stim=${stims || '-'}  ` +
+      `chemo=${chemoStr}`;
   };
 }
 connect();
@@ -493,23 +512,25 @@ function updateChemosensoryPanel() {
 
   let html = '<div style="font-weight: bold; margin-bottom: 6px; color: #8f8;">● CHEMOSENSORY STATE</div>';
 
-  // Show active neurons
+  // Show active neurons with descriptions
   if (sortedNeurons.length > 0) {
-    html += '<div style="margin-bottom: 6px; border-bottom: 1px solid rgba(100,200,255,0.2); padding-bottom: 4px;">';
+    html += '<div style="margin-bottom: 8px; border-bottom: 1px solid rgba(100,200,255,0.2); padding-bottom: 6px;">';
+    html += '<div style="font-size: 10px; opacity: 0.6; margin-bottom: 4px;">Active Neurons:</div>';
     for (const [neuron, activation] of sortedNeurons) {
       const emotion = neuronEmotionMap[neuron] || 'other';
       const percent = (activation * 100).toFixed(0);
       const hue = neuron.endsWith('L') ? 120 : neuron.endsWith('R') ? 240 : 210;
-      html += `<div class="neuron" style="background: hsla(${hue}, 70%, 40%, 0.4);">
-        ${neuron}: ${emotion}<br><span style="font-size: 10px; opacity: 0.7;">${percent}%</span>
+      html += `<div class="neuron" style="background: hsla(${hue}, 70%, 40%, 0.4); margin: 2px 0;">
+        <strong>${neuron}</strong> (${emotion})<br>
+        <span style="font-size: 10px; opacity: 0.7;">activation: ${percent}%</span>
       </div>`;
     }
     html += '</div>';
   }
 
-  // Show detected words
+  // Show detected words and their emotions
   if (smellsData.length > 0) {
-    html += '<div style="font-weight: bold; margin: 6px 0; color: #8f8;">DETECTED WORDS</div>';
+    html += '<div style="font-weight: bold; margin: 8px 0 4px 0; color: #8f8;">DETECTED WORDS</div>';
     const sortedSmells = smellsData.sort((a, b) => a.distance - b.distance);
     for (const smell of sortedSmells) {
       if (Object.keys(smell.neurons).length === 0) continue;
@@ -518,15 +539,13 @@ function updateChemosensoryPanel() {
       const percent = (maxActivation * 100).toFixed(0);
       const distance = smell.distance.toFixed(0);
 
-      // Find dominant emotion
-      let dominantEmotion = 'neutral';
-      let dominantValue = 0;
-      for (const [emotion, value] of Object.entries(smell.weighted_emotions)) {
-        if (value > dominantValue) {
-          dominantValue = value;
-          dominantEmotion = emotion;
-        }
-      }
+      // Show all emotions with values
+      const emotionEntries = Object.entries(smell.weighted_emotions)
+        .filter(([, v]) => v > 0.01)
+        .sort((a, b) => b[1] - a[1]);
+
+      // Find dominant emotion for color
+      let dominantEmotion = emotionEntries[0]?.[0] || 'neutral';
 
       const emotionColors = {
         joy: 60, trust: 120, anticipation: 150, surprise: 180,
@@ -534,11 +553,16 @@ function updateChemosensoryPanel() {
       };
       const hue = emotionColors[dominantEmotion] || 210;
 
-      html += `<div class="word" style="background: hsla(${hue}, 60%, 30%, 0.3); border-left: 3px solid hsl(${hue}, 80%, 50%);">
-        <span style="color: #aff;">"${smell.word}"</span>
-        <span style="opacity: 0.7;">${dominantEmotion}</span><br>
+      let emotionStr = emotionEntries
+        .slice(0, 3)
+        .map(([e, v]) => `${e}(${(v*100|0)}%)`)
+        .join(' ');
+
+      html += `<div class="word" style="background: hsla(${hue}, 60%, 30%, 0.3); border-left: 3px solid hsl(${hue}, 80%, 50%); margin: 3px 0;">
+        <span style="color: #aff; font-weight: bold;">"${smell.word}"</span><br>
+        <span style="font-size: 9px; opacity: 0.7;">emotions: ${emotionStr}</span><br>
         <span style="font-size: 9px; opacity: 0.6;">
-          activation: ${percent}% | distance: ${distance}u
+          max neuron activation: ${percent}% | distance: ${distance}u
         </span>
       </div>`;
     }
