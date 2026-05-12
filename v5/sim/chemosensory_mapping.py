@@ -1,78 +1,105 @@
 """Map word emotions to chemosensory neuron activations.
 
-In C. elegans, chemosensory neurons come in bilateral pairs and functional groups:
-- ASEL/ASER: Bilateral pair responding to opposite valences (attractive vs. repulsive)
-- AWAL/AWAR: Bilateral pair for appetitive responses
-- AWBL/AWBR: Bilateral pair for additional chemical sensing
-- ASI/ASJ: Feeding-related sensing (asymmetric)
-- AWC: CO2 detection
-- ASG/ASH: Touch/chemical integration
+In C. elegans, chemosensory neurons come in bilateral pairs:
+- Each emotion maps to BOTH left (L) and right (R) versions of sensory pairs
+- This allows the worm to sense which direction a smell comes from
+- A smell to the left will activate L neurons more strongly than R
+- A smell to the right will activate R neurons more strongly than L
 
-We map emotions to these neurons based on valence and arousal:
-- Left-side neurons (L): Positive/approach emotions (joy, trust, anticipation)
-- Right-side neurons (R): Negative/avoid emotions (sadness, disgust, fear)
-- Central neurons: Intensity/novelty (anger, surprise)
+Neuron pairs and their roles:
+- ASE (ASEL/ASER): Primary valence detection
+- AWA (AWAL/AWAR): Appetitive approach
+- AWB (AWBL/AWBR): Behavioral approach/avoidance
+- AWC (AWCL/AWCR): Safety/CO2
+- ASI (ASIL/ASIR): Feeding drive/intensity
+- ASJ (ASJL/ASJR): Feeding/novelty
+- ASH (ASHL/ASHR): Protective/avoidance
 """
 
 from __future__ import annotations
 
 # Mapping emotions to chemosensory neuron activation patterns
+# Each emotion maps to both L and R versions so the worm can sense direction
 EMOTION_TO_NEURONS = {
-    # Positive/Approach emotions → Left-side, attractive cues
+    # Positive/Approach emotions
     "joy": {
-        "ASEL": 0.9,      # Strong attractive signal (left)
-        "AWAL": 0.85,     # Appetitive left
+        "ASEL": 0.9,      # Attractive left
+        "ASER": 0.9,      # Attractive right (bilateral coverage)
+        "AWAL": 0.85,
+        "AWAR": 0.85,
         "AWBL": 0.7,
-    },
-    "trust": {
-        "ASEL": 0.75,     # Moderate attractive
-        "AWAL": 0.8,
-        "AWC": 0.5,       # Safe environment
-    },
-    "anticipation": {
-        "AWAR": 0.6,      # Right-side expectation
-        "AWAL": 0.7,      # Left-side seeking
-        "AWCL": 0.5,
-    },
-
-    # Negative/Avoid emotions → Right-side, repulsive cues
-    "sadness": {
-        "ASER": 0.85,     # Repulsive signal (right)
-        "AWAR": 0.8,      # Avoidance right
         "AWBR": 0.7,
     },
-    "disgust": {
-        "ASER": 0.9,      # Strong repulsion (right)
-        "AWBR": 0.85,
-        "ASH": 0.6,       # Touch-chemical avoidance
+    "trust": {
+        "ASEL": 0.75,
+        "ASER": 0.75,
+        "AWAL": 0.8,
+        "AWAR": 0.8,
+        "AWCL": 0.5,
+        "AWCR": 0.5,
     },
-    "fear": {
-        "ASER": 0.75,     # Repulsion right
-        "AWAR": 0.85,
-        "ASI": 0.5,       # Heightened sensitivity
+    "anticipation": {
+        "ASEL": 0.6,      # Both sides seek forward
+        "ASER": 0.6,
+        "AWAL": 0.7,
+        "AWAR": 0.7,
+        "AWCL": 0.5,
+        "AWCR": 0.5,
     },
 
-    # Intensity/Arousal → Central neurons
-    "anger": {
-        "ASI": 0.9,       # Feeding/intensity drive
-        "ASJ": 0.85,      # Aggressive response
+    # Negative/Avoid emotions
+    "sadness": {
+        "ASEL": 0.7,
+        "ASER": 0.7,
+        "AWAL": 0.65,
+        "AWAR": 0.65,
+        "AWBL": 0.6,
+        "AWBR": 0.6,
+    },
+    "disgust": {
+        "ASEL": 0.5,
+        "ASER": 0.5,
+        "AWBL": 0.85,
+        "AWBR": 0.85,
+        "ASHL": 0.6,
+        "ASHR": 0.6,
+    },
+    "fear": {
         "ASEL": 0.6,
         "ASER": 0.6,
+        "AWAL": 0.5,
+        "AWAR": 0.5,
+        "ASIL": 0.5,
+        "ASIR": 0.5,
+    },
+
+    # Intensity/Arousal → Bilateral symmetric
+    "anger": {
+        "ASIL": 0.9,      # Bilateral feeding drive
+        "ASIR": 0.9,
+        "ASJL": 0.85,
+        "ASJR": 0.85,
+        "ASEL": 0.5,
+        "ASER": 0.5,
     },
     "surprise": {
-        "ASI": 0.8,       # Novel stimulus detection
-        "ASJ": 0.7,
-        "AWC": 0.6,       # Environmental change
+        "ASIL": 0.8,      # Bilateral novelty detection
+        "ASIR": 0.8,
+        "ASJL": 0.7,
+        "ASJR": 0.7,
+        "AWCL": 0.6,
+        "AWCR": 0.6,
     },
 }
 
 
-def compute_chemosensory_activation(emotions: dict) -> dict:
+def compute_chemosensory_activation(emotions: dict, direction_factor: float = 0.5) -> dict:
     """
     Given emotion scores, compute which chemosensory neurons activate and how much.
 
     Args:
         emotions: dict with keys joy, sadness, fear, etc. and values 0-1
+        direction_factor: 0 = food to right (boost R), 1 = food to left (boost L), 0.5 = straight
 
     Returns:
         dict mapping neuron names to activation levels 0-1
@@ -88,6 +115,13 @@ def compute_chemosensory_activation(emotions: dict) -> dict:
         for neuron, base_level in neurons.items():
             # Activation = base level × emotion intensity
             activation = base_level * score
+
+            # Apply directional weighting: L neurons stronger when food is left (direction_factor > 0.5)
+            if neuron.endswith("L"):
+                activation *= direction_factor  # 0.5-1.0 range
+            elif neuron.endswith("R"):
+                activation *= (1.0 - direction_factor)  # 1.0-0.5 range
+
             # Take max if neuron is already activated by another emotion
             neuron_activation[neuron] = max(
                 neuron_activation.get(neuron, 0),

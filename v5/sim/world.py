@@ -96,23 +96,40 @@ class World:
         self.food.clear()
 
     def _compute_smells(self) -> None:
-        """Compute which words the worm is smelling and their emotion vectors."""
+        """Compute which words the worm is smelling and their emotion vectors.
+
+        Distance and directional weighting:
+        - distance_factor = 1 - (distance / sense_radius)
+        - direction_factor: words to the left boost L neurons, to the right boost R
+        - weighted_emotions = emotion * distance_factor * direction_factor (per neuron)
+        """
         wx = self.worm.target_x
         wy = self.worm.target_y
         self.sensed_smells.clear()
 
         for f in self.food:
-            d = math.hypot(wx - f.x, wy - f.y)
+            dx = f.x - wx
+            dy = f.y - wy
+            d = math.hypot(dx, dy)
             if d <= FOOD_SENSE_RADIUS and f.word:
                 key = f"{f.line_id}_{f.word_idx}"
                 emotions = get_emotion_vector(f.word)
 
                 # Distance weighting: intensity decreases with distance
                 distance_factor = 1.0 - (d / FOOD_SENSE_RADIUS)
+
+                # Directional weighting: foods to the left activate L neurons more
+                # Compute angle to food relative to worm's facing direction
+                food_angle = math.atan2(dy, dx)
+                # Smallest signed angle from facing → food direction
+                angle_diff = (food_angle - self.worm.facing_dir + math.pi) % (2 * math.pi) - math.pi
+                # angle_diff < 0 means food is to the right, > 0 means to the left
+                direction_factor = 0.5 + 0.5 * math.sin(angle_diff)  # Range [0, 1]
+
                 weighted_emotions = {e: v * distance_factor for e, v in emotions.items()}
 
-                # Compute which chemosensory neurons activate
-                neuron_activation = compute_chemosensory_activation(weighted_emotions)
+                # Compute which chemosensory neurons activate with directional weighting
+                neuron_activation = compute_chemosensory_activation(weighted_emotions, direction_factor)
 
                 # Store with distance so we can compute intensity
                 self.sensed_smells[key] = {
@@ -122,6 +139,8 @@ class World:
                     "distance": d,
                     "emotions": emotions,
                     "weighted_emotions": weighted_emotions,
+                    "direction_factor": direction_factor,
+                    "distance_factor": distance_factor,
                     "neurons": neuron_activation,
                 }
 

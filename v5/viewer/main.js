@@ -564,11 +564,20 @@ function updateChemosensoryPanel() {
         .map(([e, v]) => `${e}(${(v*100|0)}%)`)
         .join(' ');
 
+      // Show direction indicator
+      let directionIndicator = '';
+      if (smell.direction_factor !== undefined) {
+        const dir = smell.direction_factor;
+        if (dir > 0.6) directionIndicator = '←L (left)';
+        else if (dir < 0.4) directionIndicator = 'R→ (right)';
+        else directionIndicator = '↑ (ahead)';
+      }
+
       html += `<div class="word" style="background: hsla(${hue}, 60%, 30%, 0.3); border-left: 3px solid hsl(${hue}, 80%, 50%); margin: 3px 0;">
-        <span style="color: #aff; font-weight: bold;">"${smell.word}"</span><br>
+        <span style="color: #aff; font-weight: bold;">"${smell.word}"</span> ${directionIndicator}<br>
         <span style="font-size: 9px; opacity: 0.7;">emotions: ${emotionStr}</span><br>
-        <span style="font-size: 9px; opacity: 0.6;">
-          max neuron activation: ${percent}% | distance: ${distance}u
+        <span style="font-size: 8px; opacity: 0.5;">
+          activation = emotion × distance(${smell.distance_factor ? (smell.distance_factor * 100 | 0) : '?'}%) × direction
         </span>
       </div>`;
     }
