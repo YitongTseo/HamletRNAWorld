@@ -844,16 +844,28 @@ const chemosensoryPanel = document.getElementById('chemosensoryPanel');
 
 // Neuron type to emotion mapping (for display)
 const neuronEmotionMap = {
-  'ASEL': 'joy/trust (L)',
-  'ASER': 'sadness/disgust (R)',
-  'AWAL': 'approach (L)',
-  'AWAR': 'caution (R)',
-  'AWBL': 'attract (L)',
-  'AWBR': 'repel (R)',
-  'AWC': 'safety',
-  'ASI': 'intensity',
-  'ASJ': 'food/novelty',
-  'ASH': 'protective',
+  'ASEL': 'salt/attract (L)',
+  'ASER': 'salt/repel (R)',
+  'AWAL': 'food-odor (L)',
+  'AWAR': 'food-odor (R)',
+  'AWBL': 'approach (L)',
+  'AWBR': 'approach (R)',
+  'AWCL': 'CO2/safety (L)',
+  'AWCR': 'CO2/safety (R)',
+  'ASIL': 'hunger/arousal (L)',
+  'ASIR': 'hunger/arousal (R)',
+  'ASJL': 'taste/novel (L)',
+  'ASJR': 'taste/novel (R)',
+  'ASHL': 'pain/avoid (L)',
+  'ASHR': 'pain/avoid (R)',
+  'ASKL': 'protect (L)',
+  'ASKR': 'protect (R)',
+  'ASGL': 'integrate (L)',
+  'ASGR': 'integrate (R)',
+  'ADFL': 'food-chemo (L)',
+  'ADFR': 'food-chemo (R)',
+  'ADLL': 'polymodal (L)',
+  'ADLR': 'polymodal (R)',
 };
 
 // Track mouse movement
