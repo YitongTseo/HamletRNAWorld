@@ -458,6 +458,8 @@ function connect() {
     if (msg.type !== 'state') return;
     setMidline(msg.midline);
     setFood(msg.food);
+    smellsData = msg.smells || [];
+    updateChemosensoryPanel();
     wormHeadPos = { x: msg.head[0], y: msg.head[1] };
     neuronActivity = msg.neurons || {};
     stimFlags = msg.stim;
@@ -469,6 +471,81 @@ function connect() {
   };
 }
 connect();
+
+function updateChemosensoryPanel() {
+  if (!chemosensoryVisible || smellsData.length === 0) {
+    chemosensoryPanel.innerHTML = '<div style="opacity: 0.5;">◯ chemosensory idle</div>';
+    return;
+  }
+
+  // Collect all active neurons across all smells
+  const allNeurons = {};
+  for (const smell of smellsData) {
+    for (const [neuron, activation] of Object.entries(smell.neurons)) {
+      if (activation > 0) {
+        allNeurons[neuron] = Math.max(allNeurons[neuron] || 0, activation);
+      }
+    }
+  }
+
+  // Sort neurons by activation
+  const sortedNeurons = Object.entries(allNeurons).sort((a, b) => b[1] - a[1]);
+
+  let html = '<div style="font-weight: bold; margin-bottom: 6px; color: #8f8;">● CHEMOSENSORY STATE</div>';
+
+  // Show active neurons
+  if (sortedNeurons.length > 0) {
+    html += '<div style="margin-bottom: 6px; border-bottom: 1px solid rgba(100,200,255,0.2); padding-bottom: 4px;">';
+    for (const [neuron, activation] of sortedNeurons) {
+      const emotion = neuronEmotionMap[neuron] || 'other';
+      const percent = (activation * 100).toFixed(0);
+      const hue = neuron.endsWith('L') ? 120 : neuron.endsWith('R') ? 240 : 210;
+      html += `<div class="neuron" style="background: hsla(${hue}, 70%, 40%, 0.4);">
+        ${neuron}: ${emotion}<br><span style="font-size: 10px; opacity: 0.7;">${percent}%</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // Show detected words
+  if (smellsData.length > 0) {
+    html += '<div style="font-weight: bold; margin: 6px 0; color: #8f8;">DETECTED WORDS</div>';
+    const sortedSmells = smellsData.sort((a, b) => a.distance - b.distance);
+    for (const smell of sortedSmells) {
+      if (Object.keys(smell.neurons).length === 0) continue;
+
+      const maxActivation = Math.max(...Object.values(smell.neurons));
+      const percent = (maxActivation * 100).toFixed(0);
+      const distance = smell.distance.toFixed(0);
+
+      // Find dominant emotion
+      let dominantEmotion = 'neutral';
+      let dominantValue = 0;
+      for (const [emotion, value] of Object.entries(smell.weighted_emotions)) {
+        if (value > dominantValue) {
+          dominantValue = value;
+          dominantEmotion = emotion;
+        }
+      }
+
+      const emotionColors = {
+        joy: 60, trust: 120, anticipation: 150, surprise: 180,
+        fear: 270, disgust: 30, sadness: 240, anger: 0,
+      };
+      const hue = emotionColors[dominantEmotion] || 210;
+
+      html += `<div class="word" style="background: hsla(${hue}, 60%, 30%, 0.3); border-left: 3px solid hsl(${hue}, 80%, 50%);">
+        <span style="color: #aff;">"${smell.word}"</span>
+        <span style="opacity: 0.7;">${dominantEmotion}</span><br>
+        <span style="font-size: 9px; opacity: 0.6;">
+          activation: ${percent}% | distance: ${distance}u
+        </span>
+      </div>`;
+    }
+  }
+
+  chemosensoryPanel.innerHTML = html;
+}
 
 // ---------------------------------------------------------------------------
 // Text rendering functions
@@ -497,6 +574,9 @@ initEmbeddings();
 function drawTextCanvas() {
   const w = textcanvas.width, h = textcanvas.height;
   tctx.clearRect(0, 0, w, h);
+
+  // Draw smells first (so they appear behind words)
+  drawSmells();
 
   // Find nearest word to mouse cursor
   let minDist = Infinity;
@@ -592,6 +672,81 @@ function drawPcaPopup(word) {
   }
 }
 
+function drawSmells() {
+  if (!smellsVisible || smellsData.length === 0) return;
+
+  // Neuron type colors
+  const neuronColors = {
+    ASE: { h: 240, s: 100, l: 50 },  // Blue - valence
+    AWA: { h: 120, s: 100, l: 50 },  // Green - appetitive
+    AWB: { h: 150, s: 100, l: 50 },  // Cyan - approach
+    AWC: { h: 180, s: 100, l: 50 },  // Turquoise - CO2
+    ASI: { h: 60, s: 100, l: 50 },   // Yellow - intensity
+    ASJ: { h: 30, s: 100, l: 50 },   // Orange - feeding
+    ASH: { h: 0, s: 100, l: 50 },    // Red - protective
+  };
+
+  const [headsx, headsy] = worldToScreen(wormHeadPos.x, wormHeadPos.y);
+  const headRadius = 12;  // Worm head radius for offset calculation
+
+  for (const smell of smellsData) {
+    if (!smell.neurons || Object.keys(smell.neurons).length === 0) continue;
+
+    const [wordsx, wordsy] = worldToScreen(smell.x, smell.y);
+
+    // Draw separate lines for each active chemosensory neuron
+    for (const [neuronName, activation] of Object.entries(smell.neurons)) {
+      if (activation === 0) continue;
+
+      // Get neuron type (first 3 chars: ASE, AWA, AWB, etc.)
+      const neuronType = neuronName.substring(0, 3);
+      const neuronSide = neuronName.endsWith('L') ? 'L' :
+                         neuronName.endsWith('R') ? 'R' : 'C';
+
+      const color = neuronColors[neuronType] || { h: 210, s: 100, l: 50 };
+      const intensity = Math.min(1.0, activation);
+      const lineWidth = 1 + intensity * 3;
+
+      // Offset line origin based on neuron side (bilateral asymmetry)
+      let startX = headsx;
+      let startY = headsy;
+
+      if (neuronSide === 'L') {
+        startX -= headRadius * 0.6;  // Left side neurons start left
+      } else if (neuronSide === 'R') {
+        startX += headRadius * 0.6;  // Right side neurons start right
+      }
+      // Center neurons start from head center
+
+      tctx.strokeStyle = `hsla(${color.h}, ${color.s}%, ${color.l}%, ${intensity * 0.8})`;
+      tctx.lineWidth = lineWidth;
+      tctx.setLineDash([5, 5]);
+      tctx.lineCap = 'round';
+      tctx.lineJoin = 'round';
+
+      tctx.beginPath();
+      tctx.moveTo(startX, startY);
+      tctx.lineTo(wordsx, wordsy);
+      tctx.stroke();
+
+      tctx.setLineDash([]);
+    }
+
+    // Small circle at smell source
+    let maxActivation = 0;
+    for (const activation of Object.values(smell.neurons)) {
+      maxActivation = Math.max(maxActivation, activation);
+    }
+    if (maxActivation > 0) {
+      const radius = 2 + maxActivation * 3;
+      tctx.fillStyle = `hsla(210, 100%, 50%, ${maxActivation * 0.6})`;
+      tctx.beginPath();
+      tctx.arc(wordsx, wordsy, radius, 0, Math.PI * 2);
+      tctx.fill();
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Neural network graph visualization
 // ---------------------------------------------------------------------------
@@ -635,6 +790,28 @@ let nearestWord = null;       // the word closest to mouse
 let wormHeadPos = { x: 800, y: 500 };  // updated from snapshot
 let mouseWorldPos = { x: WORLD_W / 2, y: WORLD_H / 2 };  // mouse position in world coords
 
+// Smell visualization
+let smellsData = [];          // list of sensed smells from snapshot
+let smellsVisible = true;     // toggle with 'o' key
+
+// Chemosensory panel
+let chemosensoryVisible = true;  // toggle with 'c' key
+const chemosensoryPanel = document.getElementById('chemosensoryPanel');
+
+// Neuron type to emotion mapping (for display)
+const neuronEmotionMap = {
+  'ASEL': 'joy/trust (L)',
+  'ASER': 'sadness/disgust (R)',
+  'AWAL': 'approach (L)',
+  'AWAR': 'caution (R)',
+  'AWBL': 'attract (L)',
+  'AWBR': 'repel (R)',
+  'AWC': 'safety',
+  'ASI': 'intensity',
+  'ASJ': 'food/novelty',
+  'ASH': 'protective',
+};
+
 // Track mouse movement
 document.addEventListener('mousemove', (ev) => {
   const rect = textcanvas.getBoundingClientRect();
@@ -656,6 +833,13 @@ window.addEventListener('keydown', ev => {
   }
   if (ev.key === 'm' || ev.key === 'M') {
     motorLabelsVisible = !motorLabelsVisible;
+  }
+  if (ev.key === 'o' || ev.key === 'O') {
+    smellsVisible = !smellsVisible;
+  }
+  if (ev.key === 'c' || ev.key === 'C') {
+    chemosensoryVisible = !chemosensoryVisible;
+    chemosensoryPanel.style.display = chemosensoryVisible ? 'block' : 'none';
   }
 });
 

@@ -15,6 +15,8 @@ from sim.muscle_body import MuscleBody
 from sim.worm import WormBody
 from sim.text_scroller import TextScroller
 from corpus.hamlet import get_sentences
+from corpus.nrc_emotions import get_emotion_vector
+from sim.chemosensory_mapping import compute_chemosensory_activation
 
 
 # World extents in the same arbitrary "pixel" units as worm-sim. We pick a
@@ -26,7 +28,7 @@ WORLD_H = 1000.0
 BRAIN_PERIOD = 0.5
 
 # Food parameters (worm-sim values).
-FOOD_SENSE_RADIUS = 50.0
+FOOD_SENSE_RADIUS = 200.0  # Smell detection distance (extended for visualization)
 FOOD_EAT_RADIUS = 20.0
 # How long a sensory stimulus lingers after the trigger fires (seconds).
 STIM_LINGER = 2.0
@@ -59,6 +61,8 @@ class World:
     worm: WormBody | MuscleBody = field(init=False)
     food: list[Food] = field(default_factory=list)
     text_scroller: TextScroller = field(init=False)
+    # Smell tracking: {word_key: emotion_vector, ...}
+    sensed_smells: dict = field(default_factory=dict)
 
     # State flags, mirroring worm-sim.
     stim_hunger: bool = True
@@ -90,6 +94,36 @@ class World:
 
     def clear_food(self) -> None:
         self.food.clear()
+
+    def _compute_smells(self) -> None:
+        """Compute which words the worm is smelling and their emotion vectors."""
+        wx = self.worm.target_x
+        wy = self.worm.target_y
+        self.sensed_smells.clear()
+
+        for f in self.food:
+            d = math.hypot(wx - f.x, wy - f.y)
+            if d <= FOOD_SENSE_RADIUS and f.word:
+                key = f"{f.line_id}_{f.word_idx}"
+                emotions = get_emotion_vector(f.word)
+
+                # Distance weighting: intensity decreases with distance
+                distance_factor = 1.0 - (d / FOOD_SENSE_RADIUS)
+                weighted_emotions = {e: v * distance_factor for e, v in emotions.items()}
+
+                # Compute which chemosensory neurons activate
+                neuron_activation = compute_chemosensory_activation(weighted_emotions)
+
+                # Store with distance so we can compute intensity
+                self.sensed_smells[key] = {
+                    "word": f.word,
+                    "x": f.x,
+                    "y": f.y,
+                    "distance": d,
+                    "emotions": emotions,
+                    "weighted_emotions": weighted_emotions,
+                    "neurons": neuron_activation,
+                }
 
     def _check_food(self) -> None:
         wx = self.worm.target_x
@@ -158,6 +192,7 @@ class World:
         if isinstance(self.worm, MuscleBody):
             self.worm.consume(self.brain)
         self.worm.step()
+        self._compute_smells()
         self._check_food()
         self._check_walls()
 
@@ -195,6 +230,18 @@ class World:
                     "word_idx": f.word_idx,
                 }
                 for f in self.food
+            ],
+            "smells": [
+                {
+                    "word": smell["word"],
+                    "x": round(smell["x"], 2),
+                    "y": round(smell["y"], 2),
+                    "distance": round(smell["distance"], 2),
+                    "emotions": smell["emotions"],
+                    "weighted_emotions": smell["weighted_emotions"],
+                    "neurons": smell["neurons"],
+                }
+                for smell in self.sensed_smells.values()
             ],
             "motor": {"L": round(self.brain.accum_left, 2),
                       "R": round(self.brain.accum_right, 2)},

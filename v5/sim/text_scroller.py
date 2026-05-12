@@ -11,7 +11,7 @@ SPAWN_Y = WORLD_H - 20.0
 KILL_Y = -80.0
 SPAWN_INTERVAL = 4.5      # seconds between new lines
 CHAR_W = 11.0             # world units per character (monospace approx)
-WORD_GAP = 35.0           # world units gap between words
+WORD_GAP = 70.0           # world units gap between words
 CENTER_X = WORLD_W / 2.0
 
 

@@ -28,6 +28,33 @@
         pointer-events: none;
         z-index: 10;
       }
+      #chemosensoryPanel {
+        position: fixed;
+        bottom: 8px;
+        left: 10px;
+        width: 320px;
+        max-height: 600px;
+        background: rgba(0, 10, 10, 0.85);
+        border: 1px solid rgba(100, 200, 255, 0.4);
+        color: #6f9;
+        font: 11px ui-monospace, monospace;
+        padding: 8px;
+        overflow-y: auto;
+        pointer-events: none;
+        z-index: 10;
+        line-height: 1.4;
+      }
+      #chemosensoryPanel .neuron {
+        margin: 4px 0;
+        padding: 3px 4px;
+        border-radius: 2px;
+        font-weight: bold;
+      }
+      #chemosensoryPanel .word {
+        margin: 2px 0;
+        padding: 2px 4px;
+        font-size: 10px;
+      }
       #textcanvas {
         position: fixed;
         top: 0;
@@ -51,8 +78,9 @@
     <canvas id="c"></canvas>
     <canvas id="textcanvas"></canvas>
     <canvas id="netcanvas"></canvas>
+    <div id="chemosensoryPanel"></div>
     <div id="hud">connecting…</div>
-    <div id="help">click to drop food · shift-click to clear · words drift up as food</div>
+    <div id="help">click to drop food · shift-click to clear · words drift up as food · press 'c' for chemosensory</div>
     <script type="module" src="./main.js"></script>
   </body>
 </html>
