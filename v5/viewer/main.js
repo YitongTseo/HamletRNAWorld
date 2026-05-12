@@ -492,10 +492,7 @@ function connect() {
 connect();
 
 function updateChemosensoryPanel() {
-  if (!chemosensoryVisible || smellsData.length === 0) {
-    chemosensoryPanel.innerHTML = '<div style="opacity: 0.5;">◯ chemosensory idle</div>';
-    return;
-  }
+  if (!chemosensoryVisible) return;
 
   // Collect all active neurons across all smells
   const allNeurons = {};
@@ -510,7 +507,12 @@ function updateChemosensoryPanel() {
   // Sort neurons by activation
   const sortedNeurons = Object.entries(allNeurons).sort((a, b) => b[1] - a[1]);
 
-  let html = '<div style="font-weight: bold; margin-bottom: 6px; color: #8f8;">● CHEMOSENSORY STATE</div>';
+  // Determine if there's active sensory input
+  const hasActive = sortedNeurons.length > 0 || smellsData.length > 0;
+  const idleOpacity = hasActive ? 1.0 : 0.35;
+  const idleColor = hasActive ? '#8f8' : '#6f6';
+
+  let html = `<div style="font-weight: bold; margin-bottom: 6px; color: ${idleColor}; opacity: ${idleOpacity};">● CHEMOSENSORY STATE</div>`;
 
   // Show active neurons with descriptions
   if (sortedNeurons.length > 0) {
@@ -526,6 +528,8 @@ function updateChemosensoryPanel() {
       </div>`;
     }
     html += '</div>';
+  } else {
+    html += `<div style="opacity: 0.4; padding: 6px 0; font-size: 10px;">no neurons firing</div>`;
   }
 
   // Show detected words and their emotions
@@ -566,6 +570,8 @@ function updateChemosensoryPanel() {
         </span>
       </div>`;
     }
+  } else {
+    html += `<div style="opacity: 0.4; padding: 6px 0; font-size: 10px;">no words in range</div>`;
   }
 
   chemosensoryPanel.innerHTML = html;
