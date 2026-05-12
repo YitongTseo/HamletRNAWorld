@@ -177,6 +177,8 @@ async def ws(ws: WebSocket):
                 WORLD.clear_food()
             elif t == "set_paused":
                 WORLD.paused = bool(cmd.get("paused", False))
+            elif t == "toggle_paused":
+                WORLD.paused = not WORLD.paused
             elif t == "set_head":
                 # Debug-only: jump the worm head to a specified spot, useful
                 # for taking visual-tuning screenshots without waiting for the

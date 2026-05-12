@@ -482,11 +482,13 @@ function connect() {
           .join(' ')
       : '-';
 
+    isPaused = msg.paused || false;
+    const pausedStr = isPaused ? ' [PAUSED]' : '';
     hud.textContent =
       `speed=${msg.speed.toFixed(2)}  ` +
       `motor L=${msg.motor.L.toFixed(1)} R=${msg.motor.R.toFixed(1)}  ` +
       `food=${msg.food.length}  stim=${stims || '-'}  ` +
-      `chemo=${chemoStr}`;
+      `chemo=${chemoStr}${pausedStr}`;
   };
 }
 connect();
@@ -824,6 +826,9 @@ let mouseWorldPos = { x: WORLD_W / 2, y: WORLD_H / 2 };  // mouse position in wo
 let smellsData = [];          // list of sensed smells from snapshot
 let smellsVisible = true;     // toggle with 'o' key
 
+// Simulation state
+let isPaused = false;         // toggled with spacebar
+
 // Chemosensory panel
 let chemosensoryVisible = true;  // toggle with 'c' key
 const chemosensoryPanel = document.getElementById('chemosensoryPanel');
@@ -870,6 +875,11 @@ window.addEventListener('keydown', ev => {
   if (ev.key === 'c' || ev.key === 'C') {
     chemosensoryVisible = !chemosensoryVisible;
     chemosensoryPanel.style.display = chemosensoryVisible ? 'block' : 'none';
+  }
+  if (ev.key === ' ') {
+    ev.preventDefault();
+    if (!ws || ws.readyState !== 1) return;
+    ws.send(JSON.stringify({ type: 'toggle_paused' }));
   }
 });
 
