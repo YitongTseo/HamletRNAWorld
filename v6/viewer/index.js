@@ -1,6 +1,6 @@
 // Grid of live worm thumbnails. Subscribes to /ws/overview (10 Hz), draws
 // each worm's compact midline + a sparse smattering of nearby food words.
-// Click a card to navigate to /focus/<name>.
+// Click a card to navigate to /focus/<flask>/<name>.
 
 const WORLD_W = 1600;
 const WORLD_H = 1000;
@@ -8,24 +8,69 @@ const WORLD_H = 1000;
 const grid = document.getElementById('grid');
 const status = document.getElementById('status');
 
-// name -> { card, canvas, ctx, name, count, recent }
+// "flask/name" -> { card, canvas, ctx, dpr }
 const cards = new Map();
+// flask_name -> { section, sectionGrid, headerGen }
+const flaskSections = new Map();
 
-function ensureCard(name) {
-  if (cards.has(name)) return cards.get(name);
+// Inject a small bit of CSS for flask sections + denser card layout for 40+ worms.
+(function injectFlaskStyle() {
+  const s = document.createElement('style');
+  s.textContent = `
+    #grid { display: flex; flex-direction: column; gap: 22px; }
+    .flask-section { padding: 0 18px; }
+    .flask-section > h2 {
+      margin: 12px 0 6px 0; font-size: 13px; font-weight: 600;
+      color: var(--accent, #6f9); letter-spacing: 0.5px;
+      display: flex; gap: 10px; align-items: baseline;
+    }
+    .flask-section > h2 .gen { color: var(--dim, #5a5); font-weight: 400; font-size: 11px; }
+    .flask-section > .flask-grid {
+      display: grid; gap: 10px;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    }
+    .flask-section .card .name { padding: 4px 8px; font-size: 11px; }
+    .flask-section .card canvas { height: 110px; }
+    .flask-section .card .recent { padding: 4px 8px; font-size: 10px; min-height: 14px; }
+  `;
+  document.head.appendChild(s);
+})();
+
+function ensureFlaskSection(flaskName, display, generation) {
+  let entry = flaskSections.get(flaskName);
+  if (!entry) {
+    const section = document.createElement('div');
+    section.className = 'flask-section';
+    section.innerHTML = `<h2><span class="who">${display}</span><span class="gen"></span></h2><div class="flask-grid"></div>`;
+    grid.appendChild(section);
+    entry = {
+      section,
+      sectionGrid: section.querySelector('.flask-grid'),
+      headerGen: section.querySelector('.gen'),
+    };
+    flaskSections.set(flaskName, entry);
+  }
+  entry.headerGen.textContent = (generation !== undefined && generation > 0) ? `gen ${generation}` : '';
+  return entry;
+}
+
+function ensureCard(flaskName, wormName) {
+  const key = `${flaskName}/${wormName}`;
+  if (cards.has(key)) return cards.get(key);
+  const flaskEntry = flaskSections.get(flaskName);
+  if (!flaskEntry) return null; // shouldn't happen — section ensured before card
   const card = document.createElement('div');
   card.className = 'card';
   card.innerHTML =
     `<div class="name"><span class="who"></span><span class="count">0 words</span></div>` +
     `<canvas></canvas>` +
     `<div class="recent">…</div>`;
-  card.querySelector('.who').textContent = name;
+  card.querySelector('.who').textContent = wormName;
   card.addEventListener('click', () => {
-    location.href = `/focus/${encodeURIComponent(name)}`;
+    location.href = `/focus/${encodeURIComponent(flaskName)}/${encodeURIComponent(wormName)}`;
   });
-  grid.appendChild(card);
+  flaskEntry.sectionGrid.appendChild(card);
   const canvas = card.querySelector('canvas');
-  // Use the card's measured width but cap the DPR cost on retina.
   const rect = canvas.getBoundingClientRect();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.max(1, Math.round(rect.width * dpr));
@@ -33,7 +78,7 @@ function ensureCard(name) {
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
   const entry = { card, canvas, ctx, dpr };
-  cards.set(name, entry);
+  cards.set(key, entry);
   return entry;
 }
 
@@ -121,11 +166,98 @@ function connect() {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (_e) { return; }
     if (msg.type !== 'overview') return;
-    for (const worm of msg.worms) {
-      const entry = ensureCard(worm.name);
-      drawWorm(entry, worm);
-      updateCardChrome(entry, worm);
+    // New protocol always sends a flasks[] array (single 'default' flask in
+    // legacy single-group mode). Defensive fallback: if a server somehow
+    // still sends the old `worms` shape, wrap it as one default flask.
+    const flasks = msg.flasks || [{ name: 'default', display: 'Worms', generation: 0, worms: msg.worms || [] }];
+    for (const flask of flasks) {
+      ensureFlaskSection(flask.name, flask.display || flask.name, flask.generation || 0);
+      for (const worm of flask.worms) {
+        const entry = ensureCard(flask.name, worm.name);
+        if (!entry) continue;
+        drawWorm(entry, worm);
+        updateCardChrome(entry, worm);
+      }
     }
   };
 }
 connect();
+
+// --- Generation rollover overlay ---
+// Polls /api/generation_status every 500ms. Invisible during normal sim;
+// shows a centered banner with progress + LLM scoring updates while the
+// worms are frozen for end-of-generation processing.
+(function setupGenOverlay() {
+  const style = document.createElement('style');
+  style.textContent = `
+    #gen-overlay {
+      position: fixed; inset: 0; display: none;
+      background: rgba(0, 0, 0, 0.78); z-index: 9999;
+      align-items: center; justify-content: center;
+      font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--accent, #6f9);
+    }
+    #gen-overlay.visible { display: flex; }
+    #gen-overlay .panel {
+      min-width: 360px; max-width: 560px;
+      padding: 22px 28px;
+      background: rgba(0, 20, 10, 0.92);
+      border: 1px solid rgba(100, 255, 200, 0.4);
+      border-radius: 6px;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+    }
+    #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: var(--accent, #6f9); }
+    #gen-overlay .phase { margin-bottom: 12px; color: #cfd; font-size: 13px; }
+    #gen-overlay .bar { height: 6px; background: rgba(100, 255, 200, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+    #gen-overlay .bar > div { height: 100%; background: var(--accent, #6f9); transition: width 250ms ease; }
+    #gen-overlay .meta { color: var(--dim, #5a5); font-size: 11px; margin-top: 8px; }
+    #gen-overlay .err { color: #f88; margin-top: 10px; font-size: 12px; }
+  `;
+  document.head.appendChild(style);
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gen-overlay';
+  overlay.innerHTML =
+    `<div class="panel">` +
+    `<h2>generation rollover</h2>` +
+    `<div class="phase">…</div>` +
+    `<div class="bar"><div style="width:0%"></div></div>` +
+    `<div class="meta"></div>` +
+    `<div class="err"></div>` +
+    `</div>`;
+  document.body.appendChild(overlay);
+
+  const $phase = overlay.querySelector('.phase');
+  const $bar = overlay.querySelector('.bar > div');
+  const $meta = overlay.querySelector('.meta');
+  const $err = overlay.querySelector('.err');
+
+  const PHASE_LABELS = {
+    running: 'simulation running',
+    corpus_draining: 'last words drifting off-screen…',
+    judging: 'LLM is reading the poems',
+    evolving: 'computing NES gradient',
+    committing: 'committing generation to git',
+    respawning: 'spawning next generation',
+  };
+
+  async function tick() {
+    try {
+      const res = await fetch('/api/generation_status');
+      if (!res.ok) return;
+      const s = await res.json();
+      const active = s.enabled && s.phase && s.phase !== 'running';
+      overlay.classList.toggle('visible', active);
+      if (!active) return;
+      $phase.textContent = PHASE_LABELS[s.phase] || s.phase;
+      const pct = s.worms_total > 0 ? Math.round(100 * s.worms_done / s.worms_total) : 0;
+      $bar.style.width = (s.phase === 'judging' ? pct : 100) + '%';
+      $meta.textContent =
+        `generation ${s.generation} · flask ${s.group || '—'} · ` +
+        `${s.worms_done}/${s.worms_total} worms scored · ${s.elapsed_s}s elapsed`;
+      $err.textContent = s.error || '';
+    } catch (_e) { /* server briefly unavailable mid-rollover; ignore */ }
+  }
+  setInterval(tick, 500);
+  tick();
+})();

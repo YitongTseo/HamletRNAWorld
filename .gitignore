@@ -4,3 +4,8 @@ __pycache__/
 .cloudflared/
 *.pem
 *.env
+
+# Running-state per-worm files (poems, current weights). The frozen
+# per-generation snapshots in v6/data/generations/ ARE committed.
+v6/data/flasks/
+v6/data/worms/

@@ -374,8 +374,13 @@ let wormMesh = null;
 let organMesh = null;
 const WORM_BASE_RADIUS = 22;
 
+// Latest midline polyline in world coords. Used by the x-ray panel to
+// place neurons on the live, twisting body.
+let latestMidline = [];
+
 function setMidline(points) {
   if (points.length < 2) return;
+  latestMidline = points;
   const bodyGeom = buildWormGeometry(points, WORM_BASE_RADIUS, bodyProfile, 16);
   const organGeom = buildWormGeometry(points, WORM_BASE_RADIUS, organProfile, 12);
   if (wormMesh) {
@@ -447,9 +452,13 @@ function setFood(items) {
 // ---------------------------------------------------------------------------
 // WebSocket
 // ---------------------------------------------------------------------------
-// Extract worm name from URL path /focus/<name>.
-const WORM_NAME = decodeURIComponent(location.pathname.replace(/^\/focus\//, '').replace(/\/$/, ''));
-const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/focus/${encodeURIComponent(WORM_NAME)}`;
+// Extract (flask, worm) from URL path. Both shapes are accepted:
+//   /focus/<flask>/<worm>   ← multi-flask mode
+//   /focus/<worm>           ← legacy single-group mode, flask='default'
+const _pathParts = location.pathname.replace(/^\/focus\//, '').replace(/\/$/, '').split('/');
+const FLASK_NAME = _pathParts.length >= 2 ? decodeURIComponent(_pathParts[0]) : 'default';
+const WORM_NAME = decodeURIComponent(_pathParts[_pathParts.length - 1]);
+const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/focus/${encodeURIComponent(FLASK_NAME)}/${encodeURIComponent(WORM_NAME)}`;
 
 // Debug door: clients that have set localStorage.wormletDebugToken get to
 // poke the sim (add food, pause, etc.). Public visitors don't, so their
@@ -479,36 +488,43 @@ function connect() {
     smellsData = msg.smells || [];
     latestResidual = msg.residual || { pca: new Array(12).fill(0), words: [] };
     updateChemosensoryPanel();
+    updateRadarPanel();
     wormHeadPos = { x: msg.head[0], y: msg.head[1] };
     neuronActivity = msg.neurons || {};
     stimFlags = msg.stim;
     const stims = Object.entries(msg.stim).filter(([, v]) => v).map(([k]) => k).join(',');
 
-    // Collect active chemosensory neurons from smells
-    const activeChemoNeurons = {};
-    for (const smell of smellsData) {
-      for (const [neuron, activation] of Object.entries(smell.neurons)) {
-        if (activation > 0) {
-          activeChemoNeurons[neuron] = Math.max(activeChemoNeurons[neuron] || 0, activation);
-        }
-      }
-    }
-    const chemoStr = Object.keys(activeChemoNeurons).length > 0
-      ? Object.entries(activeChemoNeurons)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 3)
-          .map(([n, v]) => `${n}(${(v*100|0)}%)`)
-          .join(' ')
-      : '-';
-
     isPaused = msg.paused || false;
     window.__lastPaused = isPaused;
-    const pausedStr = isPaused ? ' [PAUSED]' : '';
-    hud.textContent =
-      `speed=${msg.speed.toFixed(2)}  ` +
-      `motor L=${msg.motor.L.toFixed(1)} R=${msg.motor.R.toFixed(1)}  ` +
-      `food=${msg.food.length}  stim=${stims || '-'}  ` +
-      `chemo=${chemoStr}${pausedStr}`;
+    const pausedStr = isPaused ? ' <span style="color:#fc6;">[PAUSED]</span>' : '';
+
+    // Row 1: tight, just speed and motor.
+    const row1 =
+      `speed=${msg.speed.toFixed(2)}` +
+      `  motor L=${msg.motor.L.toFixed(1)} R=${msg.motor.R.toFixed(1)}` +
+      pausedStr;
+
+    // Row 2: top words affecting the worm right now. "Affecting" =
+    // total chemosensory contribution (sum of L+R activations across
+    // all 12 pairs) for in-range smells, plus the per-PC residual ×
+    // word-decay for recently eaten words.
+    const wordImpact = computeWordImpact();
+    let row2 = `<span style="opacity:0.55;">smelling:</span> `;
+    if (wordImpact.entries.length === 0) {
+      row2 += `<span style="opacity:0.45;">— nothing in range —</span>`;
+    } else {
+      const total = wordImpact.total || 1;
+      const top = wordImpact.entries.slice(0, 5);
+      row2 += top.map(e => {
+        const pct = (e.value / total * 100) | 0;
+        const color = e.eaten ? '#fc8' : '#cfc';
+        const note = e.eaten ? `<span style="opacity:0.6;">·eaten</span>` : '';
+        return `<span style="color:${color};">${escapeHTML(e.word)} ${pct}%${note}</span>`;
+      }).join(' <span style="opacity:0.3;">·</span> ');
+      row2 += ` <span style="opacity:0.4; font-size:10px;">[<span style="color:#cfc;">smelled</span> <span style="color:#fc8;">eaten</span>]</span>`;
+    }
+
+    hud.innerHTML = row1 + '<br>' + row2;
   };
 }
 connect();
@@ -524,92 +540,336 @@ function bar(percent, hue, w = 70) {
 // learn "blue = PC3" type associations over time.
 function pcHue(i) { return Math.round((i * 360) / 12); }
 
+// Hash-based color per word so the same word draws the same color in every
+// bar segment it appears in, every frame. Stable across reloads.
+function wordHue(word) {
+  let h = 0;
+  const s = word.toLowerCase();
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return ((h % 360) + 360) % 360;
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Compute per-(word, neuron-pair, side) contributions from current sensory
+// state. Used by both the HUD (Item 1 ranked-words row) and the
+// chemosensory panel (Item 2 stacked bars).
+//
+// Returns:
+//   {
+//     contributions: { neuron_name: [{word, value, eaten}, ...] },
+//     entries: [{word, value, eaten}, ...]    sorted desc by total impact
+//     total: <sum of all entries.value>
+//   }
+function computeWordImpact() {
+  if (!corpusPca) return { contributions: {}, entries: [], total: 0 };
+  const pairs = corpusPca.pc_neuron_pairs;
+
+  // contributions[neuron] = list of {word, value, eaten}
+  const contributions = {};
+  for (const [L, R] of pairs) { contributions[L] = []; contributions[R] = []; }
+
+  // 1) In-range smells: per-word PCA × distance_factor × direction-aware split.
+  for (const smell of smellsData) {
+    const dir = smell.direction_factor;
+    const dirL = dir !== undefined ? dir : 0.5;
+    const dirR = 1 - dirL;
+    const distF = smell.distance_factor ?? 0;
+    const pca = smell.pca || [];
+    for (let i = 0; i < pairs.length; i++) {
+      const [L, R] = pairs[i];
+      const v = (pca[i] ?? 0) * distF;
+      const cL = v * dirL;
+      const cR = v * dirR;
+      if (cL > 0) contributions[L].push({ word: smell.word, value: cL, eaten: false });
+      if (cR > 0) contributions[R].push({ word: smell.word, value: cR, eaten: false });
+    }
+  }
+
+  // 2) Eaten residual: each previously-eaten word contributes to both L and R
+  // equally, weighted by its current decay factor. MUST use the same
+  // sparse PCA the sim uses (pca12_sparse), otherwise eaten words would
+  // saturate the bars at full raw-PCA strength while smelled words run
+  // through the softmaxed values.
+  if (latestResidual && latestResidual.words && corpusPca.words) {
+    const idx = corpusPca._wordIdx ||
+      (corpusPca._wordIdx = Object.fromEntries(corpusPca.words.map((w, i) => [w, i])));
+    const pcaTable = corpusPca.pca12_sparse || corpusPca.pca12;
+    for (const { word, decay } of latestResidual.words) {
+      const k = word.toLowerCase().replace(/^'+|'+$/g, '');
+      const wi = idx[k];
+      if (wi === undefined) continue;
+      const pca = pcaTable[wi];
+      for (let i = 0; i < pairs.length; i++) {
+        const v = (pca[i] ?? 0) * decay * 0.5;  // 0.5 to mirror sim's L/R equal split
+        if (v <= 0) continue;
+        const [L, R] = pairs[i];
+        contributions[L].push({ word, value: v, eaten: true });
+        contributions[R].push({ word, value: v, eaten: true });
+      }
+    }
+  }
+
+  // Aggregate per-word total impact (used by HUD row 2).
+  const byWord = {};
+  for (const list of Object.values(contributions)) {
+    for (const c of list) {
+      if (!byWord[c.word]) byWord[c.word] = { word: c.word, value: 0, eaten: c.eaten };
+      byWord[c.word].value += c.value;
+      // If a word appears as both sensed and eaten, prefer "sensed" labelling.
+      if (!c.eaten) byWord[c.word].eaten = false;
+    }
+  }
+  const entries = Object.values(byWord).sort((a, b) => b.value - a.value);
+  const total = entries.reduce((s, e) => s + e.value, 0);
+  return { contributions, entries, total };
+}
+
+// Render a single horizontal bar composed of stacked colored segments,
+// one per contributing word. Segments are sorted ALPHABETICALLY (stable
+// positions across frames), colored by per-word hash hue, and labeled
+// inline if the segment is wide enough. Eaten words get a dashed border
+// so you can see at a glance which contributions are residual.
+//
+// `entries` is a list of {word, value, eaten}. `barMax` is the bar's
+// pixel width. `totalScale` is the value that should fill the full bar
+// (we use 1.0 as "saturated", same as the sim's per-neuron cap).
+function stackedBar(entries, barMax, totalScale = 1.0) {
+  const sorted = entries.slice().sort((a, b) =>
+    a.word.toLowerCase().localeCompare(b.word.toLowerCase())
+  );
+  const total = sorted.reduce((s, e) => s + e.value, 0);
+  const fillFrac = Math.max(0, Math.min(1, total / totalScale));
+  const fillPx = fillFrac * barMax;
+
+  let html = `<span style="display:inline-block; position:relative; width:${barMax}px; height:14px; background:rgba(255,255,255,0.07); border-radius:2px; vertical-align:middle; overflow:hidden;">`;
+
+  if (total > 0) {
+    let x = 0;
+    for (const e of sorted) {
+      const segPx = (e.value / total) * fillPx;
+      const hue = wordHue(e.word);
+      const bg = `hsl(${hue},75%,55%)`;
+      const borderStyle = e.eaten ? `outline:1px dashed hsl(${hue},85%,80%); outline-offset:-1px;` : '';
+      const labelFits = segPx > 28;  // ~3 chars of monospace at 9px
+      const label = labelFits
+        ? `<span style="position:absolute; left:3px; top:1px; color:#000a; font-size:9px; mix-blend-mode:luminosity; pointer-events:none; max-width:${segPx - 4}px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(e.word)}</span>`
+        : '';
+      html += `<span title="${escapeHTML(e.word)}${e.eaten ? ' · eaten' : ''}: ${(e.value*100|0)}%" style="position:absolute; left:${x}px; top:0; width:${segPx}px; height:100%; background:${bg}; box-shadow:0 0 4px hsl(${hue},90%,60%); ${borderStyle}">${label}</span>`;
+      x += segPx;
+    }
+  }
+  html += `</span>`;
+  return html;
+}
+
+// -------- Emotion radar panel (Item 3) --------
+// 24 small radar charts, one per chemosensory neuron. For each neuron, the
+// 8 NRC emotions are axes; the polygon shows the contribution-weighted
+// emotional shape of words currently driving the neuron. Useful as an
+// interpretability lens onto what each PC has "absorbed" from the corpus.
+
+const EMOTION_AXIS_COLORS = {
+  joy: '#fc6', trust: '#6f9', anticipation: '#9cf', surprise: '#cfc',
+  fear: '#c6f', disgust: '#9c6', sadness: '#69c', anger: '#f66',
+};
+
+function _radarLayout() {
+  // 4 cols × 3 rows = 12 charts, one per PC / neuron pair. (L and R of the
+  // same pair have identical emotion content — only their magnitudes
+  // differ — so 24 separate charts were redundant.)
+  const COLS = 4, ROWS = 3;
+  const W = radarcanvas.width / (window.devicePixelRatio || 1);
+  const H = radarcanvas.height / (window.devicePixelRatio || 1);
+  const padTop = 28, padBottom = 6, padX = 6;
+  const cellW = (W - padX * 2) / COLS;
+  const cellH = (H - padTop - padBottom) / ROWS;
+  return { COLS, ROWS, W, H, padTop, padX, cellW, cellH };
+}
+
+function updateRadarPanel() {
+  if (!radarVisible || !corpusPca) return;
+  if (!corpusPca.emotion_keys || !corpusPca.emotions) {
+    // Corpus PCA cache predates the emotion fields — rebuild needed.
+    radarctx.clearRect(0, 0, radarcanvas.width, radarcanvas.height);
+    radarctx.fillStyle = '#fc6';
+    radarctx.font = '11px ui-monospace, monospace';
+    radarctx.fillText('rebuild corpus_pca.json with emotions', 10, 20);
+    return;
+  }
+  const emotionKeys = corpusPca.emotion_keys;
+  const wordIdx = corpusPca._wordIdx ||
+    (corpusPca._wordIdx = Object.fromEntries(corpusPca.words.map((w, i) => [w, i])));
+  const { contributions } = computeWordImpact();
+
+  // For each PC / neuron pair, aggregate emotion-weighted contributions
+  // across BOTH L and R members. (Same words contribute to both with
+  // different magnitudes; we want the pair-level emotional shape.)
+  const pairs = corpusPca.pc_neuron_pairs;
+  const weightedByPair = [];
+  let globalMax = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    const [L, R] = pairs[i];
+    const w = new Array(emotionKeys.length).fill(0);
+    const merged = [...(contributions[L] || []), ...(contributions[R] || [])];
+    for (const c of merged) {
+      const k = c.word.toLowerCase().replace(/^'+|'+$/g, '');
+      const wi = wordIdx[k];
+      if (wi === undefined) continue;
+      const ev = corpusPca.emotions[wi];
+      for (let e = 0; e < emotionKeys.length; e++) w[e] += c.value * ev[e];
+    }
+    weightedByPair.push(w);
+    for (const v of w) if (v > globalMax) globalMax = v;
+  }
+  const hasEmotionalSignal = globalMax > 0;
+  if (!hasEmotionalSignal) globalMax = 1;
+
+  // Render
+  const ctx = radarctx;
+  const { COLS, ROWS, W, H, padTop, padX, cellW, cellH } = _radarLayout();
+  ctx.clearRect(0, 0, W, H);
+
+  // Title
+  ctx.fillStyle = '#8f8';
+  ctx.font = 'bold 11px ui-monospace, monospace';
+  ctx.textBaseline = 'top';
+  ctx.fillText('● EMOTION RADAR — what each PC is absorbing', 8, 4);
+  ctx.fillStyle = '#9c9';
+  ctx.font = '9px ui-monospace, monospace';
+  if (hasEmotionalSignal) {
+    ctx.fillText('contribution-weighted NRC emotions per PC pair', 8, 16);
+  } else {
+    ctx.fillStyle = '#fc6';
+    ctx.fillText('no words with NRC emotional content nearby', 8, 16);
+  }
+
+  const axes = emotionKeys.length;
+  for (let idx = 0; idx < pairs.length; idx++) {
+    const [L] = pairs[idx];
+    const pairBase = L.slice(0, -1);
+    const col = idx % COLS;
+    const row = (idx / COLS) | 0;
+    const cx = padX + col * cellW + cellW / 2;
+    const cy = padTop + row * cellH + cellH / 2;
+    const radius = Math.min(cellW, cellH) * 0.32;
+
+    // Background rings
+    ctx.strokeStyle = 'rgba(150,200,255,0.10)';
+    ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(150,200,255,0.07)';
+    ctx.beginPath(); ctx.arc(cx, cy, radius * 0.5, 0, Math.PI * 2); ctx.stroke();
+
+    // Axis spokes + (on top-right cell only) emotion abbreviations
+    ctx.strokeStyle = 'rgba(150,200,255,0.10)';
+    ctx.beginPath();
+    for (let a = 0; a < axes; a++) {
+      const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(ang) * radius, cy + Math.sin(ang) * radius);
+    }
+    ctx.stroke();
+
+    // Polygon
+    const w = weightedByPair[idx];
+    const hue = pcHue(idx);
+    ctx.beginPath();
+    for (let a = 0; a < axes; a++) {
+      const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
+      const r = (w[a] / globalMax) * radius;
+      const x = cx + Math.cos(ang) * r;
+      const y = cy + Math.sin(ang) * r;
+      if (a === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = `hsla(${hue}, 75%, 60%, 0.32)`;
+    ctx.fill();
+    ctx.strokeStyle = `hsl(${hue}, 80%, 70%)`;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    // Emotion dots at non-trivial axes (helps read the polygon shape)
+    for (let a = 0; a < axes; a++) {
+      const r = (w[a] / globalMax) * radius;
+      if (r < 1) continue;
+      const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
+      ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#fff';
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(ang) * r, cy + Math.sin(ang) * r, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Label below
+    ctx.fillStyle = `hsl(${hue}, 55%, 78%)`;
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`PC${idx} · ${pairBase}`, cx, cy + radius + 2);
+
+    // Axis legend only on the top-right cell.
+    if (idx === COLS - 1) {
+      ctx.textAlign = 'left';
+      ctx.font = '8px ui-monospace, monospace';
+      for (let a = 0; a < axes; a++) {
+        const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
+        const lx = cx + Math.cos(ang) * (radius + 3);
+        const ly = cy + Math.sin(ang) * (radius + 3);
+        ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#fff';
+        ctx.fillText(emotionKeys[a].slice(0, 3), lx, ly);
+      }
+    }
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
+
 function updateChemosensoryPanel() {
   if (!chemosensoryVisible) return;
-
-  const hasSmells = smellsData.length > 0;
-  const residual = (latestResidual && latestResidual.pca) || [];
-  const hasResidual = residual.some(v => v > 0.02);
-  const hasAny = hasSmells || hasResidual;
-
-  let html = `<div style="font-weight:bold; margin-bottom:6px; color:${hasAny ? '#8f8' : '#6f6'}; opacity:${hasAny ? 1 : 0.35};">● CHEMOSENSORY STATE (PCA)</div>`;
-
   if (!corpusPca) {
-    html += `<div style="opacity:0.4; padding:6px 0; font-size:10px;">loading corpus PCA…</div>`;
-    chemosensoryPanel.innerHTML = html;
+    chemosensoryPanel.innerHTML = `<div style="opacity:0.4; padding:6px 0; font-size:10px;">loading corpus PCA…</div>`;
     return;
   }
 
-  const pairs = corpusPca.pc_neuron_pairs; // [[L, R], ...] × 12
+  const pairs = corpusPca.pc_neuron_pairs;
+  const { contributions } = computeWordImpact();
 
-  // -------- IN-RANGE SMELLS --------
-  if (hasSmells) {
-    const sortedSmells = smellsData.slice().sort((a, b) => a.distance - b.distance);
-    for (const smell of sortedSmells) {
-      const dir = smell.direction_factor;
-      let dirLabel = '↑ ahead', dirHue = 50;
-      if (dir > 0.6)       { dirLabel = '← left';  dirHue = 120; }
-      else if (dir < 0.4)  { dirLabel = 'right →'; dirHue = 280; }
+  // Header
+  const anyFiring = pairs.some(([L, R]) =>
+    (contributions[L] && contributions[L].length) || (contributions[R] && contributions[R].length)
+  );
+  let html = `<div style="font-weight:bold; margin-bottom:8px; color:${anyFiring ? '#8f8' : '#6f6'}; opacity:${anyFiring ? 1 : 0.35};">● CHEMOSENSORY STATE (${corpusPca.embeddingName || 'PCA'})</div>`;
 
-      const dirL = dir !== undefined ? dir : 0.5;
-      const dirR = 1 - dirL;
-      const distF = smell.distance_factor ?? 0;
-      const pca = smell.pca || [];
+  // Column headers
+  const labelW = 60, barW = 110;
+  html += `<div style="display:grid; grid-template-columns:${labelW}px ${barW}px ${barW}px; gap:6px; align-items:center; font-size:9px; opacity:0.45; margin-bottom:3px;">
+    <span>pair</span><span style="text-align:center;">L</span><span style="text-align:center;">R</span>
+  </div>`;
 
-      html += `<div class="word" style="margin:6px 0; padding:5px 8px; background:rgba(0,0,0,0.4); border-left:3px solid hsl(${dirHue},70%,55%); border-radius:2px;">
-        <div style="display:flex; justify-content:space-between; align-items:baseline;">
-          <span style="color:#cff; font-weight:bold; font-size:12px;">"${smell.word}"</span>
-          <span style="color:hsl(${dirHue},70%,65%); font-size:10px;">${dirLabel}</span>
-        </div>
-        <div style="font-size:9px; opacity:0.55; margin:2px 0 4px 0;">
-          d=${smell.distance.toFixed(0)} · dist×${(distF*100|0)}% · dir(L)=${dir !== undefined ? (dir*100|0) : '?'}%
-        </div>`;
-
-      for (let i = 0; i < pairs.length; i++) {
-        const [L, R] = pairs[i];
-        const v = pca[i] ?? 0;
-        // contribution(L) = v × dist × dirL  (same math as the sim)
-        const cL = v * distF * dirL;
-        const cR = v * distF * dirR;
-        const hue = pcHue(i);
-        html += `<div style="display:grid; grid-template-columns:50px 70px 22px 70px 22px; gap:3px; align-items:center; font-size:9px; margin:1px 0;">
-          <span style="color:hsl(${hue},65%,70%); opacity:0.8;">PC${i} · ${L.slice(0,-1)}</span>
-          ${bar(cL * 100, hue)}
-          <span style="color:#cfc; text-align:right;">${(cL*100|0)}</span>
-          ${bar(cR * 100, hue)}
-          <span style="color:#fcf; text-align:left;">${(cR*100|0)}</span>
-        </div>`;
-      }
-      html += `</div>`;
-    }
-  } else {
-    html += `<div style="opacity:0.4; padding:4px 0; font-size:10px;">no words in range</div>`;
+  // 12 rows — one per neuron pair.
+  for (let i = 0; i < pairs.length; i++) {
+    const [L, R] = pairs[i];
+    const Lcontribs = contributions[L] || [];
+    const Rcontribs = contributions[R] || [];
+    const pairBase = L.slice(0, -1);
+    const pcHueValue = pcHue(i);
+    html += `<div style="display:grid; grid-template-columns:${labelW}px ${barW}px ${barW}px; gap:6px; align-items:center; margin:2px 0;">
+      <span style="font-size:9px; color:hsl(${pcHueValue},55%,72%); opacity:0.85;">PC${i} · ${pairBase}</span>
+      ${stackedBar(Lcontribs, barW)}
+      ${stackedBar(Rcontribs, barW)}
+    </div>`;
   }
 
-  // -------- RESIDUAL AFTERGLOW --------
-  if (hasResidual || (latestResidual && latestResidual.words && latestResidual.words.length)) {
-    const words = (latestResidual.words || [])
-      .slice().sort((a, b) => b.decay - a.decay).slice(0, 6);
-    const wordsLabel = words.length
-      ? words.map(w => `${w.word}(${(w.decay*100|0)}%)`).join(' · ')
-      : '—';
-    html += `<div style="margin-top:8px; padding:5px 8px; background:rgba(0,30,30,0.55); border-left:3px solid #6cf; border-radius:2px;">
-      <div style="display:flex; justify-content:space-between; align-items:baseline;">
-        <span style="color:#cff; font-weight:bold; font-size:11px;">residual (last eaten)</span>
-        <span style="color:#9cf; font-size:9px; opacity:0.7;">τ=10 brain ticks</span>
-      </div>
-      <div style="font-size:9px; opacity:0.65; margin:2px 0 4px 0;">${wordsLabel}</div>`;
-    for (let i = 0; i < pairs.length; i++) {
-      const v = residual[i] ?? 0;
-      const hue = pcHue(i);
-      html += `<div style="display:grid; grid-template-columns:50px 140px 22px; gap:3px; align-items:center; font-size:9px; margin:1px 0;">
-        <span style="color:hsl(${hue},65%,70%); opacity:0.8;">PC${i}</span>
-        ${bar(v * 100, hue, 140)}
-        <span style="color:#cfc; text-align:right;">${(v*100|0)}</span>
-      </div>`;
-    }
-    html += `</div>`;
-  }
+  // Footer legend
+  html += `<div style="margin-top:10px; font-size:9px; opacity:0.5; line-height:1.5;">
+    bars sum per-word contributions · colors are stable per word ·
+    <span style="display:inline-block; width:8px; height:8px; background:#6f9; vertical-align:middle;"></span> sensed ·
+    <span style="display:inline-block; width:8px; height:8px; outline:1px dashed #ccc; outline-offset:-1px; vertical-align:middle;"></span> eaten (residual)
+  </div>`;
 
   chemosensoryPanel.innerHTML = html;
 }
@@ -628,24 +888,50 @@ function screenScale() {
   return textcanvas.width / (camera.right - camera.left);
 }
 
-// Corpus PCA: every Hamlet word's 12-d chemosensory vector + a 2-d projection
-// for the hover scatter. Replaces v6.0's emotion-vector path. Fetched once
-// on load; ~550KB so not free, but it's a one-shot.
+// Corpus embeddings: every Hamlet word's 12-d chemosensory vector (still PCA,
+// drives the sim) + a 2-d projection for the hover scatter (now UMAP, since
+// UMAP preserves local semantic structure better in 2D). Fetched once on
+// load; the sim will swap to UMAP-12 when generational evolution starts.
 let corpusPca = null;     // {words, pca12, pca2, pc_neuron_pairs, ...}
 let pcaData = null;       // legacy shape kept for the hover popup: {tokens, pca, token_to_idx}
-async function initCorpusPca() {
+async function initCorpusEmbeddings() {
+  // Fetch the PCA artifact first for its scaffolding (pc_neuron_pairs,
+  // emotions, words). If a UMAP artifact is also available AND the sim is
+  // running on UMAP, overlay the UMAP dim-reduction outputs into the same
+  // fields so downstream code stays unchanged.
   try {
     const data = await (await fetch('/api/corpus_pca')).json();
     corpusPca = data;
-    // Build backward-compatible shape for the existing hover-popup code.
+    corpusPca.embeddingName = 'PCA';
     const idx = {};
     for (let i = 0; i < data.words.length; i++) idx[data.words[i]] = i;
-    pcaData = { tokens: data.words, pca: data.pca2, token_to_idx: idx };
+    pcaData = { tokens: data.words, pca: data.pca2, token_to_idx: idx, projection: 'pca' };
   } catch (e) {
     console.warn('corpus PCA not available', e);
+    return;
+  }
+  let simEmbedding = 'pca';
+  try {
+    const hz = await (await fetch('/healthz')).json();
+    simEmbedding = (hz.embedding || 'pca').toLowerCase();
+  } catch (_e) { /* fall back to pca */ }
+  try {
+    const umap = await (await fetch('/api/corpus_umap')).json();
+    // Word order in the UMAP cache matches the PCA cache (same dedup pipeline).
+    pcaData.pca = umap.umap2;
+    pcaData.projection = 'umap';
+    if (simEmbedding === 'umap') {
+      // Swap the 12-d chemosensory bars to read UMAP values too, so the
+      // viewer matches what the sim is actually firing.
+      corpusPca.pca12 = umap.umap12;
+      corpusPca.pca12_sparse = umap.umap12_sparse;
+      corpusPca.embeddingName = 'UMAP';
+    }
+  } catch (e) {
+    console.warn('corpus UMAP not available; hover scatter falling back to PCA-2D', e);
   }
 }
-initCorpusPca();
+initCorpusEmbeddings();
 
 function drawTextCanvas() {
   const w = textcanvas.width, h = textcanvas.height;
@@ -710,6 +996,12 @@ function drawPcaPopup(word) {
   tctx.moveTo(px, py + PH / 2);
   tctx.lineTo(px + PW, py + PH / 2);
   tctx.stroke();
+
+  // Tiny projection label (top-right corner)
+  tctx.fillStyle = 'rgba(180,180,180,0.5)';
+  tctx.font = '8px ui-monospace, monospace';
+  tctx.textAlign = 'right';
+  tctx.fillText(pcaData.projection || 'pca', px + PW - 4, py + 10);
 
   const { tokens, pca, token_to_idx } = pcaData;
   const margin = 16;
@@ -855,9 +1147,23 @@ let mouseScreenPos = { x: 0, y: 0 };
 
 let netVisible = true;
 let motorLabelsVisible = false;
+let xrayMode = true;           // 'x' toggles between x-ray (default) and the legacy static graph
+let xrayLabelsVisible = false; // 'l' toggles neuron-name labels in the x-ray view
 let graph = null;
 let neuronActivity = {};
 let stimFlags = { hunger: false, nose_touch: false, food_sense: false };
+
+// Per-neuron 2D body-plan coords: {axial: [0,1], lateral: [-1,+1], dv: [-1,+1]}
+// Fetched once on load; static.
+let neuronBodyCoords = null;
+(async () => {
+  try {
+    const data = await (await fetch('/api/neuron_body_coords')).json();
+    neuronBodyCoords = data;
+  } catch (e) {
+    console.warn('neuron body coords not available', e);
+  }
+})();
 
 // Text food and word embedding data
 let wordFoodMap = new Map();  // key: `${line_id}_${word_idx}` → {x, y, word}
@@ -877,6 +1183,20 @@ let isPaused = false;         // toggled with spacebar
 // Chemosensory panel
 let chemosensoryVisible = true;  // toggle with 'c' key
 const chemosensoryPanel = document.getElementById('chemosensoryPanel');
+
+let radarVisible = false;        // toggle with 'e' key
+const radarcanvas = document.getElementById('radarcanvas');
+const radarctx = radarcanvas.getContext('2d');
+// Hardcode the canvas buffer size to match the CSS box (the element is
+// display:none at load, so getBoundingClientRect returns 0×0 — using it
+// would size the buffer to 1×1 and make all drawing invisible).
+const RADAR_W = 460, RADAR_H = 280;
+{
+  const _dpr = Math.min(window.devicePixelRatio || 1, 2);
+  radarcanvas.width = RADAR_W * _dpr;
+  radarcanvas.height = RADAR_H * _dpr;
+  radarctx.scale(_dpr, _dpr);
+}
 
 // Neuron type to emotion mapping (for display)
 const neuronEmotionMap = {
@@ -923,6 +1243,12 @@ window.addEventListener('keydown', ev => {
     netVisible = !netVisible;
     netcanvas.style.display = netVisible ? 'block' : 'none';
   }
+  if (ev.key === 'x' || ev.key === 'X') {
+    xrayMode = !xrayMode;
+  }
+  if (ev.key === 'l' || ev.key === 'L') {
+    xrayLabelsVisible = !xrayLabelsVisible;
+  }
   if (ev.key === 'm' || ev.key === 'M') {
     motorLabelsVisible = !motorLabelsVisible;
   }
@@ -932,6 +1258,11 @@ window.addEventListener('keydown', ev => {
   if (ev.key === 'c' || ev.key === 'C') {
     chemosensoryVisible = !chemosensoryVisible;
     chemosensoryPanel.style.display = chemosensoryVisible ? 'block' : 'none';
+  }
+  if (ev.key === 'e' || ev.key === 'E') {
+    radarVisible = !radarVisible;
+    radarcanvas.style.display = radarVisible ? 'block' : 'none';
+    if (radarVisible) updateRadarPanel();  // paint immediately, don't wait for next WS frame
   }
   if (ev.key === ' ') {
     ev.preventDefault();
@@ -991,6 +1322,262 @@ async function initGraph() {
 }
 initGraph();
 
+// -------- X-ray worm view (Item 4) --------
+// Overlay the 301 connectome neurons onto the actual moving worm body
+// instead of a static anatomical layout. The worm midline streams in
+// live from the WS; each neuron has a precomputed (axial∈[0,1],
+// lateral∈[-1,+1]) anchor from cache/neuron_body_coords.json. At render
+// time we sample the midline at the neuron's axial position, get the
+// local tangent + perpendicular, and place the neuron at
+// midline_point + perpendicular × lateral × body_half_width.
+//
+// Net effect: when the worm twists, the neurons twist with it — like
+// peering at the wiggling animal through a soft X-ray.
+
+const XRAY_BODY_HALF_WIDTH = 18;   // panel-px to one side at midbody
+const XRAY_HEAD_THIN_FRAC = 0.92;  // fraction along axis where body still wider
+const XRAY_TAIL_THIN_FRAC = 0.85;
+
+// Cache: contour points so we don't keep allocating arrays
+const _xrayBuf = { contourTop: [], contourBot: [], neuronPos: new Map() };
+
+function _fitMidlineToPanel(midline, panelW, panelH, panelTop) {
+  // Returns { tx, ty, scale, points } — points = midline mapped into panel
+  // coords. Preserves aspect, centers, leaves margin for neurons sitting
+  // outside the body line (head sensilla, tail sensory).
+  if (!midline.length) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of midline) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+  const MARGIN = 28;  // leave room around the worm for protruding sensilla
+  const usableW = panelW - 2 * MARGIN;
+  const usableH = panelH - 2 * MARGIN;
+  const scale = Math.min(usableW / w, usableH / h);
+  const offX = MARGIN + (usableW - w * scale) / 2 - minX * scale;
+  const offY = panelTop + MARGIN + (usableH - h * scale) / 2 - minY * scale;
+  const points = midline.map(([x, y]) => [x * scale + offX, y * scale + offY]);
+  return { scale, points };
+}
+
+function _midlineSampleAt(points, axial) {
+  // Map axial∈[0,1] to a position + tangent on the midline polyline.
+  if (points.length < 2) return null;
+  const t = Math.max(0, Math.min(0.999999, axial)) * (points.length - 1);
+  const i = t | 0;
+  const f = t - i;
+  const [ax, ay] = points[i];
+  const [bx, by] = points[i + 1] || points[i];
+  const px = ax + (bx - ax) * f;
+  const py = ay + (by - ay) * f;
+  // Tangent: smooth a tiny bit by using neighbors when available.
+  const i0 = Math.max(0, i - 1);
+  const i1 = Math.min(points.length - 1, i + 2);
+  const [tx0, ty0] = points[i0];
+  const [tx1, ty1] = points[i1];
+  let tx = tx1 - tx0, ty = ty1 - ty0;
+  const tlen = Math.hypot(tx, ty) || 1;
+  tx /= tlen; ty /= tlen;
+  // Perpendicular (rotate 90° CCW): (-ty, tx). Convention: lateral > 0
+  // means the worm's left side. The worm advances along its +tangent so
+  // (-ty, tx) is its left in screen coords (y goes down).
+  return { x: px, y: py, tx, ty, nx: -ty, ny: tx };
+}
+
+function _bodyHalfWidthAt(axial) {
+  // Smooth taper at head and tail so the worm looks like a worm.
+  const a = Math.max(0, Math.min(1, axial));
+  let factor = 1.0;
+  if (a < 0.08) factor = a / 0.08;
+  else if (a > XRAY_TAIL_THIN_FRAC) factor = (1 - a) / (1 - XRAY_TAIL_THIN_FRAC);
+  else if (a > XRAY_HEAD_THIN_FRAC) factor = 0.95;
+  return XRAY_BODY_HALF_WIDTH * factor;
+}
+
+// Class-color palette shared between the static graph view and the x-ray
+// view so visitors learn one color → class association.
+const NEURON_CLASS_PALETTE = [
+  { key: 'chemo',  color: 'rgba(40,200,255,0.85)', label: 'chemosensory' },
+  { key: 'sensory',color: 'rgba(100,160,255,0.7)', label: 'sensory' },
+  { key: 'motor',  color: 'rgba(255,150,40,0.85)', label: 'motor' },
+  { key: 'inter',  color: 'rgba(68,255,119,0.85)', label: 'interneuron' },
+  { key: 'muscle', color: 'rgba(255,220,40,0.85)', label: 'muscle' },
+  { key: 'firing', color: '#44ff77',               label: 'firing' },
+];
+
+function _drawNeuronLegend(W, yBase) {
+  // Compact legend: dot + label, packed to fit in NET_W.
+  ctx.font = '8px ui-monospace,monospace';
+  const SPC = 64;
+  const LX = 8;
+  for (let i = 0; i < NEURON_CLASS_PALETTE.length; i++) {
+    const x = LX + i * SPC;
+    ctx.beginPath();
+    ctx.arc(x + 4, yBase, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = NEURON_CLASS_PALETTE[i].color;
+    ctx.fill();
+    ctx.fillStyle = 'rgba(68,255,119,0.7)';
+    ctx.fillText(NEURON_CLASS_PALETTE[i].label, x + 10, yBase + 3);
+  }
+}
+
+function drawXRayCanvas() {
+  if (!neuronBodyCoords || !graph) return;
+  if (latestMidline.length < 2) return;
+
+  // Use the same canvas / ctx as the legacy net view.
+  const W = NET_W, H = NET_H;
+  ctx.clearRect(0, 0, W, H);
+
+  // Header strip
+  ctx.fillStyle = '#8f8';
+  ctx.font = 'bold 11px ui-monospace, monospace';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.fillText('● X-RAY  (live body overlay)', 8, 6);
+  ctx.fillStyle = '#9c9';
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillText(`${neuronBodyCoords.n_neurons} neurons mapped to wormbody`, 8, 19);
+  ctx.fillStyle = '#9c9';
+  ctx.textAlign = 'right';
+  ctx.fillText("'x' graph · 'l' labels" + (xrayLabelsVisible ? ' ✓' : ''), W - 8, 19);
+  ctx.textAlign = 'left';
+
+  _drawNeuronLegend(W, 36);
+
+  const HEADER_H = 50;
+  const fit = _fitMidlineToPanel(latestMidline, W, H - HEADER_H, HEADER_H);
+  if (!fit) return;
+  const points = fit.points;
+
+  // ── Body outline (two parallel curves) ──
+  const samples = 80;
+  const top = [], bot = [];
+  for (let i = 0; i <= samples; i++) {
+    const a = i / samples;
+    const m = _midlineSampleAt(points, a);
+    if (!m) continue;
+    const r = _bodyHalfWidthAt(a);
+    top.push([m.x + m.nx * r, m.y + m.ny * r]);
+    bot.push([m.x - m.nx * r, m.y - m.ny * r]);
+  }
+
+  // Filled body, soft outline
+  ctx.fillStyle = 'rgba(40, 80, 60, 0.35)';
+  ctx.strokeStyle = 'rgba(120, 220, 170, 0.55)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(top[0][0], top[0][1]);
+  for (let i = 1; i < top.length; i++) ctx.lineTo(top[i][0], top[i][1]);
+  for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i][0], bot[i][1]);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Midline (faint)
+  ctx.strokeStyle = 'rgba(100, 200, 255, 0.18)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < points.length; i++) {
+    if (i === 0) ctx.moveTo(points[i][0], points[i][1]);
+    else ctx.lineTo(points[i][0], points[i][1]);
+  }
+  ctx.stroke();
+
+  // Head dot for orientation
+  const head = points[0];
+  ctx.fillStyle = 'rgba(255, 230, 150, 0.6)';
+  ctx.beginPath();
+  ctx.arc(head[0], head[1], 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── Neurons ──
+  const fireThr = graph.fireThreshold || 30;
+  // graph.{chemo,motor,muscle,sensory}Set hold INTEGER indices into
+  // graph.neurons. Build name-keyed sets once and stash on `graph` for
+  // future frames.
+  if (!graph._chemoNames) {
+    const namesByIdx = graph.neurons;
+    const mk = (s) => new Set([...s].map(i => namesByIdx[i]));
+    graph._chemoNames = mk(graph.chemosensorySet);
+    graph._motorNames = mk(graph.motorSet);
+    graph._muscleNames = mk(graph.muscleSet);
+    graph._sensoryNames = mk(graph.sensorySet);
+  }
+  const chemoSet = graph._chemoNames;
+  const motorSet = graph._motorNames;
+  const muscleSet = graph._muscleNames;
+  const sensorySet = graph._sensoryNames;
+
+  // Two passes: first faint-all, then bright firing on top.
+  const nbody = neuronBodyCoords.neurons;
+  for (const [name, anatomy] of Object.entries(nbody)) {
+    const m = _midlineSampleAt(points, anatomy.axial);
+    if (!m) continue;
+    const halfW = _bodyHalfWidthAt(anatomy.axial);
+    // lateral∈[-1,+1] already maps the OpenWorm position range to a unit
+    // half-width; 0.85 keeps even the most-lateral neurons safely inside
+    // the body silhouette.
+    const off = anatomy.lateral * halfW * 0.85;
+    const nx = m.x + m.nx * off;
+    const ny = m.y + m.ny * off;
+
+    const charge = neuronActivity[name] || 0;
+    const firing = charge > fireThr;
+
+    // Base color by neuron class.
+    let baseHue = 210, baseAlpha = 0.18, dotR = 1.6;
+    if (chemoSet && chemoSet.has(name))      { baseHue = 195; baseAlpha = 0.35; dotR = 2.0; }
+    else if (sensorySet && sensorySet.has(name)) { baseHue = 220; baseAlpha = 0.25; dotR = 1.8; }
+    else if (motorSet && motorSet.has(name)) { baseHue = 28;  baseAlpha = 0.25; dotR = 1.8; }
+    else if (muscleSet && muscleSet.has(name)) continue; // muscles handled by main worm, skip
+
+    ctx.fillStyle = `hsla(${baseHue}, 70%, 75%, ${baseAlpha})`;
+    ctx.beginPath();
+    ctx.arc(nx, ny, dotR, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (firing) {
+      // Glow + bright dot when firing
+      const glowR = dotR + Math.min(7, charge / 12);
+      const grd = ctx.createRadialGradient(nx, ny, 0.5, nx, ny, glowR);
+      grd.addColorStop(0, `hsla(${baseHue}, 95%, 75%, 0.95)`);
+      grd.addColorStop(1, `hsla(${baseHue}, 95%, 60%, 0)`);
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(nx, ny, glowR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `hsla(${baseHue}, 100%, 88%, 1)`;
+      ctx.beginPath();
+      ctx.arc(nx, ny, dotR + 0.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Optional name label (toggled by 'l'). Slight offset perpendicular
+    // to the local body axis on whichever side the neuron sits, so the
+    // text floats off-body and doesn't overlap the dot/silhouette.
+    if (xrayLabelsVisible) {
+      const labelOffset = (anatomy.lateral >= 0 ? 1 : -1) * 6;
+      const lx = nx + m.nx * labelOffset;
+      const ly = ny + m.ny * labelOffset;
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = anatomy.lateral >= 0 ? 'left' : 'right';
+      // Slightly more legible when firing.
+      ctx.fillStyle = firing
+        ? `hsla(${baseHue}, 100%, 92%, 0.95)`
+        : `hsla(${baseHue}, 60%, 80%, 0.55)`;
+      ctx.fillText(name, lx, ly);
+    }
+  }
+  // Reset text alignment for downstream drawing.
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+}
+
 function drawNetCanvas() {
   if (!graph || !netVisible) return;
   const { neurons, fireThreshold, muscleSet, sensorySet, chemosensorySet,
@@ -998,29 +1585,23 @@ function drawNetCanvas() {
 
   ctx.clearRect(0, 0, NET_W, NET_H);
 
-  // ── Legend ──────────────────────────────────────────────────────────────
-  const LX = 8, LY = 14, SPC = 82;
-  ctx.font = '8px ui-monospace,monospace';
-  const legendItems = [
-    { color: 'rgba(40,200,255,0.85)',  label: 'chemosensory' },
-    { color: 'rgba(100,160,255,0.7)',  label: 'sensory' },
-    { color: 'rgba(255,150,40,0.85)',  label: 'motor' },
-    { color: 'rgba(68,255,119,0.85)',  label: 'interneuron' },
-    { color: 'rgba(255,220,40,0.85)',  label: 'muscle' },
-    { color: '#44ff77',                label: 'firing' },
-  ];
-  legendItems.forEach(({color, label}, i) => {
-    const x = LX + i * SPC;
-    ctx.beginPath();
-    ctx.arc(x + 5, LY, 4, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.fillStyle = 'rgba(68,255,119,0.6)';
-    ctx.fillText(label, x + 12, LY + 3);
-  });
+  // ── Header ──────────────────────────────────────────────────────────────
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#8f8';
+  ctx.font = 'bold 11px ui-monospace, monospace';
+  ctx.fillText('● NEURAL GRAPH (anatomical layout)', 8, 6);
+  ctx.fillStyle = '#9c9';
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText("'x' to flip to x-ray view", NET_W - 8, 19);
+  ctx.textAlign = 'left';
+
+  _drawNeuronLegend(NET_W, 36);
 
   ctx.fillStyle = 'rgba(68,255,119,0.35)';
-  ctx.fillText('[n] toggle panel  [m] motor labels' + (motorLabelsVisible ? '  ✓' : ''), LX, LY + 18);
+  ctx.font = '8px ui-monospace,monospace';
+  ctx.fillText('[n] toggle panel  [m] motor labels' + (motorLabelsVisible ? '  ✓' : ''), 8, 48);
 
   ctx.fillStyle = 'rgba(68,255,119,0.2)';
   ctx.fillText('← head', PAD, LEGEND_H - 2);
@@ -1177,7 +1758,80 @@ function render() {
   bodyMaterial.uniforms.uTime.value = t;
   organMaterial.uniforms.uTime.value = t;
   composer.render();
-  drawNetCanvas();
+  if (netVisible) {
+    if (xrayMode) drawXRayCanvas();
+    else drawNetCanvas();
+  }
   drawTextCanvas();
 }
 render();
+
+// --- Generation rollover overlay ---
+// Same banner as the overview page; shows while the sim is frozen for
+// end-of-generation processing (LLM scoring, NES update, git commit).
+(function setupGenOverlay() {
+  const style = document.createElement('style');
+  style.textContent = `
+    #gen-overlay {
+      position: fixed; inset: 0; display: none;
+      background: rgba(0, 0, 0, 0.78); z-index: 9999;
+      align-items: center; justify-content: center;
+      font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #6f9;
+    }
+    #gen-overlay.visible { display: flex; }
+    #gen-overlay .panel {
+      min-width: 360px; max-width: 560px; padding: 22px 28px;
+      background: rgba(0, 20, 10, 0.92);
+      border: 1px solid rgba(100, 255, 200, 0.4);
+      border-radius: 6px;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+    }
+    #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: #6f9; }
+    #gen-overlay .phase { margin-bottom: 12px; color: #cfd; font-size: 13px; }
+    #gen-overlay .bar { height: 6px; background: rgba(100, 255, 200, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+    #gen-overlay .bar > div { height: 100%; background: #6f9; transition: width 250ms ease; }
+    #gen-overlay .meta { color: #5a5; font-size: 11px; margin-top: 8px; }
+    #gen-overlay .err { color: #f88; margin-top: 10px; font-size: 12px; }
+  `;
+  document.head.appendChild(style);
+  const overlay = document.createElement('div');
+  overlay.id = 'gen-overlay';
+  overlay.innerHTML =
+    `<div class="panel"><h2>generation rollover</h2>` +
+    `<div class="phase">…</div>` +
+    `<div class="bar"><div style="width:0%"></div></div>` +
+    `<div class="meta"></div><div class="err"></div></div>`;
+  document.body.appendChild(overlay);
+  const $phase = overlay.querySelector('.phase');
+  const $bar = overlay.querySelector('.bar > div');
+  const $meta = overlay.querySelector('.meta');
+  const $err = overlay.querySelector('.err');
+  const PHASE_LABELS = {
+    running: 'simulation running',
+    corpus_draining: 'last words drifting off-screen…',
+    judging: 'LLM is reading the poems',
+    evolving: 'computing NES gradient',
+    committing: 'committing generation to git',
+    respawning: 'spawning next generation',
+  };
+  async function tick() {
+    try {
+      const res = await fetch('/api/generation_status');
+      if (!res.ok) return;
+      const s = await res.json();
+      const active = s.enabled && s.phase && s.phase !== 'running';
+      overlay.classList.toggle('visible', active);
+      if (!active) return;
+      $phase.textContent = PHASE_LABELS[s.phase] || s.phase;
+      const pct = s.worms_total > 0 ? Math.round(100 * s.worms_done / s.worms_total) : 0;
+      $bar.style.width = (s.phase === 'judging' ? pct : 100) + '%';
+      $meta.textContent =
+        `generation ${s.generation} · group ${s.group || '—'} · ` +
+        `${s.worms_done}/${s.worms_total} worms scored · ${s.elapsed_s}s elapsed`;
+      $err.textContent = s.error || '';
+    } catch (_e) {}
+  }
+  setInterval(tick, 500);
+  tick();
+})();

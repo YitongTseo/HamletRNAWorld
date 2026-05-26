@@ -26,14 +26,27 @@ class WordState:
 
 
 class TextScroller:
-    def __init__(self, sentences: list[list[str]]):
+    def __init__(self, sentences: list[list[str]], loop: bool = True):
+        """If loop=False, stop spawning new lines after one full pass; the
+        `corpus_exhausted` property goes True once the last line has scrolled
+        off the screen. Generation mode passes loop=False."""
         self.sentences = sentences
+        self.loop = loop
         self._sent_idx = 0
         self._line_id = 0
-        self._active: list[list[WordState]] = []   # list of lines (each = list of words)
-        self._dead: set[tuple[int, int]] = set()   # (line_id, word_idx) eaten by worm
+        self._active: list[list[WordState]] = []
+        self._dead: set[tuple[int, int]] = set()
         self._elapsed = 0.0
         self._next_spawn = 0.0
+
+    @property
+    def corpus_exhausted(self) -> bool:
+        """True once all sentences have been spawned AND all spawned lines
+        have either been eaten through or scrolled off the top. Only ever
+        True in one-pass mode (loop=False)."""
+        return (not self.loop
+                and self._sent_idx >= len(self.sentences)
+                and not self._active)
 
     def step(self, dt: float) -> None:
         """Advance time, scroll words upward, spawn new lines, remove off-screen lines."""
@@ -50,14 +63,20 @@ class TextScroller:
             if any(w.y > KILL_Y for w in line)
         ]
 
-        # Spawn next line if it's time
+        # Spawn next line if it's time and we have more to spawn
         if self._elapsed >= self._next_spawn:
-            self._spawn()
+            if self.loop or self._sent_idx < len(self.sentences):
+                self._spawn()
             self._next_spawn = self._elapsed + SPAWN_INTERVAL
 
     def _spawn(self) -> None:
         """Create a new line of words from the next sentence."""
-        tokens = self.sentences[self._sent_idx % len(self.sentences)]
+        if self.loop:
+            tokens = self.sentences[self._sent_idx % len(self.sentences)]
+        else:
+            if self._sent_idx >= len(self.sentences):
+                return  # nothing left; corpus_exhausted will go True after last line scrolls off
+            tokens = self.sentences[self._sent_idx]
         self._sent_idx += 1
         lid = self._line_id
         self._line_id += 1

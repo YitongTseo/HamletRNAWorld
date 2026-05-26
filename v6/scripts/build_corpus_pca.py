@@ -31,6 +31,14 @@ OUT = V6_ROOT / "cache" / "corpus_pca.json"
 
 N_PCS = 12
 
+# Softmax temperature for the sparse per-word PC distribution.
+# After PCA + min-max shift, every word has non-zero values across all 12
+# dims, so summing multiple in-range words saturates the chemosensory
+# bars. Softmax(β × pca12) redistributes each word's contribution so it
+# sums to 1 and concentrates on the word's "signature" PCs. β=5 gives
+# clear spikiness (top PC gets ~10× the median) without going single-PC.
+SOFTMAX_BETA = 5.0
+
 # Gutenberg envelopes its texts with header/footer banners. Extract only
 # what's between the START/END markers — anything else (license, blurb)
 # would skew the embeddings toward modern English.
@@ -128,6 +136,36 @@ def main():
     # Also compute a 2D PCA for the visualizer hover scatter.
     coords2, _, _ = pca_with_shift(vecs, 2)
 
+    # Softmax each word's 12-d shifted PCA so its contribution concentrates
+    # on its characteristic PCs and the per-word distribution sums to 1.
+    # See SOFTMAX_BETA comment for rationale.
+    ex = np.exp(SOFTMAX_BETA * coords12)
+    coords12_sparse = ex / ex.sum(axis=1, keepdims=True)
+    print(f"Softmax sparsified with β={SOFTMAX_BETA}; per-word peak/median ratios:")
+    peaks = coords12_sparse.max(axis=1)
+    meds = np.median(coords12_sparse, axis=1)
+    ratios = peaks / np.maximum(meds, 1e-9)
+    print(f"  peak/median: median={np.median(ratios):.2f}x  p10={np.percentile(ratios,10):.2f}x  p90={np.percentile(ratios,90):.2f}x")
+
+    # Precompute per-word NRC emotion vectors so the viewer's radar-chart
+    # panel doesn't have to keep the table around at runtime. Most words
+    # have no emotional content and end up as all-zeros — fine; storing
+    # zeros costs almost nothing in compressed JSON.
+    print("Looking up NRC emotion vectors per word...")
+    sys.path.insert(0, str(V6_ROOT))
+    from corpus.nrc_emotions import get_emotion_vector
+    EMOTION_KEYS = ["joy", "trust", "anticipation", "surprise",
+                    "fear", "disgust", "sadness", "anger"]
+    emotion_rows = []
+    n_with_emotion = 0
+    for w in words:
+        ev = get_emotion_vector(w)
+        row = [round(float(ev.get(k, 0.0)), 3) for k in EMOTION_KEYS]
+        if any(v > 0 for v in row):
+            n_with_emotion += 1
+        emotion_rows.append(row)
+    print(f"  {n_with_emotion}/{len(words)} words have non-zero NRC emotion content")
+
     payload = {
         "model": "nomic-ai/nomic-embed-text-v1.5",
         "prefix": "clustering:",
@@ -137,7 +175,11 @@ def main():
         "explained_total_12d": round(float(explained12.sum()), 4),
         "words": words,                                 # ordered list of word types
         "pca12": [[round(float(x), 4) for x in row] for row in coords12],
+        "pca12_sparse": [[round(float(x), 4) for x in row] for row in coords12_sparse],
+        "softmax_beta": SOFTMAX_BETA,
         "pca2": [[round(float(x), 4) for x in row] for row in coords2],
+        "emotion_keys": EMOTION_KEYS,
+        "emotions": emotion_rows,                       # (N, 8) parallel to `words`
     }
     OUT.write_text(json.dumps(payload))
     print(f"Saved {OUT} ({OUT.stat().st_size // 1024} KB)")

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,32 +46,53 @@ FOOD_EAT_RADIUS = 20.0
 STIM_LINGER_TICKS = int(2.0 * BODY_TICK_HZ)  # 2 seconds
 
 # Residual decay for the eaten-word chemosensory afterglow. Measured in
-# BRAIN ticks (not body ticks). With τ=10 brain ticks @ 2 Hz, a word's
-# residual halves every ~7 sec and falls below the 1% eviction floor at
-# ~46 brain ticks ≈ 23 seconds — the upper end of the C. elegans
-# short-term chemosensory memory window.
-RESIDUAL_TAU_BRAIN_TICKS = 10.0
+# BRAIN ticks (not body ticks). With τ=12 brain ticks @ 2 Hz, a word's
+# residual half-life is ~4.2 sec and falls below the 1% eviction floor
+# at ~55 brain ticks ≈ 28 sec — within the C. elegans short-term
+# chemosensory memory window.
+RESIDUAL_TAU_BRAIN_TICKS = 12.0
 RESIDUAL_EVICT_THRESHOLD = 0.01
 
-# Path to the precomputed corpus PCA (built once by scripts/build_corpus_pca.py).
-_CORPUS_PCA_PATH = Path(__file__).resolve().parent.parent / "cache" / "corpus_pca.json"
+# Chemosensory drive source. Either PCA or UMAP over the full Hamlet
+# embedding corpus produces a 12-d vector per word; PC_NEURON_PAIRS maps
+# dim i → its amphid neuron pair regardless of which produced it.
+# Set WORMLET_EMBEDDING=pca to revert to the linear projection.
+_V6_ROOT = Path(__file__).resolve().parent.parent
+_CORPUS_PCA_PATH = _V6_ROOT / "cache" / "corpus_pca.json"
+_CORPUS_UMAP_PATH = _V6_ROOT / "cache" / "corpus_umap.json"
+EMBEDDING_MODE = os.environ.get("WORMLET_EMBEDDING", "umap").lower()
 _CORPUS_PCA_CACHE: dict | None = None
 
 
 def _load_corpus_pca() -> dict[str, list[float]]:
-    """Return {lowercased_word: [pc0..pc11]} from the on-disk PCA build.
-    Loads once per process and shares across all worms."""
+    """Return {lowercased_word: [d0..d11]} for chemosensory drive.
+
+    Source is selected by the WORMLET_EMBEDDING env var:
+      - 'umap' (default): cache/corpus_umap.json, key umap12_sparse/umap12
+      - 'pca'           : cache/corpus_pca.json,  key pca12_sparse/pca12
+
+    Function name retained for backward compat; the cache shape is identical
+    either way. Loads once per process and shared across all worms."""
     global _CORPUS_PCA_CACHE
-    if _CORPUS_PCA_CACHE is None:
-        if not _CORPUS_PCA_PATH.exists():
-            # Fall back to empty map; chemosensation will be silent. The
-            # smoke test runs without the artifact and shouldn't crash.
-            _CORPUS_PCA_CACHE = {}
-        else:
-            data = json.loads(_CORPUS_PCA_PATH.read_text())
-            words = data["words"]
-            pca = data["pca12"]
-            _CORPUS_PCA_CACHE = {w: v for w, v in zip(words, pca)}
+    if _CORPUS_PCA_CACHE is not None:
+        return _CORPUS_PCA_CACHE
+
+    if EMBEDDING_MODE == "umap":
+        path = _CORPUS_UMAP_PATH
+        sparse_key, raw_key = "umap12_sparse", "umap12"
+    else:
+        path = _CORPUS_PCA_PATH
+        sparse_key, raw_key = "pca12_sparse", "pca12"
+
+    if not path.exists():
+        # Fall back to empty map; chemosensation goes silent. Smoke tests
+        # run without the artifact and shouldn't crash.
+        _CORPUS_PCA_CACHE = {}
+    else:
+        data = json.loads(path.read_text())
+        words = data["words"]
+        vecs = data.get(sparse_key) or data[raw_key]
+        _CORPUS_PCA_CACHE = {w: v for w, v in zip(words, vecs)}
     return _CORPUS_PCA_CACHE
 
 
@@ -151,7 +173,12 @@ class World:
         else:
             raise ValueError(f"unknown body_kind: {self.body_kind!r}")
         self.brain.rand_excite()
-        self.text_scroller = TextScroller(get_sentences())
+        # When generational evolution is enabled, scroll the full play once
+        # per generation; otherwise loop the opening passage forever (legacy
+        # v6 behavior).
+        passage = os.environ.get("WORMLET_PASSAGE", "opening")
+        loop = os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") != "1"
+        self.text_scroller = TextScroller(get_sentences(passage), loop=loop)
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))

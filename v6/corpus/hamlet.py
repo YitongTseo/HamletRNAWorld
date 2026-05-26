@@ -4,10 +4,15 @@ The text below is the very opening of Hamlet (Act 1 Scene 1), which gives a
 short, dramatic, well-known starting passage. Each sentence becomes one
 "strand" in the simulation: extruded into the scene through the same vent,
 folding by embedding affinity once it's out.
+
+For the full play, use get_sentences(passage="full") which reads the entire
+Gutenberg edition (~5200 lines). One full pass at the default scroll rate
+takes ~6 hours and defines one generation in the evolution scheme.
 """
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Iterable
 
 # Opening of Hamlet, Act 1 Scene 1. Keep this as a list of strings; one per
@@ -82,6 +87,32 @@ _PASSAGES = {
     "soliloquy": TO_BE_SOLILOQUY,
 }
 
+# The full play lives in the Gutenberg dump. Loaded lazily because it's ~200KB
+# and most callers only want the small opening passage. Curly typographic
+# quotes get normalized to straight ASCII so the tokenizer regex below matches
+# contractions like "appear'd".
+_GUTENBERG_PATH = Path(__file__).resolve().parent / "hamlet_gutenberg.txt"
+_GUTENBERG_START_RE = re.compile(r"\*\*\* START OF THE PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
+_GUTENBERG_END_RE = re.compile(r"\*\*\* END OF THE PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
+_FULL_PLAY_CACHE: list[str] | None = None
+
+
+def _load_full_play() -> list[str]:
+    """Return the full play as a list of raw line strings (one per line of
+    dialogue/stage direction in the Gutenberg edition). Empty lines stripped."""
+    global _FULL_PLAY_CACHE
+    if _FULL_PLAY_CACHE is not None:
+        return _FULL_PLAY_CACHE
+    raw = _GUTENBERG_PATH.read_text(encoding="utf-8")
+    start = _GUTENBERG_START_RE.search(raw)
+    end = _GUTENBERG_END_RE.search(raw)
+    body = raw[start.end():end.start()] if (start and end) else raw
+    # Normalize curly quotes → straight so contractions like "appear'd" tokenize.
+    body = body.replace("’", "'").replace("‘", "'")
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    _FULL_PLAY_CACHE = lines
+    return lines
+
 
 # Filler / non-reactive tokens. These pass through the simulation as inert
 # beads — they have positions, get pushed around by the chain, but never
@@ -121,11 +152,17 @@ def tokenize(sentence: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(sentence) if t.strip()]
 
 
+def _get_raw_passage(passage: str) -> list[str]:
+    if passage == "full":
+        return _load_full_play()
+    if passage in _PASSAGES:
+        return _PASSAGES[passage]
+    raise ValueError(f"unknown passage {passage!r}; pick from {list(_PASSAGES) + ['full']}")
+
+
 def get_sentences(passage: str = "opening", n: int | None = None) -> list[list[str]]:
     """Return tokenized sentences from the chosen passage."""
-    if passage not in _PASSAGES:
-        raise ValueError(f"unknown passage {passage!r}; pick from {list(_PASSAGES)}")
-    raw = _PASSAGES[passage]
+    raw = _get_raw_passage(passage)
     if n is not None:
         raw = raw[:n]
     return [tokenize(s) for s in raw]
@@ -137,9 +174,7 @@ def get_raw_and_tokens(
     """Return (raw_sentence_strings, tokenized_sentences) — letter-level work
     needs both the original surface form (for rendering) and the tokens (for
     embeddings)."""
-    if passage not in _PASSAGES:
-        raise ValueError(f"unknown passage {passage!r}; pick from {list(_PASSAGES)}")
-    raw = _PASSAGES[passage]
+    raw = _get_raw_passage(passage)
     if n is not None:
         raw = raw[:n]
     return list(raw), [tokenize(s) for s in raw]

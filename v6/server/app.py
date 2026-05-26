@@ -14,11 +14,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import secrets
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+LOG = logging.getLogger("wormlet")
+if not LOG.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    LOG.addHandler(_h)
+    LOG.setLevel(logging.INFO)
+    LOG.propagate = False
 
 from fastapi import (
     Depends, FastAPI, Header, HTTPException, Request, WebSocket,
@@ -32,8 +45,17 @@ from sim.connectome import (
     SENSORY_NEURONS, CHEMOSENSORY_NEURONS, MOTOR_NEURONS,
 )
 from corpus.hamlet import get_sentences
+from sim.world import World
 
-from server.orchestrator import load_worms, drain_and_persist, reset_worm, Worm
+from server.orchestrator import (
+    load_worms, load_flasks, drain_and_persist, reset_worm, Worm,
+)
+from server.worm_group import WormGroup
+from server import generations as gens_mod
+from server.generations import (
+    GenerationProgress, GenerationState, run_generation_rollover,
+    PHASE_RUNNING, PHASE_CORPUS_DRAINING,
+)
 
 V6_ROOT = Path(__file__).resolve().parent.parent
 VIEWER_DIR = V6_ROOT / "viewer"
@@ -43,11 +65,42 @@ TICK_DT = 1.0 / TICK_HZ
 OVERVIEW_EVERY = 6  # 60/6 = 10 Hz overview broadcasts
 
 # Process-wide state, populated in lifespan().
+# When generations are enabled, FLASKS holds the 4 WormGroup containers and
+# WORMS is a flattened view across all flasks (for convenience). When
+# disabled, FLASKS is empty and WORMS is the legacy single-group lineup.
+FLASKS: list[WormGroup] = []
 WORMS: list[Worm] = []
-WORM_BY_NAME: dict[str, Worm] = {}
+WORM_BY_KEY: dict[tuple[str, str], Worm] = {}  # (flask_name, worm_name) → Worm
 OVERVIEW_CLIENTS: set[WebSocket] = set()
+# Focus subscribers keyed by "flask/worm" so different flasks' Alices don't collide.
 FOCUS_CLIENTS: dict[str, set[WebSocket]] = {}
 POEM_CLIENTS: set[WebSocket] = set()
+
+_STARTED_AT: float = time.monotonic()
+_LAST_TICK_AT: float = time.monotonic()  # updated each sim_loop iteration; read by /healthz
+
+# Generational evolution state. Off by default for backward compat — set
+# WORMLET_GENERATIONS_ENABLED=1 in /home/web/.wormlet.env to turn it on.
+GENERATIONS_ENABLED: bool = os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") == "1"
+N_FLASKS: int = int(os.environ.get("WORMLET_N_FLASKS", "4"))
+N_WORMS_PER_FLASK: int = int(os.environ.get("WORMLET_N_WORMS_PER_FLASK", "10"))
+GENERATION_PROGRESS = GenerationProgress()
+GENERATION_GRACE_S = 3.0           # seconds after corpus exhausts before scoring fires
+
+
+def _focus_key(flask: str, worm: str) -> str:
+    return f"{flask}/{worm}"
+
+
+def _find_worm(flask: str, worm: str) -> Worm | None:
+    return WORM_BY_KEY.get((flask, worm))
+
+
+def _find_flask(name: str) -> WormGroup | None:
+    for f in FLASKS:
+        if f.name == name:
+            return f
+    return None
 
 
 def _ensure_debug_secret() -> str:
@@ -88,27 +141,53 @@ def _compact_midline(midline: list[tuple[float, float]], n: int = 24) -> list[li
     return out
 
 
+def _worm_overview_dict(w: Worm, flask_name: str) -> dict:
+    return {
+        "flask": flask_name,
+        "name": w.name,
+        "head": [round(w.world.worm.target_x, 1),
+                 round(w.world.worm.target_y, 1)],
+        "facing": round(w.world.worm.facing_dir, 3),
+        "midline": _compact_midline(w.world.worm.midline()),
+        "food": [
+            {"x": round(f.x, 1), "y": round(f.y, 1), "word": f.word}
+            for f in w.world.food
+        ],
+        "word_count": w.word_count,
+        "recent_words": w.recent_words[-3:],
+        "paused": w.world.paused,
+    }
+
+
 def _overview_payload() -> dict:
+    """When generations are enabled, broadcast the per-flask structure so
+    the frontend can render 4 sections side by side. In legacy mode, wrap
+    the single worm list as a single 'default' flask so the frontend
+    contract stays the same."""
+    tick = WORMS[0].world.tick_count if WORMS else 0
+    if FLASKS:
+        return {
+            "type": "overview",
+            "tick": tick,
+            "flasks": [
+                {
+                    "name": f.name,
+                    "display": f.display,
+                    "generation": f.state.generation if f.state else 0,
+                    "worms": [_worm_overview_dict(w, f.name) for w in f.worms],
+                }
+                for f in FLASKS
+            ],
+        }
     return {
         "type": "overview",
-        "tick": WORMS[0].world.tick_count if WORMS else 0,
-        "worms": [
-            {
-                "name": w.name,
-                "head": [round(w.world.worm.target_x, 1),
-                         round(w.world.worm.target_y, 1)],
-                "facing": round(w.world.worm.facing_dir, 3),
-                "midline": _compact_midline(w.world.worm.midline()),
-                "food": [
-                    {"x": round(f.x, 1), "y": round(f.y, 1), "word": f.word}
-                    for f in w.world.food
-                ],
-                "word_count": w.word_count,
-                "recent_words": w.recent_words[-3:],
-                "paused": w.world.paused,
-            }
-            for w in WORMS
-        ],
+        "tick": tick,
+        "flasks": [{
+            "name": "default",
+            "display": "Worms",
+            "generation": 0,
+            "worms": [_worm_overview_dict(w, "default") for w in WORMS],
+        }],
     }
 
 
@@ -155,55 +234,229 @@ def _build_snapshot(worm: Worm) -> dict:
     }
 
 
-def _focus_payload(worm: Worm) -> dict:
+def _focus_payload(worm: Worm, flask_name: str = "default") -> dict:
     snap = _build_snapshot(worm)
     snap["type"] = "state"
     snap["name"] = worm.name
+    snap["flask"] = flask_name
     snap["word_count"] = worm.word_count
     return snap
+
+
+_BROADCAST_SEND_TIMEOUT = 1.0  # seconds; per-client cap so one slow consumer can't stall sim_loop
 
 
 async def _broadcast(clients: set[WebSocket], payload: dict) -> None:
     if not clients:
         return
     msg = json.dumps(payload)
-    dead = []
-    for ws in clients:
+
+    async def _send(ws: WebSocket):
         try:
-            await ws.send_text(msg)
+            await asyncio.wait_for(ws.send_text(msg), timeout=_BROADCAST_SEND_TIMEOUT)
+            return None
         except Exception:
-            dead.append(ws)
-    for ws in dead:
-        clients.discard(ws)
+            return ws
+
+    snapshot = list(clients)
+    results = await asyncio.gather(*(_send(ws) for ws in snapshot), return_exceptions=True)
+    for r in results:
+        if isinstance(r, WebSocket):
+            clients.discard(r)
+
+
+def _atomic_write_json(path, payload) -> None:
+    """Write JSON to `path` via temp-file + rename so a mid-write crash
+    leaves either the OLD or the NEW content on disk, never a partial.
+    POSIX rename is atomic on the same filesystem."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(path)
+
+
+def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
+    """Install new per-worm weights into a flask and reset its poem state.
+    Caller has already persisted artifacts to disk for the previous gen."""
+    for w in flask.worms:
+        wt = new_weights.get(w.name)
+        if wt is None:
+            continue
+        _atomic_write_json(w.poem_path.parent / "weights.json", wt)
+        try:
+            w.poem_file.close()
+        except Exception:
+            pass
+        w.world = World(seed=w.seed, weights=wt)
+        w.poem_path.write_text("")  # truncate previous-generation poem
+        w.poem_file = open(w.poem_path, "a", buffering=1)
+        w.word_count = 0
+        w.recent_words = []
+    flask.corpus_exhausted_at = None
+
+
+def _generation_keepalive() -> None:
+    """Bump _LAST_TICK_AT so the tick watchdog doesn't fire while sim_loop
+    is paused for scoring."""
+    global _LAST_TICK_AT
+    _LAST_TICK_AT = time.monotonic()
+
+
+def _run_all_flask_rollovers_sync() -> None:
+    """Synchronously roll over every flask, then call the meta-gardener.
+    Runs in a worker thread (via asyncio.to_thread) so the event loop
+    stays responsive. Each flask's run_generation_rollover updates the
+    shared GENERATION_PROGRESS in place — the frontend overlay reflects
+    whichever flask is currently being processed."""
+    from server.gardener import maybe_write_meta_log
+
+    new_weights_by_flask: dict[str, dict] = {}
+    per_flask_scoring: dict[str, dict] = {}
+
+    for flask in FLASKS:
+        LOG.info("rollover starting for %s gen=%d",
+                 flask.name, (flask.state.generation if flask.state else 0) + 1)
+        try:
+            # run_generation_rollover handles judging + NES + per-worm
+            # artifact writing + (optionally) git commit for this flask.
+            new_weights = run_generation_rollover(
+                flask.worms, flask.state, GENERATION_PROGRESS, _generation_keepalive,
+                run_gardener=False,  # meta-gardener fires once after all flasks
+            )
+            new_weights_by_flask[flask.name] = new_weights
+            per_flask_scoring[flask.name] = {
+                "best_score": (flask.state.best_score_history[-1]
+                               if flask.state.best_score_history else 0.0),
+                "generation": flask.state.generation,
+            }
+        except Exception:
+            LOG.exception("flask %s rollover raised; continuing", flask.name)
+
+    # Meta-gardener observes all flasks at once and writes one log per
+    # epoch (after all 4 flasks have rolled over).
+    try:
+        epoch_num = max((f.state.generation if f.state else 0) for f in FLASKS) if FLASKS else 0
+        log_path = maybe_write_meta_log(
+            flasks=FLASKS,
+            generation_num=epoch_num,
+            keepalive=_generation_keepalive,
+        )
+        if log_path:
+            LOG.info("meta-gardener wrote %s", log_path)
+        else:
+            LOG.info("meta-gardener PASSed or was skipped")
+    except Exception:
+        LOG.exception("meta-gardener raised; continuing without log")
+
+    # Install new weights into each flask only after all rollovers + the
+    # meta-gardener have completed. Doing this in a separate pass keeps
+    # the per-flask poem.txt files intact until the gardener has read them.
+    GENERATION_PROGRESS.phase = gens_mod.PHASE_RESPAWNING
+    for flask in FLASKS:
+        new_weights = new_weights_by_flask.get(flask.name)
+        if new_weights:
+            _respawn_flask(flask, new_weights)
+
+
+async def _trigger_generation_rollover() -> None:
+    """Drive one end-of-generation cycle across all flasks. Runs the
+    synchronous heavy lifting in a thread so the event loop stays
+    responsive for /healthz and the progress overlay."""
+    LOG.info("starting epoch rollover (%d flasks)", len(FLASKS))
+    try:
+        await asyncio.to_thread(_run_all_flask_rollovers_sync)
+        LOG.info("epoch rollover complete")
+    except Exception as e:
+        LOG.exception("epoch rollover failed")
+        GENERATION_PROGRESS.error = str(e)
+    finally:
+        GENERATION_PROGRESS.phase = PHASE_RUNNING
+        _generation_keepalive()
+
+
+def _iter_flask_worms():
+    """Yield (flask_name, worm) for every worm in every flask. In legacy
+    single-group mode, FLASKS is empty and we yield ('default', w) for
+    every worm in WORMS instead."""
+    if FLASKS:
+        for f in FLASKS:
+            for w in f.worms:
+                yield f.name, w
+    else:
+        for w in WORMS:
+            yield "default", w
 
 
 async def sim_loop():
     """Tick all worms at 60 Hz; broadcast overview at 10 Hz, focus at 60 Hz."""
+    global _LAST_TICK_AT
     next_t = time.monotonic()
     overview_counter = 0
+    epoch_exhausted_at: float | None = None
     while True:
-        for worm in WORMS:
-            worm.world.tick()
-            for word in drain_and_persist(worm):
-                await _broadcast(POEM_CLIENTS, {
-                    "type": "eaten", "worm": worm.name,
-                    "word": word, "word_count": worm.word_count,
-                })
+        # If a rollover is in progress, skip ticking entirely — the rollover
+        # path keeps the watchdog alive via _generation_keepalive.
+        if GENERATION_PROGRESS.phase not in (PHASE_RUNNING, PHASE_CORPUS_DRAINING):
+            await asyncio.sleep(0.25)
+            continue
 
-        # Focus broadcasts every tick for any worm with subscribers.
-        for name, clients in list(FOCUS_CLIENTS.items()):
-            if not clients:
-                continue
-            w = WORM_BY_NAME.get(name)
-            if w is None:
-                continue
-            await _broadcast(clients, _focus_payload(w))
+        try:
+            for flask_name, worm in _iter_flask_worms():
+                try:
+                    worm.world.tick()
+                    for word in drain_and_persist(worm):
+                        await _broadcast(POEM_CLIENTS, {
+                            "type": "eaten",
+                            "flask": flask_name,
+                            "worm": worm.name,
+                            "word": word,
+                            "word_count": worm.word_count,
+                        })
+                except Exception:
+                    LOG.exception("worm %s/%s tick failed; continuing", flask_name, worm.name)
 
-        overview_counter += 1
-        if overview_counter >= OVERVIEW_EVERY:
-            overview_counter = 0
-            if OVERVIEW_CLIENTS:
-                await _broadcast(OVERVIEW_CLIENTS, _overview_payload())
+            _LAST_TICK_AT = time.monotonic()
+
+            # Focus broadcasts every tick for any (flask, worm) with subscribers.
+            for key, clients in list(FOCUS_CLIENTS.items()):
+                if not clients:
+                    continue
+                # key shape: "flask_name/worm_name"
+                if "/" in key:
+                    flask_name, worm_name = key.split("/", 1)
+                else:
+                    flask_name, worm_name = "default", key
+                w = _find_worm(flask_name, worm_name)
+                if w is None:
+                    continue
+                await _broadcast(clients, _focus_payload(w, flask_name))
+
+            overview_counter += 1
+            if overview_counter >= OVERVIEW_EVERY:
+                overview_counter = 0
+                if OVERVIEW_CLIENTS:
+                    await _broadcast(OVERVIEW_CLIENTS, _overview_payload())
+
+            # End-of-epoch detection. An "epoch" is one full corpus pass
+            # across all flasks. Sim_loop waits until every flask reports
+            # corpus_exhausted, then enforces a brief grace period, then
+            # hands off to the joint rollover.
+            if GENERATIONS_ENABLED and FLASKS:
+                all_exhausted = all(f.corpus_exhausted for f in FLASKS)
+                if all_exhausted:
+                    if epoch_exhausted_at is None:
+                        epoch_exhausted_at = time.monotonic()
+                        GENERATION_PROGRESS.phase = PHASE_CORPUS_DRAINING
+                        LOG.info("epoch corpus exhausted; %.1fs grace before rollover",
+                                 GENERATION_GRACE_S)
+                    elif time.monotonic() - epoch_exhausted_at >= GENERATION_GRACE_S:
+                        epoch_exhausted_at = None
+                        await _trigger_generation_rollover()
+                else:
+                    epoch_exhausted_at = None
+                    if GENERATION_PROGRESS.phase == PHASE_CORPUS_DRAINING:
+                        GENERATION_PROGRESS.phase = PHASE_RUNNING
+        except Exception:
+            LOG.exception("sim_loop iteration raised; watchdog will recover if persistent")
 
         next_t += TICK_DT
         sleep_for = next_t - time.monotonic()
@@ -213,14 +466,127 @@ async def sim_loop():
             next_t = time.monotonic()
 
 
+def _start_tick_watchdog(stall_seconds: float = 20.0, poll_seconds: float = 2.0) -> None:
+    # Background thread: if WORMS[0].world.tick_count doesn't advance for stall_seconds,
+    # exit so systemd's Restart=on-failure brings us back. Thread-based (not asyncio) so
+    # it still fires if the event loop itself deadlocks.
+    def loop() -> None:
+        last_tick = -1
+        last_change = time.monotonic()
+        while True:
+            time.sleep(poll_seconds)
+            if not WORMS:
+                last_change = time.monotonic()
+                continue
+            # Don't kill the process during a deliberate rollover freeze.
+            # Reset the timer instead so we re-arm when ticking resumes.
+            if GENERATION_PROGRESS.phase not in (PHASE_RUNNING, PHASE_CORPUS_DRAINING):
+                last_change = time.monotonic()
+                continue
+            try:
+                t = WORMS[0].world.tick_count
+            except Exception:
+                continue
+            now = time.monotonic()
+            if t != last_tick:
+                last_tick = t
+                last_change = now
+                continue
+            if now - last_change > stall_seconds:
+                LOG.critical(
+                    "watchdog: tick frozen at %d for %.1fs; exiting for systemd restart",
+                    t, now - last_change,
+                )
+                for h in LOG.handlers:
+                    try:
+                        h.flush()
+                    except Exception:
+                        pass
+                os._exit(1)
+
+    threading.Thread(target=loop, daemon=True, name="wormlet-watchdog").start()
+
+
+def _asyncio_exception_handler(loop, context: dict) -> None:
+    exc = context.get("exception")
+    msg = context.get("message", "unhandled asyncio exception")
+    if exc is not None:
+        LOG.error("asyncio: %s", msg, exc_info=(type(exc), exc, exc.__traceback__))
+    else:
+        LOG.error("asyncio: %s | context=%r", msg, context)
+
+
+def _truncate_partial_gen_poems(roots: list[Path]) -> None:
+    """Clear each worm's poem.txt at startup across the given roots. The
+    new generation always starts from empty poems regardless of whether
+    this is a fresh enable, a clean restart between generations, or a
+    crash recovery mid-generation. Voluntary restarts during a
+    generation will lose the partial poem — intentional for consistency:
+    a generation must correspond to a single contiguous run through the
+    corpus, not a spliced one. Per-generation poem.txt files are
+    already persisted to data/generations/<flask>/gen-NNNN/<worm>/poem_raw.txt
+    by the rollover step, so this truncation never destroys anything
+    that completed."""
+    for root in roots:
+        if not root.exists():
+            continue
+        for poem in root.rglob("poem.txt"):
+            try:
+                if poem.stat().st_size > 0:
+                    poem.write_text("")
+                    LOG.info("truncated partial-gen poem: %s", poem)
+            except Exception:
+                LOG.exception("failed to truncate %s", poem)
+
+
+def _load_initial_default_weights() -> dict:
+    """The starter connectome every flask's parent vector is seeded from."""
+    from server.orchestrator import DEFAULT_WEIGHTS
+    return json.loads(DEFAULT_WEIGHTS.read_text())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global WORMS, WORM_BY_NAME
-    n = int(os.environ.get("WORMLET_N_WORMS", "0")) or None
-    WORMS = load_worms(n_worms=n)
-    WORM_BY_NAME = {w.name: w for w in WORMS}
-    print(f"[WORMLET] loaded {len(WORMS)} worms: {[w.name for w in WORMS]}")
+    global FLASKS, WORMS, WORM_BY_KEY, _STARTED_AT, _LAST_TICK_AT
+    _STARTED_AT = time.monotonic()
+    _LAST_TICK_AT = time.monotonic()
+
+    from server.orchestrator import DATA_DIR, FLASKS_DIR
+
+    if GENERATIONS_ENABLED:
+        _truncate_partial_gen_poems([DATA_DIR, FLASKS_DIR])
+        # Build 4 flasks of 10 worms each. Each flask's GenerationState is
+        # loaded from disk (or initialized cold) so the lineage survives
+        # process restarts.
+        per_flask_worms = load_flasks(n_flasks=N_FLASKS, n_worms_per_flask=N_WORMS_PER_FLASK)
+        default_weights = _load_initial_default_weights()
+        FLASKS = []
+        for fi, worms in enumerate(per_flask_worms):
+            flask_name = f"flask_{fi + 1}"
+            state = GenerationState.load_or_init(flask_name, default_weights)
+            FLASKS.append(WormGroup(
+                name=flask_name,
+                display=f"Flask {fi + 1}",
+                worms=worms,
+                state=state,
+            ))
+            WORMS.extend(worms)
+            for w in worms:
+                WORM_BY_KEY[(flask_name, w.name)] = w
+        LOG.info("loaded %d flasks × %d worms = %d total",
+                 len(FLASKS), len(FLASKS[0].worms) if FLASKS else 0, len(WORMS))
+    else:
+        # Legacy single-group mode for backward compat.
+        n = int(os.environ.get("WORMLET_N_WORMS", "0")) or None
+        WORMS = load_worms(n_worms=n)
+        for w in WORMS:
+            WORM_BY_KEY[("default", w.name)] = w
+        LOG.info("loaded %d worms (legacy single-group mode): %s",
+                 len(WORMS), [w.name for w in WORMS])
+
     _ensure_debug_secret()
+    asyncio.get_running_loop().set_exception_handler(_asyncio_exception_handler)
+    _start_tick_watchdog()
     task = asyncio.create_task(sim_loop())
     try:
         yield
@@ -260,6 +626,11 @@ async def focus_page(name: str):
     return FileResponse(VIEWER_DIR / "focus.html")
 
 
+@app.get("/focus/{flask}/{name}")
+async def focus_page_flask(flask: str, name: str):
+    return FileResponse(VIEWER_DIR / "focus.html")
+
+
 @app.get("/poems")
 async def poems_page():
     return FileResponse(VIEWER_DIR / "poems.html")
@@ -268,6 +639,52 @@ async def poems_page():
 @app.get("/about")
 async def about_page():
     return FileResponse(VIEWER_DIR / "about.html")
+
+
+@app.get("/healthz")
+async def healthz():
+    from sim.world import EMBEDDING_MODE
+    now = time.monotonic()
+    tick = WORMS[0].world.tick_count if WORMS else 0
+    return JSONResponse({
+        "tick": tick,
+        "uptime_s": round(now - _STARTED_AT, 1),
+        "last_tick_advance_s_ago": round(now - _LAST_TICK_AT, 2),
+        "embedding": EMBEDDING_MODE,
+        "generations_enabled": GENERATIONS_ENABLED,
+        "flasks": [
+            {"name": f.name, "display": f.display,
+             "generation": (f.state.generation if f.state else 0),
+             "sigma": (f.state.sigma if f.state else None),
+             "n_worms": len(f.worms)}
+            for f in FLASKS
+        ],
+        "n_worms_total": len(WORMS),
+        "clients": {
+            "overview": len(OVERVIEW_CLIENTS),
+            "focus": {name: len(s) for name, s in FOCUS_CLIENTS.items() if s},
+            "poems": len(POEM_CLIENTS),
+        },
+    })
+
+
+@app.get("/api/generation_status")
+async def generation_status():
+    """Frontend polls this every ~500ms during rollover to drive the
+    progress overlay. Returns the live GenerationProgress as JSON; phase
+    is 'running' the rest of the time."""
+    p = GENERATION_PROGRESS
+    return JSONResponse({
+        "enabled": GENERATIONS_ENABLED,
+        "phase": p.phase,
+        "group": p.group,
+        "generation": p.generation,
+        "worms_total": p.worms_total,
+        "worms_done": p.worms_done,
+        "started_at": p.started_at,
+        "elapsed_s": round(time.time() - p.started_at, 1) if p.started_at else 0,
+        "error": p.error,
+    })
 
 
 # --- API ---
@@ -316,6 +733,7 @@ async def graph():
 
 
 _CORPUS_PCA_FILE_CACHE: dict | None = None
+_CORPUS_UMAP_FILE_CACHE: dict | None = None
 
 
 @app.get("/api/corpus_pca")
@@ -341,31 +759,82 @@ async def corpus_pca():
     return JSONResponse(_CORPUS_PCA_FILE_CACHE)
 
 
+@app.get("/api/corpus_umap")
+async def corpus_umap():
+    """Serves the precomputed Hamlet UMAP artifact (built once by
+    scripts/build_corpus_umap.py). Same shape as /api/corpus_pca but with
+    `umap12`/`umap12_sparse`/`umap2` instead of the `pca*` keys. The focus
+    page reads `umap2` for the hover scatter; the sim still uses the PCA
+    artifact for chemosensation (will swap when generational evolution
+    starts)."""
+    global _CORPUS_UMAP_FILE_CACHE
+    if _CORPUS_UMAP_FILE_CACHE is None:
+        path = V6_ROOT / "cache" / "corpus_umap.json"
+        if not path.exists():
+            raise HTTPException(503, "corpus_umap.json missing — run scripts/build_corpus_umap.py")
+        _CORPUS_UMAP_FILE_CACHE = json.loads(path.read_text())
+    return JSONResponse(_CORPUS_UMAP_FILE_CACHE)
+
+
+_NEURON_BODY_CACHE: dict | None = None
+
+
+@app.get("/api/neuron_body_coords")
+async def neuron_body_coords():
+    """Per-neuron 2D body-plan coordinates (axial in [0,1], lateral in
+    [-1,+1]) for the x-ray visualization. Built once by
+    scripts/build_neuron_body_coords.py from sim/neuron_positions.json."""
+    global _NEURON_BODY_CACHE
+    if _NEURON_BODY_CACHE is None:
+        path = V6_ROOT / "cache" / "neuron_body_coords.json"
+        if not path.exists():
+            raise HTTPException(503, "neuron_body_coords.json missing — run scripts/build_neuron_body_coords.py")
+        _NEURON_BODY_CACHE = json.loads(path.read_text())
+    return JSONResponse(_NEURON_BODY_CACHE)
+
+
 @app.get("/api/worms")
 async def list_worms():
-    return JSONResponse([
-        {"name": w.name, "seed": w.seed, "word_count": w.word_count}
-        for w in WORMS
-    ])
+    """Return worms grouped by flask. In legacy mode FLASKS is empty and
+    we synthesize a single 'default' flask wrapping WORMS."""
+    if FLASKS:
+        return JSONResponse([
+            {
+                "flask": f.name,
+                "display": f.display,
+                "worms": [{"name": w.name, "seed": w.seed, "word_count": w.word_count}
+                          for w in f.worms],
+            }
+            for f in FLASKS
+        ])
+    return JSONResponse([{
+        "flask": "default",
+        "display": "Worms",
+        "worms": [{"name": w.name, "seed": w.seed, "word_count": w.word_count}
+                  for w in WORMS],
+    }])
 
 
 @app.get("/api/poems")
 async def all_poems():
-    out = {}
-    for w in WORMS:
+    """All poems flattened by (flask, worm). Same shape across legacy and
+    flask modes; the flask key is 'default' when generations are off."""
+    out: dict = {}
+    for flask_name, w in _iter_flask_worms():
         if w.poem_path.exists():
             lines = w.poem_path.read_text().splitlines()
-            out[w.name] = [l for l in lines if l]
+            content = [l for l in lines if l]
         else:
-            out[w.name] = []
+            content = []
+        out.setdefault(flask_name, {})[w.name] = content
     return JSONResponse(out)
 
 
-@app.get("/api/poems/{name}")
-async def one_poem(name: str):
-    w = WORM_BY_NAME.get(name)
+@app.get("/api/poems/{flask}/{name}")
+async def one_poem_flask(flask: str, name: str):
+    w = _find_worm(flask, name)
     if w is None:
-        raise HTTPException(404, "unknown worm")
+        raise HTTPException(404, f"unknown worm {flask}/{name}")
     if w.poem_path.exists():
         return PlainTextResponse(w.poem_path.read_text())
     return PlainTextResponse("")
@@ -387,21 +856,23 @@ async def ws_overview(ws: WebSocket):
         OVERVIEW_CLIENTS.discard(ws)
 
 
-@app.websocket("/ws/focus/{name}")
-async def ws_focus(ws: WebSocket, name: str):
-    if name not in WORM_BY_NAME:
+@app.websocket("/ws/focus/{flask}/{name}")
+async def ws_focus_flask(ws: WebSocket, flask: str, name: str):
+    w = _find_worm(flask, name)
+    if w is None:
         await ws.close(code=4004)
         return
+    key = _focus_key(flask, name)
     await ws.accept()
-    FOCUS_CLIENTS.setdefault(name, set()).add(ws)
+    FOCUS_CLIENTS.setdefault(key, set()).add(ws)
     try:
-        await ws.send_text(json.dumps(_focus_payload(WORM_BY_NAME[name])))
+        await ws.send_text(json.dumps(_focus_payload(w, flask)))
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        FOCUS_CLIENTS.get(name, set()).discard(ws)
+        FOCUS_CLIENTS.get(key, set()).discard(ws)
 
 
 @app.websocket("/ws/poems")
@@ -420,10 +891,15 @@ async def ws_poems(ws: WebSocket):
 # --- Debug door ---
 
 def _get_worm_or_404(name: str) -> Worm:
-    w = WORM_BY_NAME.get(name)
-    if w is None:
-        raise HTTPException(404, "unknown worm")
-    return w
+    """Legacy debug-door lookup by bare worm name. In multi-flask mode
+    'Alice' exists in every flask — we return the first match. Use
+    /debug/<flask>/<name>/... routes if you need to target a specific
+    flask. The debug door is operator-only via the bearer token, so this
+    ambiguity is acceptable."""
+    for (_flask, wname), w in WORM_BY_KEY.items():
+        if wname == name:
+            return w
+    raise HTTPException(404, "unknown worm")
 
 
 @app.post("/debug/{name}/pause", dependencies=[Depends(require_debug)])
