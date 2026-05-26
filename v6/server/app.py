@@ -379,7 +379,46 @@ def _run_all_flask_rollovers_sync() -> None:
     except Exception:
         LOG.exception("meta-gardener raised; continuing without log")
 
-    # --- One atomic commit covers all six flasks' data + the meta log ---
+    # --- Find the GLOBAL winner across all 36 worms for this epoch ---
+    # Each per-flask metadata.json already has the flask's best_score +
+    # ranked worms. Cross-flask comparison picks the single (flask, worm)
+    # pair with the highest fitness — that's the only worm whose full
+    # weights+poem we keep locally after purge.
+    global_winner_flask: str | None = None
+    global_winner_worm: str | None = None
+    global_winner_score = float("-inf")
+    for flask in FLASKS:
+        gen = flask.state.generation if flask.state else 0
+        if gen < 1:
+            continue
+        gen_dir = GENERATIONS_ROOT / flask.name / f"gen-{gen:04d}"
+        try:
+            md = json.loads((gen_dir / "metadata.json").read_text())
+            score = md.get("best_score", float("-inf"))
+            if score > global_winner_score and md.get("ranks"):
+                global_winner_score = score
+                global_winner_flask = flask.name
+                global_winner_worm = md["ranks"][0]
+        except Exception:
+            LOG.exception("couldn't read metadata for %s gen-%04d", flask.name, gen)
+
+    # Record the global winner alongside the meta-gardener log so the epoch's
+    # winner is part of the archival record. The file is small and shows
+    # provenance: which flask, which worm, which epoch, what they scored.
+    if global_winner_flask and epoch_num >= 1:
+        meta_dir = GENERATIONS_ROOT / "meta" / f"gen-{epoch_num:04d}"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        (meta_dir / "winner.json").write_text(json.dumps({
+            "epoch": epoch_num,
+            "flask": global_winner_flask,
+            "worm": global_winner_worm,
+            "fitness": global_winner_score,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }))
+        LOG.info("epoch %d global winner: %s/%s (fitness=%.3f)",
+                 epoch_num, global_winner_flask, global_winner_worm, global_winner_score)
+
+    # --- One atomic commit covers all six flasks' data + the meta log + winner.json ---
     GENERATION_PROGRESS.phase = gens_mod.PHASE_COMMITTING
     _generation_keepalive()
     committed = False
@@ -399,9 +438,10 @@ def _run_all_flask_rollovers_sync() -> None:
         if meta_dir.exists():
             flask_paths.append(meta_dir)
         if flask_paths:
-            msg = (f"epoch {epoch_num:04d}: "
-                   + ", ".join(commit_lines)
-                   + (f" + meta log" if meta_dir.exists() else " (gardener rested)"))
+            winner_tag = (f" winner={global_winner_flask}/{global_winner_worm} "
+                          f"({global_winner_score:.3f})") if global_winner_flask else ""
+            msg = (f"epoch {epoch_num:04d}:{winner_tag} · "
+                   + ", ".join(commit_lines))
             committed = _git_commit(msg, flask_paths, keepalive=_generation_keepalive)
             if committed:
                 LOG.info("epoch %d committed to git", epoch_num)
@@ -411,6 +451,10 @@ def _run_all_flask_rollovers_sync() -> None:
         LOG.info("WORMLET_GIT_COMMIT=0: skipping commit; nothing purged")
 
     # --- Purge bulky files only after the data is safely in git ---
+    # Global-winner policy: only the (global_winner_flask, global_winner_worm)
+    # pair gets its weights.json + poem_clean.txt kept. Every other worm in
+    # every flask is fully purged (still keeping fitness/seed/scores for the
+    # gardener to read).
     purge_anyway = os.environ.get("WORMLET_PURGE_ANYWAY", "0") == "1"
     if committed or purge_anyway:
         for flask in FLASKS:
@@ -418,17 +462,10 @@ def _run_all_flask_rollovers_sync() -> None:
             if gen < 1:
                 continue
             gen_dir = GENERATIONS_ROOT / flask.name / f"gen-{gen:04d}"
-            # Winner = first entry in this flask's rank list. Read it back
-            # from metadata.json (already written by run_generation_rollover).
-            winner_name = None
+            kept_worm = (global_winner_worm
+                         if flask.name == global_winner_flask else None)
             try:
-                md = json.loads((gen_dir / "metadata.json").read_text())
-                if md.get("ranks"):
-                    winner_name = md["ranks"][0]
-            except Exception:
-                pass
-            try:
-                _purge_gen_dir(gen_dir, winner_name=winner_name)
+                _purge_gen_dir(gen_dir, kept_worm=kept_worm)
             except Exception:
                 LOG.exception("purge for %s gen-%04d raised; continuing", flask.name, gen)
 

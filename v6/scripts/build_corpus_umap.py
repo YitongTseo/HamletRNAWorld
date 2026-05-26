@@ -45,21 +45,21 @@ N_DIMS = 12
 # distribution sum to 1. β=5 matches the PCA build for comparability.
 SOFTMAX_BETA = 5.0
 
-# UMAP hyperparameters. Previous tuning (n_neighbors=5, min_dist=0.0,
-# densmap on) collapsed everything into a tight ball — high intra-cluster
-# density but clusters squashed together with no visible separation.
-# This pass pushes clusters APART while keeping the local density signal:
+# UMAP hyperparameters. Tuned for max cluster visibility: tight intra-
+# cluster packing AND well-separated cluster centers.
 #   spread=4.0: scale of the embedded space. Higher = clusters land farther
-#     apart in 2D. Default is 1.0; we go big to break up the "ball of mass".
-#   min_dist=0.3: words within a cluster keep some breathing room rather
-#     than packing to a point. Required to be < spread.
+#     apart in 2D. Default is 1.0; we keep it large so the picture isn't
+#     one ball.
+#   min_dist=0.001: very small — points within a cluster pack to nearly the
+#     same location. Combined with high `spread`, this gives distinct tight
+#     clumps separated by wide empty regions, rather than a smooth blob.
 #   n_neighbors=8: enough local focus to preserve cluster identity, enough
 #     global reach for UMAP to learn distinct cluster positions.
 #   densmap=True: density structure from BERT still preserved.
 #   metric=cosine: required for nomic's L2-normalized embeddings.
 #   random_state: pins the stochastic init for reproducibility.
 UMAP_N_NEIGHBORS = 8
-UMAP_MIN_DIST = 0.3
+UMAP_MIN_DIST = 0.001
 UMAP_SPREAD = 4.0
 UMAP_METRIC = "cosine"
 UMAP_RANDOM_STATE = 42

@@ -174,11 +174,12 @@ def _git_commit(msg: str, paths: list[Path], keepalive: KEEPALIVE_FN | None) -> 
         return False
 
 
-def _purge_gen_dir(gen_dir: Path, winner_name: str | None) -> None:
+def _purge_gen_dir(gen_dir: Path, kept_worm: str | None) -> None:
     """Trim bulky files from a generation directory AFTER a successful git
     commit. The git history retains everything; what we keep on local disk
-    is the subset the gardener regularly reads + the winning lineage's
-    full record. Specifically:
+    is the subset the gardener regularly reads + (optionally) one worm's
+    full record. Pass `kept_worm=None` to purge every worm in this flask
+    equally (used for non-winning flasks under the global-winner policy).
 
     Kept locally (for every worm in the generation):
       - fitness.json   (per-worm score + rank — gardener reads this)
@@ -186,25 +187,27 @@ def _purge_gen_dir(gen_dir: Path, winner_name: str | None) -> None:
       - scores.jsonl   (per-window scores — gardener samples these)
     Kept locally (flask-level):
       - metadata.json, selection.json
-    Kept locally (winner only):
+    Kept locally (only the named `kept_worm`, if any):
       - weights.json     (the genome we want to point at later)
       - poem_clean.txt   (the literary artifact worth keeping)
     Deleted (recoverable from git):
-      - poem_raw.txt   for every worm  (largest file: full eaten-word stream)
-      - weights.json   for non-winners (50 KB × 5 worms = ~250 KB/gen/flask)
-      - poem_clean.txt for non-winners
+      - poem_raw.txt    for every worm
+      - weights.json    for every worm except `kept_worm`
+      - poem_clean.txt  for every worm except `kept_worm`
 
-    At 6 flasks × 4 epochs/day this brings local disk usage from ~10 MB/day
-    down to ~1.5 MB/day. The flimsy server stays flimsy."""
+    Under the global-winner policy: across all six flasks for an epoch,
+    exactly one (flask, worm) pair is the global winner. That flask's
+    purge call passes `kept_worm=winner_name`; the other five flasks
+    pass `kept_worm=None`."""
     if not gen_dir.exists():
         return
     n_removed = 0
     for worm_dir in gen_dir.iterdir():
         if not worm_dir.is_dir():
             continue
-        is_winner = (worm_dir.name == winner_name)
+        is_kept = (kept_worm is not None and worm_dir.name == kept_worm)
         targets = ["poem_raw.txt"]
-        if not is_winner:
+        if not is_kept:
             targets.extend(["weights.json", "poem_clean.txt"])
         for fname in targets:
             f = worm_dir / fname
@@ -214,8 +217,8 @@ def _purge_gen_dir(gen_dir: Path, winner_name: str | None) -> None:
                     n_removed += 1
                 except Exception:
                     pass
-    print(f"[GENERATIONS] purged {n_removed} files from {gen_dir.name} "
-          f"(kept gardener data + winner={winner_name})", flush=True)
+    label = f"kept worm={kept_worm}" if kept_worm else "no worm fully kept"
+    print(f"[GENERATIONS] purged {n_removed} files from {gen_dir.name} ({label})", flush=True)
 
 
 def run_generation_rollover(
