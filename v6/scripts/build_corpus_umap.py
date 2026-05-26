@@ -45,19 +45,25 @@ N_DIMS = 12
 # distribution sum to 1. β=5 matches the PCA build for comparability.
 SOFTMAX_BETA = 5.0
 
-# UMAP hyperparameters. Tuned for cluster visibility ("clumpiness"):
-#   n_neighbors: lower → each point only sees its closest neighbors, so
-#     local clumps stay tight at the cost of some global geometry. Default
-#     is 15; 8 is a moderate clump-favoring value, 5 is aggressive.
-#   min_dist: lower → output points within a cluster pack tighter. Default
-#     is 0.1; 0.0 is the maximum-compression setting and is the standard
-#     choice when "clusters visible" matters more than "smooth manifold".
+# UMAP hyperparameters. Previous tuning (n_neighbors=5, min_dist=0.0,
+# densmap on) collapsed everything into a tight ball — high intra-cluster
+# density but clusters squashed together with no visible separation.
+# This pass pushes clusters APART while keeping the local density signal:
+#   spread=4.0: scale of the embedded space. Higher = clusters land farther
+#     apart in 2D. Default is 1.0; we go big to break up the "ball of mass".
+#   min_dist=0.3: words within a cluster keep some breathing room rather
+#     than packing to a point. Required to be < spread.
+#   n_neighbors=8: enough local focus to preserve cluster identity, enough
+#     global reach for UMAP to learn distinct cluster positions.
+#   densmap=True: density structure from BERT still preserved.
 #   metric=cosine: required for nomic's L2-normalized embeddings.
 #   random_state: pins the stochastic init for reproducibility.
 UMAP_N_NEIGHBORS = 8
-UMAP_MIN_DIST = 0.0
+UMAP_MIN_DIST = 0.3
+UMAP_SPREAD = 4.0
 UMAP_METRIC = "cosine"
 UMAP_RANDOM_STATE = 42
+UMAP_DENSMAP = True
 
 START_RE = re.compile(r"\*\*\* START OF THE PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
 END_RE = re.compile(r"\*\*\* END OF THE PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
@@ -119,8 +125,10 @@ def umap_with_shift(vecs: np.ndarray, n_components: int) -> np.ndarray:
         n_components=n_components,
         n_neighbors=UMAP_N_NEIGHBORS,
         min_dist=UMAP_MIN_DIST,
+        spread=UMAP_SPREAD,
         metric=UMAP_METRIC,
         random_state=UMAP_RANDOM_STATE,
+        densmap=UMAP_DENSMAP,
     )
     coords = reducer.fit_transform(vecs)
     print(f"  UMAP-{n_components} fit in {time.monotonic() - t0:.1f}s")
@@ -175,14 +183,16 @@ def main():
     payload = {
         "model": "nomic-ai/nomic-embed-text-v1.5",
         "prefix": "clustering:",
-        "method": "umap",
+        "method": "densmap" if UMAP_DENSMAP else "umap",
         "n_words": len(words),
         "n_dims": N_DIMS,
         "umap_params": {
             "n_neighbors": UMAP_N_NEIGHBORS,
             "min_dist": UMAP_MIN_DIST,
+            "spread": UMAP_SPREAD,
             "metric": UMAP_METRIC,
             "random_state": UMAP_RANDOM_STATE,
+            "densmap": UMAP_DENSMAP,
         },
         "words": words,
         "umap12": [[round(float(x), 4) for x in row] for row in coords12],

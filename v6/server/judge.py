@@ -28,7 +28,7 @@ import anthropic
 
 WINDOW_SIZE = 15
 STRIDE = 15  # non-overlapping; matches the spec
-SAMPLE_FRACTION = 0.10  # 1 in 10 windows
+SAMPLE_FRACTION = 0.1  # 1 in 4 windows
 MODEL = "claude-haiku-4-5"
 MAX_OUTPUT_TOKENS = 8192  # 210 sampled windows × ~8 tokens output + buffer
 

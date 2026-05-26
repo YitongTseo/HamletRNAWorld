@@ -174,6 +174,50 @@ def _git_commit(msg: str, paths: list[Path], keepalive: KEEPALIVE_FN | None) -> 
         return False
 
 
+def _purge_gen_dir(gen_dir: Path, winner_name: str | None) -> None:
+    """Trim bulky files from a generation directory AFTER a successful git
+    commit. The git history retains everything; what we keep on local disk
+    is the subset the gardener regularly reads + the winning lineage's
+    full record. Specifically:
+
+    Kept locally (for every worm in the generation):
+      - fitness.json   (per-worm score + rank — gardener reads this)
+      - seed.txt       (small, lineage reconstruction)
+      - scores.jsonl   (per-window scores — gardener samples these)
+    Kept locally (flask-level):
+      - metadata.json, selection.json
+    Kept locally (winner only):
+      - weights.json     (the genome we want to point at later)
+      - poem_clean.txt   (the literary artifact worth keeping)
+    Deleted (recoverable from git):
+      - poem_raw.txt   for every worm  (largest file: full eaten-word stream)
+      - weights.json   for non-winners (50 KB × 5 worms = ~250 KB/gen/flask)
+      - poem_clean.txt for non-winners
+
+    At 6 flasks × 4 epochs/day this brings local disk usage from ~10 MB/day
+    down to ~1.5 MB/day. The flimsy server stays flimsy."""
+    if not gen_dir.exists():
+        return
+    n_removed = 0
+    for worm_dir in gen_dir.iterdir():
+        if not worm_dir.is_dir():
+            continue
+        is_winner = (worm_dir.name == winner_name)
+        targets = ["poem_raw.txt"]
+        if not is_winner:
+            targets.extend(["weights.json", "poem_clean.txt"])
+        for fname in targets:
+            f = worm_dir / fname
+            if f.exists():
+                try:
+                    f.unlink()
+                    n_removed += 1
+                except Exception:
+                    pass
+    print(f"[GENERATIONS] purged {n_removed} files from {gen_dir.name} "
+          f"(kept gardener data + winner={winner_name})", flush=True)
+
+
 def run_generation_rollover(
     worms: list[Worm],
     state: GenerationState,
@@ -192,10 +236,17 @@ def run_generation_rollover(
     group = state.group_name
     progress.group = group
     progress.generation = state.generation + 1
-    progress.worms_total = len(worms)
-    progress.worms_done = 0
     progress.error = None
-    progress.started_at = time.time()
+    if not progress.started_at:
+        progress.started_at = time.time()
+    # If the caller hasn't pre-set the totals (multi-flask runs do; legacy
+    # single-group callers don't), initialize them here. We then increment
+    # worms_done across the per-worm loop below — never reset it — so the
+    # overlay bar advances continuously when stitched across multiple
+    # flasks.
+    if progress.worms_total == 0:
+        progress.worms_total = len(worms)
+        progress.worms_done = 0
 
     # --- Phase: judging ---
     progress.phase = PHASE_JUDGING
@@ -290,10 +341,9 @@ def run_generation_rollover(
 
     # --- Gardener's log (optional, free-form, may PASS) ---
     # Skipped in multi-flask mode; the caller runs a single meta-gardener
-    # observing all flasks instead.
+    # observing all flasks AND handles the atomic commit+purge for the
+    # whole epoch (all six flasks + meta log) in one pass.
     if not run_gardener:
-        # Update persistent state and return; the multi-flask caller handles
-        # the meta-gardener after all flasks have finished.
         state.generation += 1
         state.sigma = new_sigma
         state.best_score_history.append(best_score)
@@ -326,13 +376,28 @@ def run_generation_rollover(
     # --- Phase: committing ---
     progress.phase = PHASE_COMMITTING
     if keepalive: keepalive()
+    committed = False
     if os.environ.get("WORMLET_GIT_COMMIT", "1") != "0":
         msg = f"gen {state.generation + 1:04d} [{group}]: best={best_score:.3f} σ={state.sigma:.3f}→{new_sigma:.3f}"
-        _git_commit(msg, [gen_dir], keepalive=keepalive)
+        committed = _git_commit(msg, [gen_dir], keepalive=keepalive)
     else:
         # Local-only mode: artifacts already written to disk, just skip git.
         print(f"[GENERATIONS] WORMLET_GIT_COMMIT=0: skipping commit for gen-{state.generation + 1:04d}",
               flush=True)
+
+    # --- Post-commit purge ---
+    # Only purge after the data is safely in git, otherwise we'd lose it.
+    # Set WORMLET_PURGE_ANYWAY=1 to purge even without a successful commit
+    # (useful for local-only dev where you don't need archival).
+    purge_anyway = os.environ.get("WORMLET_PURGE_ANYWAY", "0") == "1"
+    if committed or purge_anyway:
+        winner_name = worm_order[ranked[0]] if ranked else None
+        try:
+            _purge_gen_dir(gen_dir, winner_name=winner_name)
+        except Exception:
+            # Purge is opportunistic — never let it break the rollover.
+            print(f"[GENERATIONS] purge for gen-{state.generation + 1:04d} raised; continuing",
+                  flush=True)
 
     # --- Update persistent state ---
     state.generation += 1

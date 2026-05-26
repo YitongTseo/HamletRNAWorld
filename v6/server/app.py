@@ -274,13 +274,32 @@ def _atomic_write_json(path, payload) -> None:
     tmp.replace(path)
 
 
+def _mutate_seed(s: int) -> int:
+    """Numerical Recipes LCG step — deterministic, well-mixed, keeps the
+    result a positive 31-bit int. Each generation gets a fresh seed
+    while staying fully reproducible from (base_seed, gen_count)."""
+    return (s * 1664525 + 1013904223) & 0x7FFFFFFF
+
+
 def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
-    """Install new per-worm weights into a flask and reset its poem state.
-    Caller has already persisted artifacts to disk for the previous gen."""
+    """Install new per-worm weights + mutate per-worm seeds for the next
+    generation, and reset poem state. Caller has already persisted the
+    previous gen's artifacts (including pre-mutation seed.txt) to disk."""
     for w in flask.worms:
         wt = new_weights.get(w.name)
         if wt is None:
             continue
+        # Mutate this worm's seed for the new generation. Persist atomically
+        # so a crash mid-respawn leaves either the OLD or NEW seed on disk,
+        # never a partial. The per-generation snapshot in
+        # data/generations/<flask>/gen-NNNN/<worm>/seed.txt records which
+        # seed was used FOR THAT generation (it was already written by
+        # run_generation_rollover BEFORE this respawn, capturing w.seed at
+        # the moment the previous generation ran).
+        w.seed = _mutate_seed(w.seed)
+        tmp = w.poem_path.parent / "seed.txt.tmp"
+        tmp.write_text(str(w.seed))
+        tmp.replace(w.poem_path.parent / "seed.txt")
         _atomic_write_json(w.poem_path.parent / "weights.json", wt)
         try:
             w.poem_file.close()
@@ -302,12 +321,25 @@ def _generation_keepalive() -> None:
 
 
 def _run_all_flask_rollovers_sync() -> None:
-    """Synchronously roll over every flask, then call the meta-gardener.
-    Runs in a worker thread (via asyncio.to_thread) so the event loop
-    stays responsive. Each flask's run_generation_rollover updates the
-    shared GENERATION_PROGRESS in place — the frontend overlay reflects
-    whichever flask is currently being processed."""
+    """Synchronously roll over every flask, then call the meta-gardener,
+    then commit + purge everything atomically. Runs in a worker thread
+    so the event loop stays responsive for the progress overlay.
+
+    Atomicity matters: we want either ALL six flasks' data + the meta
+    log in git for an epoch, or none. So per-flask rollovers no longer
+    commit themselves (they pass run_gardener=False which now also
+    skips commit+purge); a single git commit at the end covers
+    everything."""
     from server.gardener import maybe_write_meta_log
+    from server.generations import GENERATIONS_ROOT, _git_commit, _purge_gen_dir
+
+    # Initialize the cumulative progress totals BEFORE the per-flask loop
+    # so run_generation_rollover doesn't reset them per-flask (it skips
+    # the reset when worms_total is already > 0). This gives the overlay
+    # one smooth 0→N bar instead of one that jumps back to 0 each flask.
+    GENERATION_PROGRESS.worms_total = sum(len(f.worms) for f in FLASKS)
+    GENERATION_PROGRESS.worms_done = 0
+    GENERATION_PROGRESS.started_at = time.time()
 
     new_weights_by_flask: dict[str, dict] = {}
     per_flask_scoring: dict[str, dict] = {}
@@ -332,7 +364,7 @@ def _run_all_flask_rollovers_sync() -> None:
             LOG.exception("flask %s rollover raised; continuing", flask.name)
 
     # Meta-gardener observes all flasks at once and writes one log per
-    # epoch (after all 4 flasks have rolled over).
+    # epoch (after all six flasks have rolled over).
     try:
         epoch_num = max((f.state.generation if f.state else 0) for f in FLASKS) if FLASKS else 0
         log_path = maybe_write_meta_log(
@@ -347,9 +379,63 @@ def _run_all_flask_rollovers_sync() -> None:
     except Exception:
         LOG.exception("meta-gardener raised; continuing without log")
 
+    # --- One atomic commit covers all six flasks' data + the meta log ---
+    GENERATION_PROGRESS.phase = gens_mod.PHASE_COMMITTING
+    _generation_keepalive()
+    committed = False
+    if os.environ.get("WORMLET_GIT_COMMIT", "1") != "0":
+        flask_paths = []
+        commit_lines = []
+        for flask in FLASKS:
+            gen = flask.state.generation if flask.state else 0
+            if gen < 1:
+                continue
+            gen_dir = GENERATIONS_ROOT / flask.name / f"gen-{gen:04d}"
+            if gen_dir.exists():
+                flask_paths.append(gen_dir)
+                best = flask.state.best_score_history[-1] if flask.state.best_score_history else 0.0
+                commit_lines.append(f"{flask.name}: best={best:.3f} σ={flask.state.sigma:.3f}")
+        meta_dir = GENERATIONS_ROOT / "meta" / f"gen-{epoch_num:04d}"
+        if meta_dir.exists():
+            flask_paths.append(meta_dir)
+        if flask_paths:
+            msg = (f"epoch {epoch_num:04d}: "
+                   + ", ".join(commit_lines)
+                   + (f" + meta log" if meta_dir.exists() else " (gardener rested)"))
+            committed = _git_commit(msg, flask_paths, keepalive=_generation_keepalive)
+            if committed:
+                LOG.info("epoch %d committed to git", epoch_num)
+            else:
+                LOG.warning("epoch %d git commit failed; data still on disk", epoch_num)
+    else:
+        LOG.info("WORMLET_GIT_COMMIT=0: skipping commit; nothing purged")
+
+    # --- Purge bulky files only after the data is safely in git ---
+    purge_anyway = os.environ.get("WORMLET_PURGE_ANYWAY", "0") == "1"
+    if committed or purge_anyway:
+        for flask in FLASKS:
+            gen = flask.state.generation if flask.state else 0
+            if gen < 1:
+                continue
+            gen_dir = GENERATIONS_ROOT / flask.name / f"gen-{gen:04d}"
+            # Winner = first entry in this flask's rank list. Read it back
+            # from metadata.json (already written by run_generation_rollover).
+            winner_name = None
+            try:
+                md = json.loads((gen_dir / "metadata.json").read_text())
+                if md.get("ranks"):
+                    winner_name = md["ranks"][0]
+            except Exception:
+                pass
+            try:
+                _purge_gen_dir(gen_dir, winner_name=winner_name)
+            except Exception:
+                LOG.exception("purge for %s gen-%04d raised; continuing", flask.name, gen)
+
     # Install new weights into each flask only after all rollovers + the
-    # meta-gardener have completed. Doing this in a separate pass keeps
-    # the per-flask poem.txt files intact until the gardener has read them.
+    # meta-gardener + commit + purge have completed. Doing this in a separate
+    # pass keeps each flask's poem.txt and gen-NNNN files intact until the
+    # gardener has read them.
     GENERATION_PROGRESS.phase = gens_mod.PHASE_RESPAWNING
     for flask in FLASKS:
         new_weights = new_weights_by_flask.get(flask.name)

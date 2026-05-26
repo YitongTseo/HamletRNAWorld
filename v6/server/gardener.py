@@ -1,17 +1,5 @@
 """Per-generation gardener's log.
 
-Three Claude calls per generation:
-
-  Round 1  — show the gardener a catalog of past generations (numbers,
-             scores, one-line log summaries) and let them pick up to 5
-             logs they want to read.
-  Round 2  — show those logs in full, plus the same catalog, and let
-             them pick a few more logs + up to 5 specific (gen, worm)
-             pairs whose poetry they want to sample.
-  Round 3  — show all selected logs, all selected sampled poems, and
-             this generation's top fragments. Ask for a 2-sentence log
-             entry, or the literal word PASS to rest this generation.
-
 The gardener is Opus 4.7 with adaptive thinking. The briefing document
 (docs/specs/2026-05-26-gardener-briefing.md) is included verbatim in the
 system prompt and is identical across every call across every
@@ -42,10 +30,17 @@ MODEL = "claude-opus-4-7"
 MAX_LOG_TOKENS = 300            # 2 sentences fits comfortably; hard cap
 MAX_SELECTION_TOKENS = 200      # JSON selection blobs are tiny
 
+# Old single-flask gardener counts (kept for the per-flask code path):
 MAX_LOGS_PER_ROUND = 5
 MAX_POEMS_TO_SAMPLE = 5
 TOP_WORMS_TO_SHOW = 3
 TOP_WINDOWS_PER_WORM = 3
+
+# Meta-gardener (multi-flask) counts: gardener picks 3 poems in each of the
+# two selection rounds (6 total), and the last 5 meta-logs + their metrics
+# are auto-shown so no selection round is spent on them.
+META_AUTO_LOG_COUNT = 5
+META_POEMS_PER_ROUND = 3
 
 
 def _briefing() -> str:
@@ -416,7 +411,7 @@ def maybe_write_log(
 #   - Sampled poems can be drawn from any (flask, gen, worm) triple, not
 #     just a single flask.
 
-META_GARDENER_TONE = """You are the meta-gardener observing all four flasks of the ecosystem described in the briefing above. You write a short shared log — at most two sentences — once per epoch (after all flasks have completed a generation). You may, at any epoch, respond with the single word PASS instead of writing, and we will record that you chose to rest."""
+META_GARDENER_TONE = """You are the gardener of the ecosystem described in the briefing above. You observe all six flasks at once and write a short shared log — at most two sentences — once per epoch (after every flask has completed a generation). You may, at any epoch, respond with the single word PASS instead of writing, and we will record that you chose to rest."""
 
 
 def _meta_log_root(flasks_root: Path) -> Path:
@@ -501,31 +496,15 @@ def _format_all_flasks_fragments(flasks) -> str:
     return "\n".join(out).rstrip()
 
 
-META_ROUND1_SCHEMA = {
+# New meta-gardener schema: each selection round picks up to 3 poem samples
+# (flask, gen, worm). Past logs + their metrics are auto-included, not
+# selected — so no log-picking round is needed.
+META_POEM_PICKS_SCHEMA = {
     "type": "object",
     "properties": {
-        "epochs_to_read": {
-            "type": "array",
-            "items": {"type": "integer", "minimum": 1},
-            "maxItems": MAX_LOGS_PER_ROUND,
-            "description": "Past epoch numbers whose full meta-log you want to read.",
-        },
-    },
-    "required": ["epochs_to_read"],
-    "additionalProperties": False,
-}
-
-META_ROUND2_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "epochs_to_read": {
-            "type": "array",
-            "items": {"type": "integer", "minimum": 1},
-            "maxItems": MAX_LOGS_PER_ROUND,
-        },
         "poems_to_read": {
             "type": "array",
-            "maxItems": MAX_POEMS_TO_SAMPLE,
+            "maxItems": META_POEMS_PER_ROUND,
             "items": {
                 "type": "object",
                 "properties": {
@@ -538,9 +517,95 @@ META_ROUND2_SCHEMA = {
             },
         },
     },
-    "required": ["epochs_to_read", "poems_to_read"],
+    "required": ["poems_to_read"],
     "additionalProperties": False,
 }
+
+
+def _format_all_flasks_full_metrics(flasks) -> str:
+    """Comprehensive per-worm table for the CURRENT generation across all
+    flasks. Includes every worm's fitness, rank, word count, and best
+    scored window (if any). Used in every round of the meta-gardener so
+    they always see the full state, not just top worms."""
+    generations_root = V6_ROOT / "data" / "generations"
+    out: list[str] = []
+    for flask in flasks:
+        cur_gen = flask.state.generation if flask.state else 0
+        if cur_gen < 1:
+            out.append(f"### {flask.display}: (no completed generation yet)")
+            out.append("")
+            continue
+        sigma = flask.state.sigma if flask.state else 0.0
+        history_str = " → ".join(f"{s:.3f}" for s in (flask.state.best_score_history or [])[-3:])
+        out.append(f"### {flask.display} — gen {cur_gen} · σ={sigma:.3f} · best history (last 3): {history_str or '—'}")
+        gen_dir = generations_root / flask.name / f"gen-{cur_gen:04d}"
+        # Order worms by rank within this flask if metadata says so; else by name.
+        try:
+            meta = json.loads((gen_dir / "metadata.json").read_text())
+            order = meta.get("ranks") or sorted([w.name for w in flask.worms])
+        except Exception:
+            order = sorted([w.name for w in flask.worms])
+        worm_lookup = {w.name: w for w in flask.worms}
+        for worm_name in order:
+            worm = worm_lookup.get(worm_name)
+            if worm is None:
+                continue
+            wdir = gen_dir / worm_name
+            fit, rank, n_scored = 0.0, "?", 0
+            try:
+                fd = json.loads((wdir / "fitness.json").read_text())
+                fit = fd.get("fitness", 0.0)
+                rank = fd.get("rank", "?")
+                n_scored = fd.get("windows_scored", 0)
+            except Exception:
+                pass
+            top = ""
+            sp = wdir / "scores.jsonl"
+            if sp.exists():
+                best, best_q = None, -1.0
+                try:
+                    with open(sp) as f:
+                        for line in f:
+                            try:
+                                s = json.loads(line)
+                            except Exception:
+                                continue
+                            q = 1.5 * (s["emotional"] / 100.0) ** 2.5 + (s["coherence"] / 100.0) ** 2.5
+                            if q > best_q:
+                                best_q = q
+                                best = s
+                except Exception:
+                    pass
+                if best:
+                    text = " ".join(best.get("tokens") or [])
+                    top = f"  top:(E={best['emotional']} C={best['coherence']}) “{text}”"
+            out.append(f"- {worm_name:7s} rank={rank} fit={fit:.3f} words={worm.word_count} scored={n_scored}{top}")
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
+def _format_past_epoch_metrics(generations_root: Path, flask_names: list[str], epochs: list[int]) -> str:
+    """For each past epoch in the list, show per-flask best score + winner +
+    sigma. Compact form to keep token cost reasonable when we auto-include
+    the last 5 epochs."""
+    out: list[str] = []
+    for ep in sorted(set(epochs)):
+        lines = [f"#### epoch {ep}"]
+        for fn in flask_names:
+            gen_dir = generations_root / fn / f"gen-{ep:04d}"
+            md_path = gen_dir / "metadata.json"
+            if not md_path.exists():
+                continue
+            try:
+                md = json.loads(md_path.read_text())
+                winner = (md.get("ranks") or ["—"])[0]
+                lines.append(
+                    f"- {fn}: best={md.get('best_score', 0):.3f} σ={md.get('sigma_used', 0):.3f}→{md.get('sigma_next', 0):.3f} winner={winner}"
+                )
+            except Exception:
+                continue
+        out.append("\n".join(lines))
+    return "\n\n".join(out) if out else "(no past metrics)"
 
 
 def _meta_render_logs(meta_root: Path, epochs: list[int]) -> str:
@@ -569,9 +634,25 @@ def _meta_render_poems(generations_root: Path, picks: list[dict]) -> str:
     return "\n".join(out)
 
 
+META_PICK_INSTRUCTIONS_R1 = """You have the full metrics above. Pick up to {max_poems} (flask, gen, worm) triples whose full top-scoring poem window you want to read closely. Choose worms whose metrics surprised you, that you want to verify, or whose voice you want to listen to. Respond ONLY with the JSON object specified by the output format — no prose."""
+
+META_PICK_INSTRUCTIONS_R2 = """You have read your first batch of poems above. Pick up to {max_poems} MORE (flask, gen, worm) triples. Use this round to follow threads — confirm a pattern, contrast something, or sample a worm whose metrics looked similar to one you already read. Respond ONLY with JSON — no prose."""
+
+META_WRITE_INSTRUCTIONS = """You have read everything you asked for. Now write the gardener's log entry — at most TWO sentences. Or respond with the single word PASS to rest this epoch.
+
+A useful log captures one specific scientific observation (σ feels off, decay is too short, UMAP wrong fit, RNG independence broken, …), or one specific aesthetic notice (Flask N's Worm M has a vocabulary drift, a line that scans, a line that genuinely moves), or one meta-observation about the trajectory across epochs. Caring but firm. Level-headed scientist who is rooting for the experiment but will say plainly when something isn't working."""
+
+
 def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | None:
-    """Three-call meta-gardener. Observes all flasks for one epoch, writes
-    a short shared log (or PASSes). Returns the written log path or None."""
+    """Three-call gardener. Observes all flasks for one epoch and writes
+    a short shared log (or PASSes). Flow:
+      Round 1: auto-shows this epoch's full per-worm metrics + last 5
+               gardener's logs verbatim + those 5 epochs' compact metrics.
+               Gardener picks ≤3 (flask, gen, worm) poems to read.
+      Round 2: shows the round-1 selected poems. Gardener picks ≤3 MORE.
+      Round 3: shows everything + the round-2 poems. Gardener writes
+               ≤2 sentences or PASS.
+    Returns the written log path or None (PASSed / disabled / API error)."""
     if os.environ.get("WORMLET_GARDENER", "1") == "0":
         return None
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -581,17 +662,24 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
 
     generations_root = V6_ROOT / "data" / "generations"
     meta_root = _meta_log_root(generations_root)
-
-    flask_histories = {f.name: list(f.state.best_score_history) if f.state else []
-                       for f in flasks}
-    catalog = _meta_catalog(meta_root, flask_histories, generation_num)
-    fragments = _format_all_flasks_fragments(flasks)
     briefing = _briefing()
+
+    # Auto-include the last META_AUTO_LOG_COUNT gardener's logs + those
+    # epochs' metrics. The gardener doesn't need to ask for these — they
+    # just see them every round.
+    auto_epochs = list(range(max(1, generation_num - META_AUTO_LOG_COUNT), generation_num))
+    auto_logs_rendered = _meta_render_logs(meta_root, auto_epochs) if auto_epochs else "(no prior epochs)"
+    auto_metrics_rendered = _format_past_epoch_metrics(
+        generations_root, [f.name for f in flasks], auto_epochs
+    ) if auto_epochs else "(no prior epochs)"
+
+    # This-epoch comprehensive metrics (all 36 worms, not just the top 3).
+    this_epoch_metrics = _format_all_flasks_full_metrics(flasks)
 
     try:
         client = anthropic.Anthropic()
     except Exception as e:
-        print(f"[META-GARDENER] client init failed: {e}", flush=True)
+        print(f"[GARDENER] client init failed: {e}", flush=True)
         return None
 
     sys_blocks = [
@@ -599,69 +687,63 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
         {"type": "text", "text": META_GARDENER_TONE},
     ]
 
-    # Round 1
-    r1_picks: list[int] = []
-    r1_rendered = "(no prior epochs)"
-    if generation_num > 1:
-        try:
-            if keepalive: keepalive()
-            user = (
-                f"Catalog of prior epochs (current epoch = {generation_num}):\n\n{catalog}\n\n"
-                + ROUND1_INSTRUCTIONS.format(max_logs=MAX_LOGS_PER_ROUND).replace("logs", "meta-logs")
-            )
-            resp = client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_SELECTION_TOKENS,
-                thinking={"type": "adaptive"},
-                output_config={"effort": "low", "format": {"type": "json_schema", "schema": META_ROUND1_SCHEMA}},
-                system=sys_blocks,
-                messages=[{"role": "user", "content": user}],
-            )
-            text = next((b.text for b in resp.content if b.type == "text"), "{}")
-            r1_picks = json.loads(text).get("epochs_to_read", [])[:MAX_LOGS_PER_ROUND]
-            r1_rendered = _meta_render_logs(meta_root, r1_picks)
-        except Exception as e:
-            print(f"[META-GARDENER] round 1 failed: {e}", flush=True)
+    def _shared_context(extra_poems_rendered: str = "") -> str:
+        """The block the gardener sees in every round: this epoch's full
+        per-worm metrics + last 5 logs + their metrics + any poems they've
+        asked for so far."""
+        sections = [
+            f"# Epoch {generation_num} — per-worm metrics across all flasks\n\n{this_epoch_metrics}",
+            f"# Last {META_AUTO_LOG_COUNT} gardener's logs (auto-shown every round)\n\n{auto_logs_rendered}",
+            f"# Metrics for those last {META_AUTO_LOG_COUNT} epochs\n\n{auto_metrics_rendered}",
+        ]
+        if extra_poems_rendered:
+            sections.append(f"# Poem windows you have already chosen to read\n\n{extra_poems_rendered}")
+        return "\n\n".join(sections)
 
-    # Round 2
-    all_log_picks = list(r1_picks)
-    poem_picks: list[dict] = []
-    if generation_num > 1:
-        try:
-            if keepalive: keepalive()
-            user = (
-                f"Catalog (for reference):\n\n{catalog}\n\n"
-                f"Meta-logs from round 1:\n\n{r1_rendered}\n\n"
-                + ROUND2_INSTRUCTIONS.format(max_logs=MAX_LOGS_PER_ROUND, max_poems=MAX_POEMS_TO_SAMPLE)
-            )
-            resp = client.messages.create(
-                model=MODEL,
-                max_tokens=MAX_SELECTION_TOKENS,
-                thinking={"type": "adaptive"},
-                output_config={"effort": "low", "format": {"type": "json_schema", "schema": META_ROUND2_SCHEMA}},
-                system=sys_blocks,
-                messages=[{"role": "user", "content": user}],
-            )
-            text = next((b.text for b in resp.content if b.type == "text"), "{}")
-            out = json.loads(text)
-            all_log_picks = list(set(r1_picks) | set(out.get("epochs_to_read", [])[:MAX_LOGS_PER_ROUND]))
-            poem_picks = out.get("poems_to_read", [])[:MAX_POEMS_TO_SAMPLE]
-        except Exception as e:
-            print(f"[META-GARDENER] round 2 failed: {e}", flush=True)
-
-    all_logs_rendered = _meta_render_logs(meta_root, all_log_picks) if all_log_picks else ""
-    poems_rendered = _meta_render_poems(generations_root, poem_picks) if poem_picks else ""
-
-    # Round 3: write the log
+    # --- Round 1: pick first batch of poems ---
+    r1_picks: list[dict] = []
     try:
         if keepalive: keepalive()
-        user = (
-            f"You are writing the meta-gardener's log for epoch {generation_num}.\n\n"
-            f"Meta-logs you asked for:\n\n{all_logs_rendered or '(none)'}\n\n"
-            f"Sampled poem windows:\n\n{poems_rendered or '(none)'}\n\n"
-            f"Top fragments from THIS epoch (one section per flask):\n\n{fragments or '(none yet)'}\n\n"
-            + ROUND3_INSTRUCTIONS
+        user = _shared_context() + "\n\n" + META_PICK_INSTRUCTIONS_R1.format(max_poems=META_POEMS_PER_ROUND)
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_SELECTION_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": META_POEM_PICKS_SCHEMA}},
+            system=sys_blocks,
+            messages=[{"role": "user", "content": user}],
         )
+        text = next((b.text for b in resp.content if b.type == "text"), "{}")
+        r1_picks = json.loads(text).get("poems_to_read", [])[:META_POEMS_PER_ROUND]
+    except Exception as e:
+        print(f"[GARDENER] round 1 failed: {e}", flush=True)
+
+    r1_rendered = _meta_render_poems(generations_root, r1_picks) if r1_picks else ""
+
+    # --- Round 2: pick second batch of poems ---
+    r2_picks: list[dict] = []
+    try:
+        if keepalive: keepalive()
+        user = _shared_context(r1_rendered) + "\n\n" + META_PICK_INSTRUCTIONS_R2.format(max_poems=META_POEMS_PER_ROUND)
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_SELECTION_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": META_POEM_PICKS_SCHEMA}},
+            system=sys_blocks,
+            messages=[{"role": "user", "content": user}],
+        )
+        text = next((b.text for b in resp.content if b.type == "text"), "{}")
+        r2_picks = json.loads(text).get("poems_to_read", [])[:META_POEMS_PER_ROUND]
+    except Exception as e:
+        print(f"[GARDENER] round 2 failed: {e}", flush=True)
+
+    all_poems_rendered = _meta_render_poems(generations_root, r1_picks + r2_picks)
+
+    # --- Round 3: write the log ---
+    try:
+        if keepalive: keepalive()
+        user = _shared_context(all_poems_rendered) + "\n\n" + META_WRITE_INSTRUCTIONS
         resp = client.messages.create(
             model=MODEL,
             max_tokens=MAX_LOG_TOKENS,
@@ -672,7 +754,7 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
         )
         text = next((b.text for b in resp.content if b.type == "text"), "").strip()
     except Exception as e:
-        print(f"[META-GARDENER] round 3 failed: {e}", flush=True)
+        print(f"[GARDENER] round 3 failed: {e}", flush=True)
         return None
 
     if not text:
@@ -681,7 +763,7 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
     epoch_dir.mkdir(parents=True, exist_ok=True)
     if text.strip().upper() == "PASS" or text.strip().split()[0:1] == ["PASS"]:
         (epoch_dir / "gardeners_log.skipped").write_text(
-            "the meta-gardener chose not to write this epoch.\n"
+            "the gardener chose not to write this epoch.\n"
         )
         return None
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

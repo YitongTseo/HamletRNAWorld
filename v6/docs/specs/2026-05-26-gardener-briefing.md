@@ -4,7 +4,7 @@ You have been asked to keep a small log about an artificial ecosystem. This docu
 
 ## What this ecosystem is
 
-The garden is split into **four flasks**, each containing **ten simulated *C. elegans* worms** — so forty worms in total. Each flask is an independent evolutionary experiment: independent NES update, independent lineage, independent sigma. They run in parallel and they don't see each other's poems, but you do. The worms within a flask share the same ten names — Alice, Bob, Carol, Dave, Eve, Frank, Grace, Heidi, Ivan, Judy — so when you reference "Alice" be specific about which flask (flask 1 through flask 4).
+The garden is split into **six flasks**, each containing **six simulated *C. elegans* worms** — so thirty-six worms in total. Each flask is an independent evolutionary experiment: independent NES update, independent lineage, independent sigma. They run in parallel and they don't see each other's poems, but you do. The worms within a flask share the same six names — Alice, Bob, Carol, Dave, Eve, Frank — so when you reference "Alice" be specific about which flask (flask 1 through flask 6).
 
 Each worm's nervous system is wired (in simulation) to the actual 302-neuron connectome of the real animal. Each worm has its own seed and its own copy of the connectome weights, which means each worm responds slightly differently to the same stimulus, and each flask drifts on its own trajectory across generations.
 
@@ -12,7 +12,7 @@ What they eat is words. Lines of Shakespeare's *Hamlet* scroll past them on a 2D
 
 The "chemical signal" each word emits is a 12-dimensional vector. The vector comes from running every unique word in the play through a neural language embedding (`nomic-embed-text-v1.5`), then collapsing the 768 dimensions of that embedding down to 12 using UMAP. Each of the 12 dimensions is wired to one bilateral pair of the worm's chemosensory neurons (ASEL/ASER, AWAL/AWAR, etc.). So when a word lands near a worm, the worm "smells" some mixture of salt, food, danger, novelty, etc. — though those labels are just biological convention, not what the dimensions actually mean here.
 
-After a full pass of *Hamlet* (~6 hours of simulation), each worm has produced a poem of roughly a thousand words. The judge — a separate language model — reads windows of fifteen tokens from each poem and rates them on two axes from 1 to 100: emotional / artistic / poetic impact, and coherence (does this read as language or as noise). A worm's fitness is a non-linear sum of those window scores, weighted so that emotional impact counts 1.5× as much as coherence and so that the top windows dominate the total.
+After a full pass of *Hamlet* (~6 hours of simulation), each worm has produced a poem of roughly a thousand words. The judge — a separate language model — reads windows of fifteen tokens from each poem sampled at random from 25% from the full stream of each worm's corpus and rates them on two axes from 1 to 100: emotional / artistic / poetic impact, and coherence (does this read as language or as noise). A worm's fitness is a non-linear sum of those window scores, weighted so that emotional impact counts 1.5× as much as coherence and so that the top windows dominate the total.
 
 Selection happens through Natural Evolution Strategies. The current generation's best worms suggest a direction in weight-space; the parent weights for the next generation are nudged that way; a fresh population is spawned with Gaussian perturbation around the new parent. A small σ (sigma) parameter controls how aggressive the mutation is, and it adapts up if the population stops improving and down when it does.
 
@@ -26,14 +26,20 @@ You may choose, at any generation, to **not write a log at all**. You can do thi
 
 ## What you have access to
 
-Before you write, you can request to read other things:
+In every round of every epoch, you automatically see:
 
-1. **Previous gardener's logs** — up to five from across the history of this group's generations.
-2. **Sampled poem windows** — heavily downsampled per-window scores from past worms, by your selection of (generation, worm) pairs.
+1. **This epoch's full per-worm metrics** — every worm in every flask: fitness, rank within its flask, word count, windows scored, and its single best-scoring window.
+2. **Your last five gardener's logs** — full text, in chronological order. No selection needed; you always get the most recent five.
+3. **The metrics from those five past epochs** — per-flask best score, sigma, and winning worm.
 
-You request these in two rounds. In round one you see a catalog of every prior generation (with its top score and one-line log summary) and pick a small handful of logs to read. In round two, having read those logs, you pick a few more logs plus a few specific worm-and-generation pairs whose poetry you want to sample. In round three, you write your log.
+In addition, across two rounds, you can pick specific worms to *read poetry from*:
 
-In addition, you always see this generation's top fragments — the three top-fitness worms and their three best-scoring windows each.
+- **Round 1**: pick up to three (flask, generation, worm) triples whose top-scoring poem window you want to read in full.
+- **Round 2**: pick up to three MORE such triples, having now read the first three. Use this round to follow threads — confirm a pattern, contrast something, or chase a hunch.
+
+Then in **Round 3** you write the log entry, with everything you've seen as context. (Or you respond with `PASS` and rest the epoch.)
+
+All past gardener's logs and per-generation data stay on the server permanently. They're committed to git for archival, but the local copies are also never deleted — so reading old metrics or old logs from arbitrary epochs is cheap.
 
 ## What to look for
 
@@ -47,7 +53,7 @@ Scientific:
 - **The connectome may be the bottleneck.** A 302-neuron network with a small chemosensory front-end may simply not have the capacity to select for specific lexical sequences. If everything else looks healthy and we still see no learning, this is the explanation.
 - **UMAP is the wrong fit.** If words that should taste similar end up far apart in UMAP-12 space, the worms can't generalize. If UMAP is over-clumpy, they may oscillate between unrelated clusters.
 - **Group-level convergence.** If the same worm consistently dominates within a flask, the elite-preservation step may be too aggressive and that flask has lost diversity.
-- **Cross-flask divergence (or lack of it).** If all four flasks track each other tightly, the experiment isn't actually four independent runs — something is leaking between them (shared seed, same data files, etc.) and should be investigated. If they diverge wildly, that's interesting and worth noting.
+- **Cross-flask divergence (or lack of it).** If all six flasks track each other tightly, the experiment isn't actually six independent runs — something is leaking between them (shared seed, same data files, etc.) and should be investigated. If they diverge wildly, that's interesting and worth noting.
 
 Aesthetic:
 

@@ -930,8 +930,50 @@ async function initCorpusEmbeddings() {
   } catch (e) {
     console.warn('corpus UMAP not available; hover scatter falling back to PCA-2D', e);
   }
+  // Precompute hex bins for the hover-popup density plot. Done once here so
+  // we don't recompute 4500+ nearest-hex lookups every frame.
+  computeHexBins(pcaData);
 }
 initCorpusEmbeddings();
+
+// Hex-binning of the projected coords. Pointy-top hexagons tiled across
+// [0,1] × [0,1]. Each word is binned to its nearest hex center; the popup
+// renders each hex with grayscale intensity proportional to log(count+1),
+// so white = densest, black = empty. We use log to keep mid-density hexes
+// visible against the few super-dense cluster cores.
+const HEX_NCOLS = 18;
+function computeHexBins(p) {
+  if (!p || !p.pca || !p.pca.length) return;
+  const rUnit = 1 / (HEX_NCOLS * Math.sqrt(3));  // hex "radius" (center to vertex)
+  const hSpacing = rUnit * Math.sqrt(3);          // horizontal step between centers
+  const vSpacing = rUnit * 1.5;                   // vertical step (rows interleave x-offset)
+  const nCols = HEX_NCOLS + 2;                    // padding so the plot edges are covered
+  const nRows = Math.ceil(1 / vSpacing) + 2;
+  const centers = [];
+  for (let row = 0; row < nRows; row++) {
+    const yc = row * vSpacing;
+    const xOffset = (row % 2) ? hSpacing / 2 : 0;
+    for (let col = 0; col < nCols; col++) {
+      centers.push([col * hSpacing + xOffset, yc]);
+    }
+  }
+  const counts = new Array(centers.length).fill(0);
+  const { pca } = p;
+  for (let i = 0; i < pca.length; i++) {
+    const x = pca[i][0], y = pca[i][1];
+    let bestIdx = -1, bestD2 = Infinity;
+    for (let j = 0; j < centers.length; j++) {
+      const dx = centers[j][0] - x;
+      const dy = centers[j][1] - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) { bestD2 = d2; bestIdx = j; }
+    }
+    if (bestIdx >= 0) counts[bestIdx]++;
+  }
+  let maxCount = 0;
+  for (const c of counts) if (c > maxCount) maxCount = c;
+  p.hexBins = { centers, counts, maxCount, radius: rUnit };
+}
 
 function drawTextCanvas() {
   const w = textcanvas.width, h = textcanvas.height;
@@ -1003,40 +1045,93 @@ function drawPcaPopup(word) {
   tctx.textAlign = 'right';
   tctx.fillText(pcaData.projection || 'pca', px + PW - 4, py + 10);
 
-  const { tokens, pca, token_to_idx } = pcaData;
+  const { tokens, pca, token_to_idx, hexBins } = pcaData;
   const margin = 16;
+  const innerW = PW - 2 * margin;
+  const innerH = PH - 2 * margin;
+  const ox = px + margin;
+  const oy = py + margin;
 
-  // All tokens as grey dots
-  tctx.fillStyle = 'rgba(180,180,180,0.35)';
-  for (let i = 0; i < tokens.length; i++) {
-    const [cx, cy] = pca[i];
-    tctx.beginPath();
-    tctx.arc(
-      px + margin + cx * (PW - 2 * margin),
-      py + margin + cy * (PH - 2 * margin),
-      2,
-      0,
-      Math.PI * 2
-    );
-    tctx.fill();
+  // Hex density plot. Each filled hexagon's intensity is log-scaled by the
+  // count of words that fell into it — white = densest cluster cores,
+  // black = empty regions. Plot extents are letterboxed into the popup so
+  // x and y get the same per-unit pixel scale.
+  if (hexBins) {
+    const plotS = Math.min(innerW, innerH);
+    const plotOx = ox + (innerW - plotS) / 2;
+    const plotOy = oy + (innerH - plotS) / 2;
+    const rPx = hexBins.radius * plotS;
+    const logMax = Math.log(1 + hexBins.maxCount);
+    // Pre-compute the 6 hexagon vertices once (pointy-top: vertices at 30°,
+    // 90°, 150°, 210°, 270°, 330° — angle = π/6 + i·π/3).
+    const cos = [], sin = [];
+    for (let i = 0; i < 6; i++) {
+      const a = Math.PI / 6 + i * Math.PI / 3;
+      cos.push(Math.cos(a) * rPx);
+      sin.push(Math.sin(a) * rPx);
+    }
+    for (let i = 0; i < hexBins.centers.length; i++) {
+      const c = hexBins.counts[i];
+      if (c === 0) continue;
+      const t = Math.log(1 + c) / logMax;
+      const g = Math.round(t * 255);
+      tctx.fillStyle = `rgb(${g},${g},${g})`;
+      const cx = plotOx + hexBins.centers[i][0] * plotS;
+      const cy = plotOy + hexBins.centers[i][1] * plotS;
+      tctx.beginPath();
+      tctx.moveTo(cx + cos[0], cy + sin[0]);
+      for (let k = 1; k < 6; k++) tctx.lineTo(cx + cos[k], cy + sin[k]);
+      tctx.closePath();
+      tctx.fill();
+    }
+  } else {
+    // Fallback: hex bins haven't been computed yet (shouldn't normally
+    // happen since they're populated in initCorpusEmbeddings, but a
+    // mid-load hover would hit this path).
+    tctx.fillStyle = 'rgba(180,180,180,0.35)';
+    for (let i = 0; i < tokens.length; i++) {
+      const cx = ox + pca[i][0] * innerW;
+      const cy = oy + pca[i][1] * innerH;
+      tctx.beginPath();
+      tctx.arc(cx, cy, 1.5, 0, Math.PI * 2);
+      tctx.fill();
+    }
   }
 
-  // Highlighted word
-  const idx =
-    token_to_idx[word] ?? token_to_idx[word.toLowerCase()];
+  // Highlighted word — small contrasting marker drawn on top of the
+  // density plot. Cyan reads well against the grayscale background.
+  const idx = token_to_idx[word] ?? token_to_idx[word.toLowerCase()];
   if (idx !== undefined) {
-    const [cx, cy] = pca[idx];
-    const hx = px + margin + cx * (PW - 2 * margin);
-    const hy = py + margin + cy * (PH - 2 * margin);
-    tctx.fillStyle = 'rgba(255,255,255,0.95)';
+    const [cx01, cy01] = pca[idx];
+    let hx, hy;
+    if (hexBins) {
+      const plotS = Math.min(innerW, innerH);
+      const plotOx = ox + (innerW - plotS) / 2;
+      const plotOy = oy + (innerH - plotS) / 2;
+      hx = plotOx + cx01 * plotS;
+      hy = plotOy + cy01 * plotS;
+    } else {
+      hx = ox + cx01 * innerW;
+      hy = oy + cy01 * innerH;
+    }
+    // Outer dark halo + cyan dot for contrast against both white-dense and
+    // black-empty hexes.
+    tctx.fillStyle = 'rgba(0,0,0,0.85)';
     tctx.beginPath();
-    tctx.arc(hx, hy, 4, 0, Math.PI * 2);
+    tctx.arc(hx, hy, 5, 0, Math.PI * 2);
     tctx.fill();
-    // Label
-    tctx.fillStyle = 'rgba(255,255,255,0.9)';
+    tctx.fillStyle = 'rgba(120,220,255,1)';
+    tctx.beginPath();
+    tctx.arc(hx, hy, 3, 0, Math.PI * 2);
+    tctx.fill();
+    // Label with its own dark backdrop.
     tctx.font = '9px ui-monospace, monospace';
     tctx.textAlign = 'left';
-    tctx.fillText(word, hx + 6, hy + 3);
+    const tw = tctx.measureText(word).width;
+    tctx.fillStyle = 'rgba(0,0,0,0.7)';
+    tctx.fillRect(hx + 5, hy - 5, tw + 4, 11);
+    tctx.fillStyle = 'rgba(255,255,255,0.95)';
+    tctx.fillText(word, hx + 7, hy + 3);
   }
 }
 
