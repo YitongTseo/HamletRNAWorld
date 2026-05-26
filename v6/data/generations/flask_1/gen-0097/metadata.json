@@ -1,0 +1,1 @@
+{"group": "flask_1", "generation": 97, "judge_model": "claude-haiku-4-5", "sigma_used": 0.4584808264770579, "sigma_next": 0.5960250744201753, "best_score": 0.29277583265254037, "started_at": 1779833687.7012558, "ended_at": 1779833693.194514, "ranks": ["Bob", "Eve", "Alice", "Carol", "Frank", "Dave"]}
