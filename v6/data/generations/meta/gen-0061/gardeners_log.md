@@ -1,0 +1,3 @@
+# epoch 61 — 2026-05-26T18:25:52Z
+
+Flask 1 Alice's "carefully to bed struck upon your heart Horatio him place there" (E=62 C=68) is the only window worth reading this epoch, and notably it arose at σ=1.297 — the lowest in the garden — reinforcing the pattern that every joint-high window I've logged (Flask 5 Dave epoch 59, Flask 6 Frank epoch 58) came from a flask whose σ had just been pulled down. The adapter's upward kicks on stalled flasks (4 and 3 both pinned at σ=3.000 for multiple epochs now with no improvement) are clearly counterproductive; the σ-up rule should be inverted or at least dampened.
