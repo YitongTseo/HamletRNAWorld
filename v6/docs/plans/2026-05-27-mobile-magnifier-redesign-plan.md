@@ -12,7 +12,7 @@
 
 **Tests during refactor:**
 - `python tests/test_determinism.py` — must pass throughout (no sim changes).
-- `python tests/test_smoke_multi.py` — must pass throughout.
+- `python tests/test_smoke_multi.py` — **SKIPPED for the duration of this redesign.** It fails on the baseline (`main` at commit `0f875a61`) with `AssertionError: Alice ate nothing in 5400 ticks`. This is a pre-existing regression unrelated to the viewer-only work in this plan. To be investigated after the redesign ships — see memory `project-smoke-test-regression`. Implementers: do NOT run this test as part of per-task verification; do NOT attempt to fix it as part of this plan.
 - After each module extraction: `node --check viewer/focus/<file>.js` for syntax, plus boot the dev server and `curl -fsS http://127.0.0.1:8001/focus/Alice` to verify HTML serves.
 - Visual verification is manual — see end of plan for the checklist.
 
