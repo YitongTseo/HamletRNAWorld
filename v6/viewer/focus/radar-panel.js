@@ -15,6 +15,8 @@
 // stays inside drawRadar so it's short-circuited by the visibility check —
 // hiding the radar must not pay its cost each WebSocket frame.
 
+import * as chrome from './panel-chrome.js';
+
 // ---------------------------------------------------------------------------
 // DOM ref + DPR scaling setup
 // ---------------------------------------------------------------------------
@@ -34,12 +36,15 @@ const RADAR_W = 460, RADAR_H = 280;
 // ---------------------------------------------------------------------------
 // View-mode flag (module-local)
 // ---------------------------------------------------------------------------
-let radarVisible = false;  // 'e' toggles
+// radarVisible is now synced via panel-chrome's onShow/onHide callbacks
+// at the bottom of this file. Default = hidden until user opens it.
+let radarVisible = false;
 
 export function isRadarVisible() { return radarVisible; }
+// toggleRadar delegates to panel-chrome so dock + saved state stay in sync.
 export function toggleRadar() {
-  radarVisible = !radarVisible;
-  radarcanvas.style.display = radarVisible ? 'block' : 'none';
+  if (radarVisible) chrome.hidePanel('radar');
+  else chrome.showPanel('radar');
 }
 
 // ---------------------------------------------------------------------------
@@ -215,5 +220,16 @@ export function drawRadar(state) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
 }
+
+// Register with panel-chrome AFTER the toggle/flag declarations so
+// onShow/onHide can flip radarVisible. Saved visibility applied immediately.
+chrome.register({
+  id: 'radar',
+  glyph: '<*+*>',
+  label: 'emotion radar',
+  panelEl: radarcanvas,
+  onShow: () => { radarVisible = true; },
+  onHide: () => { radarVisible = false; },
+});
 
 export { radarcanvas };

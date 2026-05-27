@@ -12,17 +12,23 @@
 // and passed in each call via the `state` parameter; the panel only owns the
 // DOM ref and the visibility flag.
 
+import * as chrome from './panel-chrome.js';
+
 const chemosensoryPanel = document.getElementById('chemosensoryPanel');
 
 // ---------------------------------------------------------------------------
 // View-mode flag (module-local)
 // ---------------------------------------------------------------------------
-let chemosensoryVisible = true;  // 'c' toggles
+// chemosensoryVisible is now synced via panel-chrome's onShow/onHide
+// callbacks below. Default = hidden until the user opens it via dock or 'c'.
+let chemosensoryVisible = false;
 
 export function isChemoVisible() { return chemosensoryVisible; }
+// toggleChemo delegates to panel-chrome so the dock button + saved state
+// stay in sync with the keyboard shortcut.
 export function toggleChemo() {
-  chemosensoryVisible = !chemosensoryVisible;
-  chemosensoryPanel.style.display = chemosensoryVisible ? 'block' : 'none';
+  if (chemosensoryVisible) chrome.hidePanel('chemo');
+  else chrome.showPanel('chemo');
 }
 
 // ---------------------------------------------------------------------------
@@ -136,5 +142,17 @@ export function drawChemoPanel(state) {
 
   chemosensoryPanel.innerHTML = html;
 }
+
+// Register with panel-chrome AFTER the toggle/flag declarations so the
+// onShow/onHide callbacks can flip chemosensoryVisible. chrome.register
+// applies saved visibility immediately (default = hidden on fresh visit).
+chrome.register({
+  id: 'chemo',
+  glyph: '<~~~>',
+  label: 'chemosensory neurons',
+  panelEl: chemosensoryPanel,
+  onShow: () => { chemosensoryVisible = true; },
+  onHide: () => { chemosensoryVisible = false; },
+});
 
 export { chemosensoryPanel };

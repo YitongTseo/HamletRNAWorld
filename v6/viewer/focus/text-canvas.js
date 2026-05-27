@@ -11,7 +11,7 @@
 // pixels, NOT CSS pixels. Any code computing screen-space positions in CSS
 // coords must read `window.innerWidth` / `window.innerHeight` instead.
 import { camera } from './three-scene.js';
-import { drawPcaPopup } from './pca-popup.js';
+import { drawPcaPopup, isPcaVisible } from './pca-popup.js';
 
 // ---------------------------------------------------------------------------
 // Canvas + 2D context
@@ -97,8 +97,9 @@ function drawTextCanvas(state) {
     tctx.fillText(item.word, sx, sy);
   }
 
-  // PCA popup for nearest hovered word
-  if (nearestWord && minDist < 80 && pcaData) {
+  // PCA popup for nearest hovered word — only when the user has opened it
+  // via the dock (glyph [x,y]). Default = closed.
+  if (isPcaVisible() && nearestWord && minDist < 80 && pcaData) {
     drawPcaPopup(nearestWord.word, mouseScreenPos, pcaData);
   }
 }

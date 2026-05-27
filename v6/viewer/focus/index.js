@@ -13,8 +13,27 @@ import {
   toggleMotorLabels,
   getMotorLabelsVisible,
 } from './network-panel.js';
-import { drawChemoPanel, toggleChemo } from './chemo-panel.js';
+import { drawChemoPanel, toggleChemo, isChemoVisible } from './chemo-panel.js';
 import { drawRadar, toggleRadar, isRadarVisible } from './radar-panel.js';
+import * as chrome from './panel-chrome.js';
+
+// Register the static HTML overlays (#title-nav-wrap, #help) with
+// panel-chrome so the dock can hide / reopen them like any other panel.
+// The panel modules (network, chemo, radar, pca) register themselves at
+// their own import time — these two don't have modules, so they're
+// registered here in the entrypoint.
+chrome.register({
+  id: 'titleNav',
+  glyph: '>><>><',
+  label: 'worm title + nav',
+  panelEl: document.getElementById('title-nav-wrap'),
+});
+chrome.register({
+  id: 'help',
+  glyph: '[ ? ]',
+  label: 'keyboard legend',
+  panelEl: document.getElementById('help'),
+});
 
 const hud = document.getElementById('hud');
 
@@ -88,8 +107,11 @@ function connect() {
     smellsData = msg.smells || [];
     latestResidual = msg.residual || { pca: new Array(12).fill(0), words: [] };
     const wordImpact = computeWordImpact();
-    drawChemoPanel({ corpusPca, contributions: wordImpact.contributions });
-    drawRadar({ corpusPca, computeWordImpact });
+    // Each panel's own draw fn short-circuits when hidden, but we also guard
+    // here so once-per-frame work (string building, etc.) doesn't fire when
+    // the panel is hidden via the dock.
+    if (isChemoVisible()) drawChemoPanel({ corpusPca, contributions: wordImpact.contributions });
+    if (isRadarVisible()) drawRadar({ corpusPca, computeWordImpact });
     wormHeadPos = { x: msg.head[0], y: msg.head[1] };
     neuronActivity = msg.neurons || {};
     stimFlags = msg.stim;

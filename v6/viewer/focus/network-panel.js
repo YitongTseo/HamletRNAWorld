@@ -14,6 +14,7 @@
 //   'm' — show/hide motor labels (legacy graph view only)
 
 import { drawXRay, NEURON_CLASS_PALETTE, drawNeuronLegend } from './xray-render.js';
+import * as chrome from './panel-chrome.js';
 
 // ---------------------------------------------------------------------------
 // Canvas / DPR setup
@@ -68,15 +69,21 @@ export function buildPositions(neurons, rawPositions) {
 // ---------------------------------------------------------------------------
 // View-mode flags (module-local)
 // ---------------------------------------------------------------------------
-let netVisible = true;
+// netVisible is now synced via panel-chrome's onShow/onHide callbacks below.
+// chrome.register applies the saved visibility (default = hidden) and fires
+// the appropriate callback, so the flag starts coherent with the DOM.
+let netVisible = false;
 let xrayMode = true;           // 'x' toggles between x-ray (default) and the legacy static graph
 let xrayLabelsVisible = false; // 'l' toggles neuron-name labels in the x-ray view
 let motorLabelsVisible = false; // 'm' toggles motor labels in the legacy graph view
 
 export function isNetVisible() { return netVisible; }
+// toggleNetVisible delegates to panel-chrome so the dock button + saved
+// state stay in sync with the keyboard shortcut. The onShow/onHide
+// callbacks below flip `netVisible` so subsequent reads remain coherent.
 export function toggleNetVisible() {
-  netVisible = !netVisible;
-  netcanvas.style.display = netVisible ? 'block' : 'none';
+  if (netVisible) chrome.hidePanel('network');
+  else chrome.showPanel('network');
 }
 export function toggleXrayMode() { xrayMode = !xrayMode; }
 // Exported for Task 17: the magnifier also needs to react to the 'l' key
@@ -248,5 +255,17 @@ export function drawNetworkPanel(state) {
     drawNetCanvas(graph, neuronActivity, stimFlags);
   }
 }
+
+// Register with panel-chrome AFTER the toggle/flag declarations so the
+// onShow/onHide callbacks can flip netVisible. chrome.register applies the
+// saved visibility immediately, so on a fresh visit the panel is hidden.
+chrome.register({
+  id: 'network',
+  glyph: 'o-+-o',
+  label: 'neural network / x-ray',
+  panelEl: netcanvas,
+  onShow: () => { netVisible = true; },
+  onHide: () => { netVisible = false; },
+});
 
 export { netcanvas, ctx, NET_W, NET_H, NEURON_CLASS_PALETTE };

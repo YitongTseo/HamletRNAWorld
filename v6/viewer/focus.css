@@ -44,10 +44,20 @@
         z-index: 11;
         display: none;
       }
+      /* Wrapper for #wormtitle + #nav so a single panelEl toggles both via
+         panel-chrome. The wrap itself ignores pointer events (pointer-events:
+         none) — children opt back in with pointer-events: auto so links and
+         hovers still work even when the wrap covers the top strip. */
+      #title-nav-wrap {
+        position: fixed; top: 0; left: 0; right: 0;
+        pointer-events: none;
+        z-index: 20;
+      }
       #nav {
         position: fixed; top: 8px; right: 12px;
         font: 12px ui-monospace, monospace; color: #6f9; opacity: 0.85;
         z-index: 20;
+        pointer-events: auto;
       }
       #nav a { color: #6f9; text-decoration: none; padding: 4px 8px; }
       #nav a:hover { background: rgba(100, 200, 255, 0.15); }
@@ -55,6 +65,7 @@
         position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
         font: 14px ui-monospace, monospace; color: #afa; opacity: 0.8;
         text-shadow: 0 0 4px #0f0a; z-index: 20;
+        pointer-events: auto;
       }
       #dock {
         position: fixed;

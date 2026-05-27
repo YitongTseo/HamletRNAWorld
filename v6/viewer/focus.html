@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>wormlet — focus</title>
-    <link rel="stylesheet" href="/static/focus.css?v=3">
+    <link rel="stylesheet" href="/static/focus.css?v=4">
     <script type="importmap">
       {
         "imports": {
@@ -21,8 +21,10 @@
     <canvas id="radarcanvas"></canvas>
     <div id="chemosensoryPanel"></div>
     <div id="hud">connecting…</div>
-    <div id="wormtitle"></div>
-    <div id="nav"><a href="/">← all worms</a><a href="/poems">poems</a><a href="/about">about</a><a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="opacity:0.55; font-size:11px;">by Yitong</a></div>
+    <div id="title-nav-wrap">
+      <div id="wormtitle"></div>
+      <div id="nav"><a href="/">← all worms</a><a href="/poems">poems</a><a href="/about">about</a><a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="opacity:0.55; font-size:11px;">by Yitong</a></div>
+    </div>
     <div id="help">press 'c' chemo · 'n' network · 'x' x-ray ↔ graph · 'l' neuron labels · 'o' smells · 'e' emotion radar</div>
     <script>
       // Show worm name in the title.
@@ -30,6 +32,6 @@
       document.getElementById('wormtitle').textContent = wormName;
       document.title = `wormlet — ${wormName}`;
     </script>
-    <script type="module" src="/static/focus/index.js?v=3"></script>
+    <script type="module" src="/static/focus/index.js?v=4"></script>
   </body>
 </html>
