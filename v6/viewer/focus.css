@@ -56,3 +56,24 @@
         font: 14px ui-monospace, monospace; color: #afa; opacity: 0.8;
         text-shadow: 0 0 4px #0f0a; z-index: 20;
       }
+      #dock {
+        position: fixed;
+        bottom: 8px; right: 10px;
+        display: flex;
+        gap: 6px;
+        z-index: 30;
+      }
+      #dock button {
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(102, 255, 153, 0.4);
+        color: #6f9;
+        font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+        text-shadow: 0 0 4px #0f0a;
+        width: 48px; height: 28px;
+        padding: 0;
+        cursor: pointer;
+        opacity: 0.75;
+        transition: opacity 0.15s, color 0.15s;
+      }
+      #dock button:hover { opacity: 1.0; color: #afa; }
+      #dock button:active { color: #fff; }
