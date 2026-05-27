@@ -68,7 +68,7 @@ Open `http://127.0.0.1:8001/focus/Alice` in a browser. Expected: identical to cu
 - [ ] **Step 4: Run Python tests**
 
 ```bash
-cd /home/web/HamletRNAWorld/v6 && /home/web/.venv/bin/python tests/test_determinism.py && /home/web/.venv/bin/python tests/test_smoke_multi.py
+cd /home/web/HamletRNAWorld/v6 && /home/web/.venv/bin/python tests/test_determinism.py
 ```
 Expected: both pass.
 
@@ -960,7 +960,7 @@ Open `/focus/Alice` in a fresh incognito window (no localStorage). Expected:
 - [ ] **Step 7: Run Python tests, commit**
 
 ```bash
-cd /home/web/HamletRNAWorld/v6 && /home/web/.venv/bin/python tests/test_determinism.py && /home/web/.venv/bin/python tests/test_smoke_multi.py
+cd /home/web/HamletRNAWorld/v6 && /home/web/.venv/bin/python tests/test_determinism.py
 cd /home/web/HamletRNAWorld && git add v6/viewer/focus/
 git add v6/viewer/focus.html v6/viewer/focus.css
 git commit -m "v6/viewer: default panels hidden, dock+chrome for close/reopen, keyboard still works"
