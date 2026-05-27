@@ -77,3 +77,27 @@
       }
       #dock button:hover { opacity: 1.0; color: #afa; }
       #dock button:active { color: #fff; }
+.panel-close-btn {
+  position: absolute; top: 2px; right: 4px;
+  width: 16px; height: 16px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: 14px ui-monospace, monospace;
+  cursor: pointer;
+  opacity: 0.6;
+  padding: 0;
+  line-height: 14px;
+  z-index: 1;
+}
+.panel-close-btn:hover { opacity: 1.0; }
+
+.panel--mobile {
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  top: auto !important;
+  width: 100vw !important;
+  max-height: 75vh !important;
+  border-radius: 12px 12px 0 0 !important;
+}
