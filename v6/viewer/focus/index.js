@@ -14,6 +14,7 @@ import {
   getMotorLabelsVisible,
 } from './network-panel.js';
 import { drawChemoPanel, toggleChemo } from './chemo-panel.js';
+import { drawRadar, toggleRadar, isRadarVisible } from './radar-panel.js';
 
 const hud = document.getElementById('hud');
 
@@ -88,7 +89,7 @@ function connect() {
     latestResidual = msg.residual || { pca: new Array(12).fill(0), words: [] };
     const wordImpact = computeWordImpact();
     drawChemoPanel({ corpusPca, contributions: wordImpact.contributions });
-    updateRadarPanel();
+    drawRadar({ corpusPca, computeWordImpact });
     wormHeadPos = { x: msg.head[0], y: msg.head[1] };
     neuronActivity = msg.neurons || {};
     stimFlags = msg.stim;
@@ -224,167 +225,7 @@ function computeWordImpact() {
 // stackedBar (and its wordHue helper) now live in ./chemo-panel.js — they
 // were only used by the chemosensory panel's bar rendering.
 
-// -------- Emotion radar panel (Item 3) --------
-// 24 small radar charts, one per chemosensory neuron. For each neuron, the
-// 8 NRC emotions are axes; the polygon shows the contribution-weighted
-// emotional shape of words currently driving the neuron. Useful as an
-// interpretability lens onto what each PC has "absorbed" from the corpus.
-
-const EMOTION_AXIS_COLORS = {
-  joy: '#fc6', trust: '#6f9', anticipation: '#9cf', surprise: '#cfc',
-  fear: '#c6f', disgust: '#9c6', sadness: '#69c', anger: '#f66',
-};
-
-function _radarLayout() {
-  // 4 cols × 3 rows = 12 charts, one per PC / neuron pair. (L and R of the
-  // same pair have identical emotion content — only their magnitudes
-  // differ — so 24 separate charts were redundant.)
-  const COLS = 4, ROWS = 3;
-  const W = radarcanvas.width / (window.devicePixelRatio || 1);
-  const H = radarcanvas.height / (window.devicePixelRatio || 1);
-  const padTop = 28, padBottom = 6, padX = 6;
-  const cellW = (W - padX * 2) / COLS;
-  const cellH = (H - padTop - padBottom) / ROWS;
-  return { COLS, ROWS, W, H, padTop, padX, cellW, cellH };
-}
-
-function updateRadarPanel() {
-  if (!radarVisible || !corpusPca) return;
-  if (!corpusPca.emotion_keys || !corpusPca.emotions) {
-    // Corpus PCA cache predates the emotion fields — rebuild needed.
-    radarctx.clearRect(0, 0, radarcanvas.width, radarcanvas.height);
-    radarctx.fillStyle = '#fc6';
-    radarctx.font = '11px ui-monospace, monospace';
-    radarctx.fillText('rebuild corpus_pca.json with emotions', 10, 20);
-    return;
-  }
-  const emotionKeys = corpusPca.emotion_keys;
-  const wordIdx = corpusPca._wordIdx ||
-    (corpusPca._wordIdx = Object.fromEntries(corpusPca.words.map((w, i) => [w, i])));
-  const { contributions } = computeWordImpact();
-
-  // For each PC / neuron pair, aggregate emotion-weighted contributions
-  // across BOTH L and R members. (Same words contribute to both with
-  // different magnitudes; we want the pair-level emotional shape.)
-  const pairs = corpusPca.pc_neuron_pairs;
-  const weightedByPair = [];
-  let globalMax = 0;
-  for (let i = 0; i < pairs.length; i++) {
-    const [L, R] = pairs[i];
-    const w = new Array(emotionKeys.length).fill(0);
-    const merged = [...(contributions[L] || []), ...(contributions[R] || [])];
-    for (const c of merged) {
-      const k = c.word.toLowerCase().replace(/^'+|'+$/g, '');
-      const wi = wordIdx[k];
-      if (wi === undefined) continue;
-      const ev = corpusPca.emotions[wi];
-      for (let e = 0; e < emotionKeys.length; e++) w[e] += c.value * ev[e];
-    }
-    weightedByPair.push(w);
-    for (const v of w) if (v > globalMax) globalMax = v;
-  }
-  const hasEmotionalSignal = globalMax > 0;
-  if (!hasEmotionalSignal) globalMax = 1;
-
-  // Render
-  const ctx = radarctx;
-  const { COLS, ROWS, W, H, padTop, padX, cellW, cellH } = _radarLayout();
-  ctx.clearRect(0, 0, W, H);
-
-  // Title
-  ctx.fillStyle = '#8f8';
-  ctx.font = 'bold 11px ui-monospace, monospace';
-  ctx.textBaseline = 'top';
-  ctx.fillText('● EMOTION RADAR — what each PC is absorbing', 8, 4);
-  ctx.fillStyle = '#9c9';
-  ctx.font = '9px ui-monospace, monospace';
-  if (hasEmotionalSignal) {
-    ctx.fillText('contribution-weighted NRC emotions per PC pair', 8, 16);
-  } else {
-    ctx.fillStyle = '#fc6';
-    ctx.fillText('no words with NRC emotional content nearby', 8, 16);
-  }
-
-  const axes = emotionKeys.length;
-  for (let idx = 0; idx < pairs.length; idx++) {
-    const [L] = pairs[idx];
-    const pairBase = L.slice(0, -1);
-    const col = idx % COLS;
-    const row = (idx / COLS) | 0;
-    const cx = padX + col * cellW + cellW / 2;
-    const cy = padTop + row * cellH + cellH / 2;
-    const radius = Math.min(cellW, cellH) * 0.32;
-
-    // Background rings
-    ctx.strokeStyle = 'rgba(150,200,255,0.10)';
-    ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = 'rgba(150,200,255,0.07)';
-    ctx.beginPath(); ctx.arc(cx, cy, radius * 0.5, 0, Math.PI * 2); ctx.stroke();
-
-    // Axis spokes + (on top-right cell only) emotion abbreviations
-    ctx.strokeStyle = 'rgba(150,200,255,0.10)';
-    ctx.beginPath();
-    for (let a = 0; a < axes; a++) {
-      const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.cos(ang) * radius, cy + Math.sin(ang) * radius);
-    }
-    ctx.stroke();
-
-    // Polygon
-    const w = weightedByPair[idx];
-    const hue = pcHue(idx);
-    ctx.beginPath();
-    for (let a = 0; a < axes; a++) {
-      const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
-      const r = (w[a] / globalMax) * radius;
-      const x = cx + Math.cos(ang) * r;
-      const y = cy + Math.sin(ang) * r;
-      if (a === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.fillStyle = `hsla(${hue}, 75%, 60%, 0.32)`;
-    ctx.fill();
-    ctx.strokeStyle = `hsl(${hue}, 80%, 70%)`;
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-
-    // Emotion dots at non-trivial axes (helps read the polygon shape)
-    for (let a = 0; a < axes; a++) {
-      const r = (w[a] / globalMax) * radius;
-      if (r < 1) continue;
-      const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
-      ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#fff';
-      ctx.beginPath();
-      ctx.arc(cx + Math.cos(ang) * r, cy + Math.sin(ang) * r, 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Label below
-    ctx.fillStyle = `hsl(${hue}, 55%, 78%)`;
-    ctx.font = '9px ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText(`PC${idx} · ${pairBase}`, cx, cy + radius + 2);
-
-    // Axis legend only on the top-right cell.
-    if (idx === COLS - 1) {
-      ctx.textAlign = 'left';
-      ctx.font = '8px ui-monospace, monospace';
-      for (let a = 0; a < axes; a++) {
-        const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
-        const lx = cx + Math.cos(ang) * (radius + 3);
-        const ly = cy + Math.sin(ang) * (radius + 3);
-        ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#fff';
-        ctx.fillText(emotionKeys[a].slice(0, 3), lx, ly);
-      }
-    }
-  }
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-}
-
+// Emotion radar panel now lives in ./radar-panel.js as drawRadar.
 // updateChemosensoryPanel now lives in ./chemo-panel.js as drawChemoPanel.
 
 // ---------------------------------------------------------------------------
@@ -528,46 +369,7 @@ let smellsVisible = true;     // toggle with 'o' key
 let isPaused = false;         // toggled with spacebar
 
 // Chemosensory panel state + DOM ref live in ./chemo-panel.js.
-
-let radarVisible = false;        // toggle with 'e' key
-const radarcanvas = document.getElementById('radarcanvas');
-const radarctx = radarcanvas.getContext('2d');
-// Hardcode the canvas buffer size to match the CSS box (the element is
-// display:none at load, so getBoundingClientRect returns 0×0 — using it
-// would size the buffer to 1×1 and make all drawing invisible).
-const RADAR_W = 460, RADAR_H = 280;
-{
-  const _dpr = Math.min(window.devicePixelRatio || 1, 2);
-  radarcanvas.width = RADAR_W * _dpr;
-  radarcanvas.height = RADAR_H * _dpr;
-  radarctx.scale(_dpr, _dpr);
-}
-
-// Neuron type to emotion mapping (for display)
-const neuronEmotionMap = {
-  'ASEL': 'salt/attract (L)',
-  'ASER': 'salt/repel (R)',
-  'AWAL': 'food-odor (L)',
-  'AWAR': 'food-odor (R)',
-  'AWBL': 'approach (L)',
-  'AWBR': 'approach (R)',
-  'AWCL': 'CO2/safety (L)',
-  'AWCR': 'CO2/safety (R)',
-  'ASIL': 'hunger/arousal (L)',
-  'ASIR': 'hunger/arousal (R)',
-  'ASJL': 'taste/novel (L)',
-  'ASJR': 'taste/novel (R)',
-  'ASHL': 'pain/avoid (L)',
-  'ASHR': 'pain/avoid (R)',
-  'ASKL': 'protect (L)',
-  'ASKR': 'protect (R)',
-  'ASGL': 'integrate (L)',
-  'ASGR': 'integrate (R)',
-  'ADFL': 'food-chemo (L)',
-  'ADFR': 'food-chemo (R)',
-  'ADLL': 'polymodal (L)',
-  'ADLR': 'polymodal (R)',
-};
+// Emotion radar panel state + DOM ref live in ./radar-panel.js.
 
 // Track mouse movement
 document.addEventListener('mousemove', (ev) => {
@@ -603,9 +405,9 @@ window.addEventListener('keydown', ev => {
     toggleChemo();
   }
   if (ev.key === 'e' || ev.key === 'E') {
-    radarVisible = !radarVisible;
-    radarcanvas.style.display = radarVisible ? 'block' : 'none';
-    if (radarVisible) updateRadarPanel();  // paint immediately, don't wait for next WS frame
+    toggleRadar();
+    // Paint immediately on open, don't wait for the next WS frame.
+    if (isRadarVisible()) drawRadar({ corpusPca, computeWordImpact });
   }
   if (ev.key === ' ') {
     ev.preventDefault();
