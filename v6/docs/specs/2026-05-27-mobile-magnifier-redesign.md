@@ -14,7 +14,7 @@ The `/focus/<name>` page works well on desktop but has three issues:
 
 ## Goals
 
-- Both viewports default to a clean view: just the worm + the drifting Hamlet text. Everything else opens via small icons in a corner dock.
+- Both viewports default to a clean view: just the worm + the drifting Hamlet text. Everything else opens via small ASCII glyphs in a corner dock (green monospace to match the site's terminal vibe — see Dock section for the glyph set).
 - Mobile zooms the camera so the worm and text fill the screen (the simulation is unchanged; only the camera frustum scales).
 - All overlays close with an X and reopen from the dock. State persists per-worm in `localStorage`.
 - A new draggable circular magnifier lens reveals the neural x-ray overlaid on the worm body wherever the user drags it.
@@ -32,7 +32,7 @@ The `/focus/<name>` page works well on desktop but has three issues:
 
 - **Default visibility:** all panels collapsed by default on first visit, both mobile and desktop. Simpler than viewport-dependent defaults.
 - **Mobile zoom:** camera frustum only (~0.55× scale), not text scaling. Text is part of the simulation's spatial output.
-- **Magnifier:** large drag-only lens with X to close and 🔍 dock icon to reopen. Inside shows x-ray overlay; outside is unchanged (no dimming). On mobile, sized ~30% of viewport min-dimension.
+- **Magnifier:** large drag-only lens with X to close and `(°o°)` dock glyph to reopen. Inside shows x-ray overlay; outside is unchanged (no dimming). On mobile, sized ~30% of viewport min-dimension.
 - **Refactor first:** `focus.js` (1932 lines) gets decomposed into modules before features are added, so the refactor is reviewable as a separate behavior-preserving change.
 
 ## File layout
@@ -103,7 +103,7 @@ One exported function:
 register({
   id,              // 'network' | 'chemo' | 'radar' | 'magnifier' | ...
   label,           // visible label inside the dock-button tooltip
-  icon,            // emoji or SVG used in the dock
+  glyph,           // ASCII glyph string used in the dock (e.g. '(°o°)')
   dockCorner,      // 'bottom-right' default; other corners reserved for future
   panelEl,         // DOM element to show/hide
   onShow, onHide,  // optional lifecycle hooks (e.g., start/stop the panel's draw loop)
@@ -118,18 +118,25 @@ Behavior:
 
 ### `dock.js`
 
-A single `<div id="dock">` fixed at the bottom-right, holding a horizontal strip of `<button>` reopen icons. Each button is 32×32, semi-transparent (`background: rgba(0,0,0,0.5)`, border to match the panel it represents). Only buttons for *closed* panels are visible — clicking one shows its panel and hides the button.
+A single `<div id="dock">` fixed at the bottom-right, holding a horizontal strip of `<button>` reopen "glyphs". Each button is **48×28**, monospace text, semi-transparent (`background: rgba(0,0,0,0.5)`, 1px border in the panel's accent color). Only buttons for *closed* panels are visible — clicking one shows its panel and hides the button.
+
+**Icons are ASCII glyphs, not emoji** — to match the terminal/monospace vibe of the rest of the site. Rendered in the site's existing green palette (`#6f9`, font `14px ui-monospace, monospace`, with subtle `text-shadow: 0 0 4px #0f0a` to match the existing `#hud` style).
 
 The dock starts populated with all known panels' icons (since the default state is all-closed). As panels open, their icons disappear from the dock.
 
-Initial icon set:
-- 🔍 magnifier
-- 🧠 network / x-ray
-- 📊 chemosensory
-- ⚡ emotion radar
-- 📈 hover-PCA popup
-- ℹ️ help / keyboard legend
-- 🏷️ worm name + nav
+Initial glyph set (5 chars each, monospace-aligned):
+
+| Panel | Glyph | Notes |
+|---|---|---|
+| magnifier | `(°o°)` | a lens with something inside |
+| network / x-ray | `o-+-o` | two neurons connected through a junction |
+| chemosensory | `<~~~>` | smell wafting |
+| emotion radar | `<*+*>` | radial radar sweep |
+| hover-PCA popup | `[x,y]` | word coordinate |
+| help / legend | `[ ? ]` | self-explanatory |
+| worm name + nav | `>><>><` | the user's own suggestion — wormy swimmy back-to-grid |
+
+Hover state: glyph brightens (`opacity: 1.0`, `color: #afa`). Active/pressed: brief flash to `#fff`.
 
 Z-index ordering: dock at `z-index: 30` (above panels, below the magnifier and any tooltips).
 
