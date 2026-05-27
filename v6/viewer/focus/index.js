@@ -86,7 +86,8 @@ function connect() {
     setFood(msg.food);
     smellsData = msg.smells || [];
     latestResidual = msg.residual || { pca: new Array(12).fill(0), words: [] };
-    drawChemoPanel({ corpusPca, contributions: computeWordImpact().contributions });
+    const wordImpact = computeWordImpact();
+    drawChemoPanel({ corpusPca, contributions: wordImpact.contributions });
     updateRadarPanel();
     wormHeadPos = { x: msg.head[0], y: msg.head[1] };
     neuronActivity = msg.neurons || {};
@@ -107,7 +108,7 @@ function connect() {
     // total chemosensory contribution (sum of L+R activations across
     // all 12 pairs) for in-range smells, plus the per-PC residual ×
     // word-decay for recently eaten words.
-    const wordImpact = computeWordImpact();
+    // (wordImpact computed once above for both drawChemoPanel + this HUD row.)
     let row2 = `<span style="opacity:0.55;">smelling:</span> `;
     if (wordImpact.entries.length === 0) {
       row2 += `<span style="opacity:0.45;">— nothing in range —</span>`;
