@@ -5,6 +5,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { cameraFrustumScale, onViewportChange } from './responsive.js';
 
 // ---------------------------------------------------------------------------
 // Scene / camera / renderer
@@ -52,20 +53,36 @@ function resize() {
   renderer.setSize(w, h, false);
   composer.setSize(w, h);
   bloom.setSize(w, h);
+  updateCameraFrustum();
+}
 
+// Set the orthographic frustum based on current viewport aspect ratio and
+// the mobile zoom factor from responsive.js. On mobile (s = 0.55) the half
+// extents shrink, which makes the worm and surrounding Hamlet text appear
+// ~1.8x larger so they read on a narrow viewport.
+function updateCameraFrustum() {
+  const w = window.innerWidth, h = window.innerHeight;
   const worldAspect = WORLD_W / WORLD_H;
   const viewAspect = w / h;
   let vw = WORLD_W, vh = WORLD_H;
   if (viewAspect > worldAspect) vw = WORLD_H * viewAspect;
   else vh = WORLD_W / viewAspect;
+  const s = cameraFrustumScale();
   const cx = WORLD_W / 2, cy = WORLD_H / 2;
-  camera.left = cx - vw / 2;
-  camera.right = cx + vw / 2;
-  camera.top = cy - vh / 2;     // y-down (see camera comment above)
-  camera.bottom = cy + vh / 2;
+  camera.left = cx - (vw * s) / 2;
+  camera.right = cx + (vw * s) / 2;
+  camera.top = cy - (vh * s) / 2;   // y-down (see camera comment above)
+  camera.bottom = cy + (vh * s) / 2;
   camera.updateProjectionMatrix();
 }
+
 resize();
 window.addEventListener('resize', resize);
+// responsive.js fires a debounced (100ms) resize event; the immediate
+// window 'resize' listener above handles the sync renderer.setSize + frustum
+// update, this listener handles the case where cameraFrustumScale() toggles
+// across the MOBILE_BREAKPOINT during a debounced final event. Both calls
+// are idempotent, so the redundant firing is harmless.
+onViewportChange(updateCameraFrustum);
 
 export { canvas, renderer, scene, camera, composer, bloom, resize, WORLD_W, WORLD_H };
