@@ -3,6 +3,16 @@ import * as THREE from 'three';
 import { canvas, renderer, scene, camera, composer, bloom, resize, WORLD_W, WORLD_H } from './three-scene.js';
 import { bodyMaterial, organMaterial, setMidline, getMidline, getWormMesh } from './worm-render.js';
 import { textcanvas, drawTextCanvas } from './text-canvas.js';
+import {
+  buildPositions,
+  drawNetworkPanel,
+  isNetVisible,
+  toggleNetVisible,
+  toggleXrayMode,
+  toggleXrayLabels,
+  toggleMotorLabels,
+  getMotorLabelsVisible,
+} from './network-panel.js';
 
 const hud = document.getElementById('hud');
 
@@ -559,21 +569,10 @@ function computeHexBins(p) {
 // drawTextCanvas / drawPcaPopup / drawSmells now live in ./text-canvas.js.
 
 // ---------------------------------------------------------------------------
-// Neural network graph visualization
+// Network panel (#netcanvas) — owned by ./network-panel.js. It manages
+// the canvas DOM ref + DPR + the x-ray/legacy-graph dispatch. This file
+// just feeds it live state each frame and forwards keypresses.
 // ---------------------------------------------------------------------------
-// Neural network graph visualization (anatomical layout)
-// ---------------------------------------------------------------------------
-const netcanvas = document.getElementById('netcanvas');
-const ctx = netcanvas.getContext('2d');
-const NET_W = 500, NET_H = 360;
-const LEGEND_H = 72;
-const NEURO_TOP = LEGEND_H + 2;
-const NEURO_H = NET_H - LEGEND_H;
-const PAD = 12;
-const dpr = window.devicePixelRatio || 1;
-netcanvas.width  = NET_W * dpr;
-netcanvas.height = NET_H * dpr;
-ctx.scale(dpr, dpr);
 
 // Text canvas (textcanvas/tctx/resize handler) lives in ./text-canvas.js;
 // the mousemove handler below still needs `textcanvas` for cursor → world
@@ -582,10 +581,6 @@ ctx.scale(dpr, dpr);
 // Track mouse position in screen coordinates
 let mouseScreenPos = { x: 0, y: 0 };
 
-let netVisible = true;
-let motorLabelsVisible = false;
-let xrayMode = true;           // 'x' toggles between x-ray (default) and the legacy static graph
-let xrayLabelsVisible = false; // 'l' toggles neuron-name labels in the x-ray view
 let graph = null;
 let neuronActivity = {};
 let stimFlags = { hunger: false, nose_touch: false, food_sense: false };
@@ -677,17 +672,16 @@ document.addEventListener('mousemove', (ev) => {
 
 window.addEventListener('keydown', ev => {
   if (ev.key === 'n' || ev.key === 'N') {
-    netVisible = !netVisible;
-    netcanvas.style.display = netVisible ? 'block' : 'none';
+    toggleNetVisible();
   }
   if (ev.key === 'x' || ev.key === 'X') {
-    xrayMode = !xrayMode;
+    toggleXrayMode();
   }
   if (ev.key === 'l' || ev.key === 'L') {
-    xrayLabelsVisible = !xrayLabelsVisible;
+    toggleXrayLabels();
   }
   if (ev.key === 'm' || ev.key === 'M') {
-    motorLabelsVisible = !motorLabelsVisible;
+    toggleMotorLabels();
   }
   if (ev.key === 'o' || ev.key === 'O') {
     smellsVisible = !smellsVisible;
@@ -707,35 +701,6 @@ window.addEventListener('keydown', ev => {
     debugPost('pause', { paused: !window.__lastPaused });
   }
 });
-
-// Map OpenWorm anatomical coords to canvas coords.
-const AP_MIN = -290, AP_MAX = 420;
-const DV_MIN = -90,  DV_MAX = 65;
-
-function buildPositions(neurons, rawPositions) {
-  const N = neurons.length;
-  const pos = new Float32Array(N * 2);
-  const apRange = AP_MAX - AP_MIN;
-  const dvRange = DV_MAX - DV_MIN;
-  const neuroW = NET_W - PAD * 2;
-  let fallbackX = PAD + neuroW * 0.6;
-
-  for (let i = 0; i < N; i++) {
-    const xyz = rawPositions[i];
-    let cx, cy;
-    if (xyz) {
-      cx = PAD + (xyz[1] - AP_MIN) / apRange * neuroW;
-      cy = NEURO_TOP + PAD + (1 - (xyz[2] - DV_MIN) / dvRange) * (NEURO_H - PAD * 2);
-    } else {
-      cx = fallbackX;
-      cy = NEURO_TOP + NEURO_H / 2 + (Math.random() - 0.5) * 40;
-      fallbackX = PAD + neuroW * 0.6 + ((fallbackX + 3 - PAD) % (neuroW * 0.4));
-    }
-    pos[i * 2]     = cx;
-    pos[i * 2 + 1] = cy;
-  }
-  return pos;
-}
 
 async function initGraph() {
   const data = await (await fetch('/api/graph')).json();
@@ -759,401 +724,10 @@ async function initGraph() {
 }
 initGraph();
 
-// -------- X-ray worm view (Item 4) --------
-// Overlay the 301 connectome neurons onto the actual moving worm body
-// instead of a static anatomical layout. The worm midline streams in
-// live from the WS; each neuron has a precomputed (axial∈[0,1],
-// lateral∈[-1,+1]) anchor from cache/neuron_body_coords.json. At render
-// time we sample the midline at the neuron's axial position, get the
-// local tangent + perpendicular, and place the neuron at
-// midline_point + perpendicular × lateral × body_half_width.
-//
-// Net effect: when the worm twists, the neurons twist with it — like
-// peering at the wiggling animal through a soft X-ray.
-
-const XRAY_BODY_HALF_WIDTH = 18;   // panel-px to one side at midbody
-const XRAY_HEAD_THIN_FRAC = 0.92;  // fraction along axis where body still wider
-const XRAY_TAIL_THIN_FRAC = 0.85;
-
-// Cache: contour points so we don't keep allocating arrays
-const _xrayBuf = { contourTop: [], contourBot: [], neuronPos: new Map() };
-
-function _fitMidlineToPanel(midline, panelW, panelH, panelTop) {
-  // Returns { tx, ty, scale, points } — points = midline mapped into panel
-  // coords. Preserves aspect, centers, leaves margin for neurons sitting
-  // outside the body line (head sensilla, tail sensory).
-  if (!midline.length) return null;
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const [x, y] of midline) {
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-  }
-  const w = Math.max(1, maxX - minX);
-  const h = Math.max(1, maxY - minY);
-  const MARGIN = 28;  // leave room around the worm for protruding sensilla
-  const usableW = panelW - 2 * MARGIN;
-  const usableH = panelH - 2 * MARGIN;
-  const scale = Math.min(usableW / w, usableH / h);
-  const offX = MARGIN + (usableW - w * scale) / 2 - minX * scale;
-  const offY = panelTop + MARGIN + (usableH - h * scale) / 2 - minY * scale;
-  const points = midline.map(([x, y]) => [x * scale + offX, y * scale + offY]);
-  return { scale, points };
-}
-
-function _midlineSampleAt(points, axial) {
-  // Map axial∈[0,1] to a position + tangent on the midline polyline.
-  if (points.length < 2) return null;
-  const t = Math.max(0, Math.min(0.999999, axial)) * (points.length - 1);
-  const i = t | 0;
-  const f = t - i;
-  const [ax, ay] = points[i];
-  const [bx, by] = points[i + 1] || points[i];
-  const px = ax + (bx - ax) * f;
-  const py = ay + (by - ay) * f;
-  // Tangent: smooth a tiny bit by using neighbors when available.
-  const i0 = Math.max(0, i - 1);
-  const i1 = Math.min(points.length - 1, i + 2);
-  const [tx0, ty0] = points[i0];
-  const [tx1, ty1] = points[i1];
-  let tx = tx1 - tx0, ty = ty1 - ty0;
-  const tlen = Math.hypot(tx, ty) || 1;
-  tx /= tlen; ty /= tlen;
-  // Perpendicular (rotate 90° CCW): (-ty, tx). Convention: lateral > 0
-  // means the worm's left side. The worm advances along its +tangent so
-  // (-ty, tx) is its left in screen coords (y goes down).
-  return { x: px, y: py, tx, ty, nx: -ty, ny: tx };
-}
-
-function _bodyHalfWidthAt(axial) {
-  // Smooth taper at head and tail so the worm looks like a worm.
-  const a = Math.max(0, Math.min(1, axial));
-  let factor = 1.0;
-  if (a < 0.08) factor = a / 0.08;
-  else if (a > XRAY_TAIL_THIN_FRAC) factor = (1 - a) / (1 - XRAY_TAIL_THIN_FRAC);
-  else if (a > XRAY_HEAD_THIN_FRAC) factor = 0.95;
-  return XRAY_BODY_HALF_WIDTH * factor;
-}
-
-// Class-color palette shared between the static graph view and the x-ray
-// view so visitors learn one color → class association.
-const NEURON_CLASS_PALETTE = [
-  { key: 'chemo',  color: 'rgba(40,200,255,0.85)', label: 'chemosensory' },
-  { key: 'sensory',color: 'rgba(100,160,255,0.7)', label: 'sensory' },
-  { key: 'motor',  color: 'rgba(255,150,40,0.85)', label: 'motor' },
-  { key: 'inter',  color: 'rgba(68,255,119,0.85)', label: 'interneuron' },
-  { key: 'muscle', color: 'rgba(255,220,40,0.85)', label: 'muscle' },
-  { key: 'firing', color: '#44ff77',               label: 'firing' },
-];
-
-function _drawNeuronLegend(W, yBase) {
-  // Compact legend: dot + label, packed to fit in NET_W.
-  ctx.font = '8px ui-monospace,monospace';
-  const SPC = 64;
-  const LX = 8;
-  for (let i = 0; i < NEURON_CLASS_PALETTE.length; i++) {
-    const x = LX + i * SPC;
-    ctx.beginPath();
-    ctx.arc(x + 4, yBase, 3.2, 0, Math.PI * 2);
-    ctx.fillStyle = NEURON_CLASS_PALETTE[i].color;
-    ctx.fill();
-    ctx.fillStyle = 'rgba(68,255,119,0.7)';
-    ctx.fillText(NEURON_CLASS_PALETTE[i].label, x + 10, yBase + 3);
-  }
-}
-
-function drawXRayCanvas() {
-  if (!neuronBodyCoords || !graph) return;
-  const latestMidline = getMidline();
-  if (latestMidline.length < 2) return;
-
-  // Use the same canvas / ctx as the legacy net view.
-  const W = NET_W, H = NET_H;
-  ctx.clearRect(0, 0, W, H);
-
-  // Header strip
-  ctx.fillStyle = '#8f8';
-  ctx.font = 'bold 11px ui-monospace, monospace';
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'left';
-  ctx.fillText('● X-RAY  (live body overlay)', 8, 6);
-  ctx.fillStyle = '#9c9';
-  ctx.font = '9px ui-monospace, monospace';
-  ctx.fillText(`${neuronBodyCoords.n_neurons} neurons mapped to wormbody`, 8, 19);
-  ctx.fillStyle = '#9c9';
-  ctx.textAlign = 'right';
-  ctx.fillText("'x' graph · 'l' labels" + (xrayLabelsVisible ? ' ✓' : ''), W - 8, 19);
-  ctx.textAlign = 'left';
-
-  _drawNeuronLegend(W, 36);
-
-  const HEADER_H = 50;
-  const fit = _fitMidlineToPanel(latestMidline, W, H - HEADER_H, HEADER_H);
-  if (!fit) return;
-  const points = fit.points;
-
-  // ── Body outline (two parallel curves) ──
-  const samples = 80;
-  const top = [], bot = [];
-  for (let i = 0; i <= samples; i++) {
-    const a = i / samples;
-    const m = _midlineSampleAt(points, a);
-    if (!m) continue;
-    const r = _bodyHalfWidthAt(a);
-    top.push([m.x + m.nx * r, m.y + m.ny * r]);
-    bot.push([m.x - m.nx * r, m.y - m.ny * r]);
-  }
-
-  // Filled body, soft outline
-  ctx.fillStyle = 'rgba(40, 80, 60, 0.35)';
-  ctx.strokeStyle = 'rgba(120, 220, 170, 0.55)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(top[0][0], top[0][1]);
-  for (let i = 1; i < top.length; i++) ctx.lineTo(top[i][0], top[i][1]);
-  for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i][0], bot[i][1]);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Midline (faint)
-  ctx.strokeStyle = 'rgba(100, 200, 255, 0.18)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let i = 0; i < points.length; i++) {
-    if (i === 0) ctx.moveTo(points[i][0], points[i][1]);
-    else ctx.lineTo(points[i][0], points[i][1]);
-  }
-  ctx.stroke();
-
-  // Head dot for orientation
-  const head = points[0];
-  ctx.fillStyle = 'rgba(255, 230, 150, 0.6)';
-  ctx.beginPath();
-  ctx.arc(head[0], head[1], 4, 0, Math.PI * 2);
-  ctx.fill();
-
-  // ── Neurons ──
-  const fireThr = graph.fireThreshold || 30;
-  // graph.{chemo,motor,muscle,sensory}Set hold INTEGER indices into
-  // graph.neurons. Build name-keyed sets once and stash on `graph` for
-  // future frames.
-  if (!graph._chemoNames) {
-    const namesByIdx = graph.neurons;
-    const mk = (s) => new Set([...s].map(i => namesByIdx[i]));
-    graph._chemoNames = mk(graph.chemosensorySet);
-    graph._motorNames = mk(graph.motorSet);
-    graph._muscleNames = mk(graph.muscleSet);
-    graph._sensoryNames = mk(graph.sensorySet);
-  }
-  const chemoSet = graph._chemoNames;
-  const motorSet = graph._motorNames;
-  const muscleSet = graph._muscleNames;
-  const sensorySet = graph._sensoryNames;
-
-  // Two passes: first faint-all, then bright firing on top.
-  const nbody = neuronBodyCoords.neurons;
-  for (const [name, anatomy] of Object.entries(nbody)) {
-    const m = _midlineSampleAt(points, anatomy.axial);
-    if (!m) continue;
-    const halfW = _bodyHalfWidthAt(anatomy.axial);
-    // lateral∈[-1,+1] already maps the OpenWorm position range to a unit
-    // half-width; 0.85 keeps even the most-lateral neurons safely inside
-    // the body silhouette.
-    const off = anatomy.lateral * halfW * 0.85;
-    const nx = m.x + m.nx * off;
-    const ny = m.y + m.ny * off;
-
-    const charge = neuronActivity[name] || 0;
-    const firing = charge > fireThr;
-
-    // Base color by neuron class.
-    let baseHue = 210, baseAlpha = 0.18, dotR = 1.6;
-    if (chemoSet && chemoSet.has(name))      { baseHue = 195; baseAlpha = 0.35; dotR = 2.0; }
-    else if (sensorySet && sensorySet.has(name)) { baseHue = 220; baseAlpha = 0.25; dotR = 1.8; }
-    else if (motorSet && motorSet.has(name)) { baseHue = 28;  baseAlpha = 0.25; dotR = 1.8; }
-    else if (muscleSet && muscleSet.has(name)) continue; // muscles handled by main worm, skip
-
-    ctx.fillStyle = `hsla(${baseHue}, 70%, 75%, ${baseAlpha})`;
-    ctx.beginPath();
-    ctx.arc(nx, ny, dotR, 0, Math.PI * 2);
-    ctx.fill();
-
-    if (firing) {
-      // Glow + bright dot when firing
-      const glowR = dotR + Math.min(7, charge / 12);
-      const grd = ctx.createRadialGradient(nx, ny, 0.5, nx, ny, glowR);
-      grd.addColorStop(0, `hsla(${baseHue}, 95%, 75%, 0.95)`);
-      grd.addColorStop(1, `hsla(${baseHue}, 95%, 60%, 0)`);
-      ctx.fillStyle = grd;
-      ctx.beginPath();
-      ctx.arc(nx, ny, glowR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = `hsla(${baseHue}, 100%, 88%, 1)`;
-      ctx.beginPath();
-      ctx.arc(nx, ny, dotR + 0.7, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Optional name label (toggled by 'l'). Slight offset perpendicular
-    // to the local body axis on whichever side the neuron sits, so the
-    // text floats off-body and doesn't overlap the dot/silhouette.
-    if (xrayLabelsVisible) {
-      const labelOffset = (anatomy.lateral >= 0 ? 1 : -1) * 6;
-      const lx = nx + m.nx * labelOffset;
-      const ly = ny + m.ny * labelOffset;
-      ctx.font = '7px ui-monospace, monospace';
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = anatomy.lateral >= 0 ? 'left' : 'right';
-      // Slightly more legible when firing.
-      ctx.fillStyle = firing
-        ? `hsla(${baseHue}, 100%, 92%, 0.95)`
-        : `hsla(${baseHue}, 60%, 80%, 0.55)`;
-      ctx.fillText(name, lx, ly);
-    }
-  }
-  // Reset text alignment for downstream drawing.
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-}
-
-function drawNetCanvas() {
-  if (!graph || !netVisible) return;
-  const { neurons, fireThreshold, muscleSet, sensorySet, chemosensorySet,
-          motorSet, foodSet, noseSet, hungerSet, pos, adjOut, N } = graph;
-
-  ctx.clearRect(0, 0, NET_W, NET_H);
-
-  // ── Header ──────────────────────────────────────────────────────────────
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'left';
-  ctx.fillStyle = '#8f8';
-  ctx.font = 'bold 11px ui-monospace, monospace';
-  ctx.fillText('● NEURAL GRAPH (anatomical layout)', 8, 6);
-  ctx.fillStyle = '#9c9';
-  ctx.font = '9px ui-monospace, monospace';
-  ctx.textAlign = 'right';
-  ctx.fillText("'x' to flip to x-ray view", NET_W - 8, 19);
-  ctx.textAlign = 'left';
-
-  _drawNeuronLegend(NET_W, 36);
-
-  ctx.fillStyle = 'rgba(68,255,119,0.35)';
-  ctx.font = '8px ui-monospace,monospace';
-  ctx.fillText('[n] toggle panel  [m] motor labels' + (motorLabelsVisible ? '  ✓' : ''), 8, 48);
-
-  ctx.fillStyle = 'rgba(68,255,119,0.2)';
-  ctx.fillText('← head', PAD, LEGEND_H - 2);
-  ctx.fillText('tail →', NET_W - 40, LEGEND_H - 2);
-  ctx.fillText('dorsal', PAD, NEURO_TOP + 10);
-  ctx.fillText('ventral', PAD, NET_H - 4);
-
-  // ── Build activity array ────────────────────────────────────────────────
-  const activity = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    const v = neuronActivity[neurons[i]];
-    if (v) activity[i] = v;
-  }
-
-  // ── Edges: from firing neurons only ─────────────────────────────────────
-  ctx.beginPath();
-  ctx.strokeStyle = 'rgba(68,255,119,0.15)';
-  ctx.lineWidth = 0.4;
-  for (let pi = 0; pi < N; pi++) {
-    if (activity[pi] <= fireThreshold) continue;
-    const px = pos[pi*2], py = pos[pi*2+1];
-    for (const qi of adjOut[pi]) {
-      ctx.moveTo(px, py);
-      ctx.lineTo(pos[qi*2], pos[qi*2+1]);
-    }
-  }
-  ctx.stroke();
-
-  // ── Nodes ───────────────────────────────────────────────────────────────
-  const hungerOn = stimFlags.hunger;
-  const noseOn   = stimFlags.nose_touch;
-  const foodOn   = stimFlags.food_sense;
-  const pendingLabels = [];
-
-  for (let i = 0; i < N; i++) {
-    const x = pos[i*2], y = pos[i*2+1];
-    const v = activity[i];
-    const firing  = v > fireThreshold;
-    const charged = v > 0;
-    const t = firing ? 1 : (charged ? Math.min(v / fireThreshold, 1) : 0);
-
-    const stimulated =
-      (foodSet.has(i)   && foodOn) ||
-      (noseSet.has(i)   && noseOn) ||
-      (hungerSet.has(i) && hungerOn);
-
-    const isChemo   = chemosensorySet.has(i);
-    const isSensory = sensorySet.has(i);
-    const isMotor   = motorSet.has(i);
-    const isMuscle  = muscleSet.has(i);
-
-    let baseColor, fireColor, r, haloColor, hr;
-    if (isChemo) {
-      baseColor  = `rgba(40,200,255,${(0.25 + t * 0.7).toFixed(2)})`;
-      fireColor  = 'rgba(40,255,255,0.95)';
-      haloColor  = 'rgba(40,220,255,0.22)';
-      r = 1.8 + t;  hr = 7;
-    } else if (isSensory) {
-      baseColor  = `rgba(100,160,255,${(0.2 + t * 0.75).toFixed(2)})`;
-      fireColor  = 'rgba(120,180,255,0.95)';
-      haloColor  = 'rgba(100,160,255,0.2)';
-      r = 1.5 + t;  hr = 6;
-    } else if (isMotor) {
-      baseColor  = `rgba(255,150,40,${(0.2 + t * 0.75).toFixed(2)})`;
-      fireColor  = 'rgba(255,180,40,0.95)';
-      haloColor  = 'rgba(255,150,40,0.2)';
-      r = 1.5 + t;  hr = 6;
-    } else if (isMuscle) {
-      baseColor  = `rgba(255,220,40,${(0.12 + t * 0.7).toFixed(2)})`;
-      fireColor  = 'rgba(255,240,80,0.9)';
-      haloColor  = 'rgba(255,200,40,0.18)';
-      r = 1.2 + t * 0.8;  hr = 5;
-    } else {
-      baseColor  = `rgba(68,180,80,${(0.15 + t * 0.8).toFixed(2)})`;
-      fireColor  = '#44ff77';
-      haloColor  = 'rgba(68,255,119,0.18)';
-      r = 1.3 + t * 0.9;  hr = 6;
-    }
-
-    const useCyan = stimulated && !firing;
-    const color = useCyan ? 'rgba(40,255,255,0.9)' : (firing ? fireColor : baseColor);
-    const halo  = (firing || stimulated || t > 0.5) ? haloColor : null;
-    const haloR = (firing || stimulated) ? hr : hr * t;
-
-    if (halo && haloR > 1) {
-      ctx.beginPath();
-      ctx.arc(x, y, haloR, 0, Math.PI * 2);
-      ctx.fillStyle = firing ? haloColor : (useCyan ? 'rgba(40,255,255,0.15)' : haloColor);
-      ctx.fill();
-    }
-    ctx.beginPath();
-    ctx.arc(x, y, Math.max(0.8, r), 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-
-    const shouldLabel =
-      firing || stimulated ||
-      (isMotor && motorLabelsVisible);
-    if (shouldLabel && (isSensory || isChemo || isMotor)) {
-      pendingLabels.push({ x, y, name: neurons[i], firing, isChemo, isSensory, isMotor });
-    }
-  }
-
-  // ── Labels (second pass) ────────────────────────────────────────────────
-  ctx.font = '6.5px ui-monospace,monospace';
-  for (const {x, y, name, firing, isChemo, isSensory, isMotor} of pendingLabels) {
-    let lc;
-    if (isChemo)   lc = firing ? 'rgba(40,255,255,0.95)' : 'rgba(40,200,255,0.65)';
-    else if (isSensory) lc = firing ? 'rgba(140,200,255,0.95)' : 'rgba(100,160,255,0.55)';
-    else           lc = firing ? 'rgba(255,200,80,0.95)' : 'rgba(255,150,40,0.5)';
-    ctx.fillStyle = lc;
-    ctx.fillText(name, x + 3, y - 3);
-  }
-}
+// X-ray and legacy graph rendering live in ./xray-render.js and
+// ./network-panel.js respectively. The render loop below dispatches via
+// `drawNetworkPanel(state)`; keyboard toggles ('n','x','l','m') are
+// forwarded from the keydown handler above.
 
 // ---------------------------------------------------------------------------
 // Click → world coords → drop food
@@ -1186,7 +760,7 @@ window.__sim = {
   get wormMesh() { return getWormMesh(); },
   get graph() { return graph; },
   get neuronActivity() { return neuronActivity; },
-  get motorLabelsVisible() { return motorLabelsVisible; },
+  get motorLabelsVisible() { return getMotorLabelsVisible(); },
 };
 
 const clock = new THREE.Clock();
@@ -1196,9 +770,8 @@ function render() {
   bodyMaterial.uniforms.uTime.value = t;
   organMaterial.uniforms.uTime.value = t;
   composer.render();
-  if (netVisible) {
-    if (xrayMode) drawXRayCanvas();
-    else drawNetCanvas();
+  if (isNetVisible()) {
+    drawNetworkPanel({ neuronBodyCoords, graph, neuronActivity, stimFlags });
   }
   drawTextCanvas({
     wordFoodMap,
