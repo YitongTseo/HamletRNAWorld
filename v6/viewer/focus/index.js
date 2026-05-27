@@ -9,13 +9,16 @@ import {
   isNetVisible,
   toggleNetVisible,
   toggleXrayMode,
-  toggleXrayLabels,
   toggleMotorLabels,
   getMotorLabelsVisible,
 } from './network-panel.js';
 import { drawChemoPanel, toggleChemo, isChemoVisible } from './chemo-panel.js';
 import { drawRadar, toggleRadar, isRadarVisible } from './radar-panel.js';
 import * as chrome from './panel-chrome.js';
+import * as magnifier from './magnifier.js';
+// Bridge module — synchronizes the network panel's labels-toggle setter
+// with the magnifier's labels-toggle setter so the 'l' key updates both.
+import { setXrayLabelsVisible as setNetworkXrayLabelsVisible } from './network-panel.js';
 
 // Register the static HTML overlays (#title-nav-wrap, #help) with
 // panel-chrome so the dock can hide / reopen them like any other panel.
@@ -387,6 +390,11 @@ let smellsData = [];          // list of sensed smells from snapshot
 let latestResidual = { pca: new Array(12).fill(0), words: [] };
 let smellsVisible = true;     // toggle with 'o' key
 
+// X-ray neuron-label visibility ('l' key). Single source of truth — the
+// network panel and the magnifier are both notified on every toggle. This
+// replaces the network panel's internal flag as authoritative state.
+let xrayLabelsVisible = false;
+
 // Simulation state
 let isPaused = false;         // toggled with spacebar
 
@@ -417,7 +425,14 @@ window.addEventListener('keydown', ev => {
     toggleXrayMode();
   }
   if (ev.key === 'l' || ev.key === 'L') {
-    toggleXrayLabels();
+    // Toggle our local copy and broadcast to both surfaces so the network
+    // panel and the magnifier stay in sync. Using a local flag here (rather
+    // than reading network-panel's getXrayLabelsVisible after a toggle)
+    // means the flow stays one-directional: one source of truth → two
+    // consumers.
+    xrayLabelsVisible = !xrayLabelsVisible;
+    setNetworkXrayLabelsVisible(xrayLabelsVisible);
+    magnifier.setXrayLabelsVisible(xrayLabelsVisible);
   }
   if (ev.key === 'm' || ev.key === 'M') {
     toggleMotorLabels();
@@ -511,6 +526,10 @@ function render() {
   if (isNetVisible()) {
     drawNetworkPanel({ neuronBodyCoords, graph, neuronActivity, stimFlags });
   }
+  // Magnifier runs after the network panel so they share the same per-frame
+  // sim state. It internally no-ops when hidden — cheap to call every frame.
+  magnifier.setState({ neuronBodyCoords, graph, neuronActivity });
+  magnifier.render();
   drawTextCanvas({
     wordFoodMap,
     mouseWorldPos,

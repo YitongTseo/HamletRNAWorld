@@ -103,8 +103,15 @@
   pointer-events: auto;
 }
 .panel-close-btn:hover { opacity: 1.0; }
+/* The magnifier ships its own circular .magnifier-close button outside the
+   border; suppress the generic chrome close inside the lens to avoid two
+   stacked ✕ buttons in the top-right corner. */
+.magnifier .panel-close-btn { display: none; }
 
-.panel--mobile {
+/* Mobile bottom-sheet layout applies to normal panels only — the magnifier
+   is a circular lens; full-width bottom-sheet would defeat its purpose, so
+   we exclude .magnifier from this rule. */
+.panel--mobile:not(.magnifier) {
   left: 0 !important;
   right: 0 !important;
   bottom: 0 !important;
@@ -112,4 +119,35 @@
   width: 100vw !important;
   max-height: 75vh !important;
   border-radius: 12px 12px 0 0 !important;
+}
+
+.magnifier {
+  position: fixed;
+  border: 2px solid rgba(100, 200, 255, 0.6);
+  border-radius: 50%;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+  cursor: grab;
+  z-index: 35;
+  touch-action: none;
+}
+.magnifier.dragging { cursor: grabbing; }
+.magnifier canvas {
+  display: block;
+  width: 100%; height: 100%;
+  border-radius: 50%;
+}
+.magnifier-close {
+  position: absolute; top: -8px; right: -8px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: #000;
+  color: #fff;
+  border: 1px solid rgba(100, 200, 255, 0.6);
+  font-size: 14px;
+  line-height: 22px;
+  padding: 0;
+  cursor: pointer;
+  z-index: 36;
+  font-family: ui-monospace, monospace;
+  pointer-events: auto;
 }

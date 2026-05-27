@@ -121,10 +121,16 @@ function drawNeuronLegend(ctx, x0, yBase) {
 //   graph              — { neurons, fireThreshold, chemosensorySet, motorSet,
 //                          muscleSet, sensorySet, _chemoNames?, ... }
 //   neuronActivity     — { neuronName: charge }
-//   worldToScreen      — (optional) future hook for magnifier. Currently
-//                        unused in the panel path — the x-ray fits the
-//                        worm body into `screenRect` directly via
-//                        `getMidline()` + `_fitMidlineToPanel`.
+//   worldToScreen      — (optional) Used by the magnifier (Task 17). When
+//                        provided, the midline is projected through this
+//                        function to map world coords to ctx-local coords
+//                        — so the lens shows the neurons in their actual
+//                        page-space position under the worm body. Header
+//                        strip + legend are also suppressed since the lens
+//                        is meant to be a clean "peek" surface. When NOT
+//                        provided (the network-panel path), the existing
+//                        `_fitMidlineToPanel` behavior is preserved: fit
+//                        the whole worm into the rect with a header strip.
 //
 // Returns nothing; mutates `ctx`. Caller is expected to have cleared the
 // region beforehand if it wants a fresh frame.
@@ -134,36 +140,70 @@ export function drawXRay(ctx, screenRect, opts) {
     neuronBodyCoords,
     graph,
     neuronActivity = {},
-    // worldToScreen,  // reserved for future magnifier use; see Task 17
+    worldToScreen,   // optional — magnifier path; see comment above
   } = opts;
   if (!neuronBodyCoords || !graph) return;
   const latestMidline = getMidline();
   if (latestMidline.length < 2) return;
 
   const { x: X0, y: Y0, w: W, h: H } = screenRect;
+  const lensMode = typeof worldToScreen === 'function';
 
   ctx.clearRect(X0, Y0, W, H);
 
-  // Header strip
-  ctx.fillStyle = '#8f8';
-  ctx.font = 'bold 11px ui-monospace, monospace';
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'left';
-  ctx.fillText('● X-RAY  (live body overlay)', X0 + 8, Y0 + 6);
-  ctx.fillStyle = '#9c9';
-  ctx.font = '9px ui-monospace, monospace';
-  ctx.fillText(`${neuronBodyCoords.n_neurons} neurons mapped to wormbody`, X0 + 8, Y0 + 19);
-  ctx.fillStyle = '#9c9';
-  ctx.textAlign = 'right';
-  ctx.fillText("'x' graph · 'l' labels" + (xrayLabelsVisible ? ' ✓' : ''), X0 + W - 8, Y0 + 19);
-  ctx.textAlign = 'left';
+  if (!lensMode) {
+    // Header strip (panel-only — the lens skips this for a clean look).
+    ctx.fillStyle = '#8f8';
+    ctx.font = 'bold 11px ui-monospace, monospace';
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.fillText('● X-RAY  (live body overlay)', X0 + 8, Y0 + 6);
+    ctx.fillStyle = '#9c9';
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.fillText(`${neuronBodyCoords.n_neurons} neurons mapped to wormbody`, X0 + 8, Y0 + 19);
+    ctx.fillStyle = '#9c9';
+    ctx.textAlign = 'right';
+    ctx.fillText("'x' graph · 'l' labels" + (xrayLabelsVisible ? ' ✓' : ''), X0 + W - 8, Y0 + 19);
+    ctx.textAlign = 'left';
 
-  drawNeuronLegend(ctx, X0, Y0 + 36);
+    drawNeuronLegend(ctx, X0, Y0 + 36);
+  }
 
-  const HEADER_H = 50;
-  const fit = _fitMidlineToPanel(latestMidline, X0, Y0, W, H, HEADER_H);
-  if (!fit) return;
-  const points = fit.points;
+  // Project the midline to ctx-local coords. Two paths:
+  //   - Panel path: fit world-space worm bbox into the rect (existing math).
+  //     `bodyScale = 1` keeps the panel-tuned XRAY_BODY_HALF_WIDTH = 18 px.
+  //   - Lens path: project each world point through the caller's
+  //     `worldToScreen` so the worm appears at its actual on-screen position.
+  //     `bodyScale` is computed from the world-vs-screen midline arc length
+  //     so the drawn silhouette half-width matches what the underlying worm
+  //     mesh occupies on screen (otherwise the silhouette is a panel-sized
+  //     18 px thick worm floating across a viewport-sized animal).
+  // `points` is always a list of [x,y] in the ctx's drawing coord system.
+  let points, bodyScale = 1;
+  if (lensMode) {
+    points = latestMidline.map(([wx, wy]) => worldToScreen(wx, wy));
+    // Empirical scale: ratio of projected midline arc length to world arc
+    // length. Robust to camera scale + DPR + responsive frustum changes.
+    let worldLen = 0, screenLen = 0;
+    for (let i = 1; i < latestMidline.length; i++) {
+      const [wx0, wy0] = latestMidline[i - 1], [wx1, wy1] = latestMidline[i];
+      const [sx0, sy0] = points[i - 1], [sx1, sy1] = points[i];
+      worldLen  += Math.hypot(wx1 - wx0, wy1 - wy0);
+      screenLen += Math.hypot(sx1 - sx0, sy1 - sy0);
+    }
+    if (worldLen > 0) {
+      // The world worm has radius ~22 (WORM_BASE_RADIUS in worm-render.js);
+      // XRAY_BODY_HALF_WIDTH is 18 panel-px tuned for that radius. So the
+      // ratio (screenLen/worldLen) is the world→screen scale; multiply by
+      // (22/18) ≈ 1.22 to roughly match the actual worm-body radius on screen.
+      bodyScale = (screenLen / worldLen) * (22 / 18);
+    }
+  } else {
+    const HEADER_H = 50;
+    const fit = _fitMidlineToPanel(latestMidline, X0, Y0, W, H, HEADER_H);
+    if (!fit) return;
+    points = fit.points;
+  }
 
   // ── Body outline (two parallel curves) ──
   const samples = 80;
@@ -172,7 +212,7 @@ export function drawXRay(ctx, screenRect, opts) {
     const a = i / samples;
     const m = _midlineSampleAt(points, a);
     if (!m) continue;
-    const r = _bodyHalfWidthAt(a);
+    const r = _bodyHalfWidthAt(a) * bodyScale;
     top.push([m.x + m.nx * r, m.y + m.ny * r]);
     bot.push([m.x - m.nx * r, m.y - m.ny * r]);
   }
@@ -203,7 +243,7 @@ export function drawXRay(ctx, screenRect, opts) {
   const head = points[0];
   ctx.fillStyle = 'rgba(255, 230, 150, 0.6)';
   ctx.beginPath();
-  ctx.arc(head[0], head[1], 4, 0, Math.PI * 2);
+  ctx.arc(head[0], head[1], 4 * (lensMode ? Math.min(2.5, Math.max(0.8, bodyScale * 0.5)) : 1), 0, Math.PI * 2);
   ctx.fill();
 
   // ── Neurons ──
@@ -225,11 +265,15 @@ export function drawXRay(ctx, screenRect, opts) {
   const sensorySet = graph._sensoryNames;
 
   // Two passes: first faint-all, then bright firing on top.
+  // In lens mode, the neuron dot radii are scaled with `bodyScale` so a
+  // big-on-screen worm gets proportionally readable neuron dots — but capped
+  // so they don't balloon past usefulness on extreme zooms.
+  const dotScale = lensMode ? Math.min(3.5, Math.max(1.0, bodyScale * 0.6)) : 1;
   const nbody = neuronBodyCoords.neurons;
   for (const [name, anatomy] of Object.entries(nbody)) {
     const m = _midlineSampleAt(points, anatomy.axial);
     if (!m) continue;
-    const halfW = _bodyHalfWidthAt(anatomy.axial);
+    const halfW = _bodyHalfWidthAt(anatomy.axial) * bodyScale;
     // lateral∈[-1,+1] already maps the OpenWorm position range to a unit
     // half-width; 0.85 keeps even the most-lateral neurons safely inside
     // the body silhouette.
@@ -246,6 +290,7 @@ export function drawXRay(ctx, screenRect, opts) {
     else if (sensorySet && sensorySet.has(name)) { baseHue = 220; baseAlpha = 0.25; dotR = 1.8; }
     else if (motorSet && motorSet.has(name)) { baseHue = 28;  baseAlpha = 0.25; dotR = 1.8; }
     else if (muscleSet && muscleSet.has(name)) continue; // muscles handled by main worm, skip
+    dotR *= dotScale;
 
     ctx.fillStyle = `hsla(${baseHue}, 70%, 75%, ${baseAlpha})`;
     ctx.beginPath();
