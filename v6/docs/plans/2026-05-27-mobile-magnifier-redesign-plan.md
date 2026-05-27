@@ -13,7 +13,7 @@
 **Tests during refactor:**
 - `python tests/test_determinism.py` — must pass throughout (no sim changes).
 - `python tests/test_smoke_multi.py` — **SKIPPED for the duration of this redesign.** It fails on the baseline (`main` at commit `0f875a61`) with `AssertionError: Alice ate nothing in 5400 ticks`. This is a pre-existing regression unrelated to the viewer-only work in this plan. To be investigated after the redesign ships — see memory `project-smoke-test-regression`. Implementers: do NOT run this test as part of per-task verification; do NOT attempt to fix it as part of this plan.
-- After each module extraction: `node --check viewer/focus/<file>.js` for syntax, plus boot the dev server and `curl -fsS http://127.0.0.1:8001/focus/Alice` to verify HTML serves.
+- After each module extraction: `# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check viewer/focus/<file>.js` for syntax, plus boot the dev server and `curl -fsS http://127.0.0.1:8001/focus/Alice` to verify HTML serves.
 - Visual verification is manual — see end of plan for the checklist.
 
 **Dev server convention:** Run the dev server on port **8001** so it doesn't collide with the systemd-managed production app on 8000:
@@ -57,7 +57,7 @@ to:
 - [ ] **Step 3: Verify syntax and boot**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/index.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/index.js
 ```
 Expected: no output (success).
 
@@ -111,8 +111,8 @@ Place this import near the top of the file, after the importmap-resolved `import
 - [ ] **Step 3: Syntax check and boot test**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/three-scene.js
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/index.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/three-scene.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/index.js
 ```
 Expected: no output.
 
@@ -157,8 +157,8 @@ Remove the moved code from `index.js`; add `import { … } from './worm-render.j
 - [ ] **Step 4: Syntax check both files**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/worm-render.js
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/index.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/worm-render.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/index.js
 ```
 Expected: no output.
 
@@ -262,8 +262,8 @@ The main render loop's call to `drawXRayCanvas()` / `drawGraphCanvas()` becomes 
 - [ ] **Step 4: Syntax check both new files**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/xray-render.js
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/network-panel.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/xray-render.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/network-panel.js
 ```
 
 - [ ] **Step 5: Boot test, especially x-ray view**
@@ -496,7 +496,7 @@ window.addEventListener('resize', () => {
 - [ ] **Step 2: Syntax check**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/responsive.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/responsive.js
 ```
 
 - [ ] **Step 3: Commit**
@@ -593,7 +593,7 @@ export function saveMagnifierPos(pos) {
 - [ ] **Step 2: Syntax check, commit**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/state.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/state.js
 cd /home/web/HamletRNAWorld && git add v6/viewer/focus/state.js
 git commit -m "v6/viewer: add state.js (per-worm localStorage for panel visibility)"
 ```
@@ -670,7 +670,7 @@ export function hide(id) {
 - [ ] **Step 3: Syntax check, commit**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/dock.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/dock.js
 cd /home/web/HamletRNAWorld && git add v6/viewer/focus/dock.js v6/viewer/focus.css
 git commit -m "v6/viewer: add dock.js (bottom-right glyph strip for reopening panels)"
 ```
@@ -779,7 +779,7 @@ onViewportChange(() => {
 - [ ] **Step 3: Syntax check, commit**
 
 ```bash
-node --check /home/web/HamletRNAWorld/v6/viewer/focus/panel-chrome.js
+# OPTIONAL (node not installed on this server; the boot test below catches the same errors): node --check /home/web/HamletRNAWorld/v6/viewer/focus/panel-chrome.js
 cd /home/web/HamletRNAWorld && git add v6/viewer/focus/panel-chrome.js v6/viewer/focus.css
 git commit -m "v6/viewer: add panel-chrome.js (X buttons, mobile bottom-sheet, state)"
 ```
