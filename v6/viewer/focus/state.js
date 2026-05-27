@@ -1,7 +1,17 @@
 // viewer/focus/state.js
-const wormName = decodeURIComponent(location.pathname.replace(/^\/focus\//, '').replace(/\/$/, ''));
-const visKey = `wormlet:focus:${wormName}:visible`;
-const magKey = `wormlet:focus:${wormName}:magnifier-pos`;
+// Mirror index.js's URL parsing so the two-segment route works:
+//   /focus/<flask>/<worm>   ← multi-flask mode
+//   /focus/<worm>           ← legacy single-group mode, flask='default'
+// Without this, /focus/flaskA/Alice would key on "flaskA/Alice" instead of
+// "Alice", losing the per-worm UI state on every navigation.
+const _pathParts = location.pathname.replace(/^\/focus\//, '').replace(/\/$/, '').split('/');
+const flaskName = _pathParts.length >= 2 ? decodeURIComponent(_pathParts[0]) : 'default';
+const wormName = decodeURIComponent(_pathParts[_pathParts.length - 1]);
+// Scope keys by (flask, worm) so the same worm name in different flasks keeps
+// independent visibility/magnifier state — same distinction index.js makes for
+// its WebSocket route.
+const visKey = `wormlet:focus:${flaskName}:${wormName}:visible`;
+const magKey = `wormlet:focus:${flaskName}:${wormName}:magnifier-pos`;
 
 export function loadVisibility() {
   try { return JSON.parse(localStorage.getItem(visKey)) || {}; }
