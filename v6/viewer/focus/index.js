@@ -378,9 +378,11 @@ document.addEventListener('mousemove', (ev) => {
   const screenY = ev.clientY - rect.top;
   mouseScreenPos.x = screenX;
   mouseScreenPos.y = screenY;
-  // Transform screen coords to world coords
-  const normX = screenX / textcanvas.width;
-  const normY = screenY / textcanvas.height;
+  // Transform screen coords to world coords. Use CSS-pixel viewport dims
+  // because `textcanvas.width` is now DPR-scaled (physical pixels) after the
+  // text-canvas DPR fix, while `screenX/Y` from clientX/Y are CSS pixels.
+  const normX = screenX / window.innerWidth;
+  const normY = screenY / window.innerHeight;
   mouseWorldPos.x = camera.left + normX * (camera.right - camera.left);
   mouseWorldPos.y = camera.top + normY * (camera.bottom - camera.top);
 });

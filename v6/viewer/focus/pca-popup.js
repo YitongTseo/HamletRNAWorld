@@ -5,7 +5,7 @@
 // `drawTextCanvas` in text-canvas.js owns the hover-detection (finding the
 // nearest word and distance threshold). This module only handles the
 // actual popup rendering once the hover decision has been made.
-import { textcanvas, tctx } from './text-canvas.js';
+import { tctx } from './text-canvas.js';
 
 function drawPcaPopup(word, mouseScreenPos, pcaData) {
   const PW = 200, PH = 200, PAD_X = 20, PAD_Y = 20;
@@ -13,9 +13,11 @@ function drawPcaPopup(word, mouseScreenPos, pcaData) {
   let px = mouseScreenPos.x + PAD_X;
   let py = mouseScreenPos.y + PAD_Y;
 
-  // Clamp to viewport
-  px = Math.min(px, textcanvas.width - PW - 4);
-  py = Math.min(py, textcanvas.height - PH - 4);
+  // Clamp to viewport. Read CSS-pixel viewport dims here — `textcanvas.width`
+  // is now in physical pixels (DPR-scaled), so it would give wrong clamps on
+  // Retina. The 2D context is DPR-scaled, so drawing math is all CSS px.
+  px = Math.min(px, window.innerWidth - PW - 4);
+  py = Math.min(py, window.innerHeight - PH - 4);
   px = Math.max(px, 4);
   py = Math.max(py, 4);
 

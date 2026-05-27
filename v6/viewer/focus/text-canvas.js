@@ -1,8 +1,15 @@
 // Text overlay canvas: drifting Hamlet words, smell lines, PCA hover popup.
 // Extracted from focus/index.js — behavior unchanged.
 //
-// NOTE: this module is currently a pure extraction. The DPR-correctness fix
-// for fuzzy text on Retina displays is Task 10 of the redesign plan.
+// DPR-correctness: the canvas backing store is sized to physical pixels
+// (CSS px × devicePixelRatio) while the CSS style keeps the canvas at the
+// viewport's CSS size. `setTransform(dpr, ...)` scales the 2D context so
+// callers can keep drawing in CSS pixel coordinates. This makes the
+// drifting Hamlet text render crisply on Retina/HiDPI displays.
+//
+// Consequence: `textcanvas.width` / `textcanvas.height` are now in PHYSICAL
+// pixels, NOT CSS pixels. Any code computing screen-space positions in CSS
+// coords must read `window.innerWidth` / `window.innerHeight` instead.
 import { camera } from './three-scene.js';
 import { drawPcaPopup } from './pca-popup.js';
 
@@ -12,24 +19,31 @@ import { drawPcaPopup } from './pca-popup.js';
 const textcanvas = document.getElementById('textcanvas');
 const tctx = textcanvas.getContext('2d');
 function resizeTextCanvas() {
-  textcanvas.width = window.innerWidth;
-  textcanvas.height = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  textcanvas.width  = window.innerWidth  * dpr;
+  textcanvas.height = window.innerHeight * dpr;
+  textcanvas.style.width  = window.innerWidth  + 'px';
+  textcanvas.style.height = window.innerHeight + 'px';
+  // setTransform must be re-applied after each resize because changing the
+  // canvas backing-store size implicitly resets the 2D context's transform.
+  tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 resizeTextCanvas();
 window.addEventListener('resize', resizeTextCanvas);
 
 // ---------------------------------------------------------------------------
 // World → screen projection (used by text + smell drawing, and later by the
-// magnifier).
+// magnifier). Returns CSS pixel coords; the context's DPR transform handles
+// the upscale to physical pixels.
 // ---------------------------------------------------------------------------
 function worldToScreen(wx, wy) {
   const nx = (wx - camera.left) / (camera.right - camera.left);
   const ny = (wy - camera.top) / (camera.bottom - camera.top);
-  return [nx * textcanvas.width, ny * textcanvas.height];
+  return [nx * window.innerWidth, ny * window.innerHeight];
 }
 
 function screenScale() {
-  return textcanvas.width / (camera.right - camera.left);
+  return window.innerWidth / (camera.right - camera.left);
 }
 
 // ---------------------------------------------------------------------------
@@ -52,7 +66,9 @@ let nearestWord = null;
 // ---------------------------------------------------------------------------
 function drawTextCanvas(state) {
   const { wordFoodMap, mouseWorldPos, mouseScreenPos, pcaData } = state;
-  const w = textcanvas.width, h = textcanvas.height;
+  // CSS pixel coords — context is DPR-scaled, so clearing in CSS units
+  // wipes the full physical backing store.
+  const w = window.innerWidth, h = window.innerHeight;
   tctx.clearRect(0, 0, w, h);
 
   // Draw smells first (so they appear behind words)
