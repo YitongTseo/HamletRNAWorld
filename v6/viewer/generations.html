@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wormlet · generations</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+      :root { --bg:#000; --fg:#afa; --accent:#6f9; --dim:#5a5; --warm:#fc6; --hot:#f66; }
+      html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--fg); }
+      body { font:13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      header {
+        display:flex; align-items:baseline; justify-content:space-between;
+        padding:12px 18px 6px 18px;
+      }
+      header h1 { margin:0; font-size:16px; font-weight:600; color:var(--accent); }
+      header nav a { color:var(--accent); text-decoration:none; padding:4px 8px; margin-left:4px; }
+      header nav a:hover { background:rgba(100,200,255,0.15); }
+
+      #status { padding:4px 18px; color:var(--dim); font-size:11px; }
+
+      .toolbar {
+        display:flex; gap:14px; align-items:center; padding:6px 18px 10px;
+        border-bottom:1px solid rgba(100,200,255,0.12);
+      }
+      .toolbar label { color:var(--dim); font-size:11px; }
+      .toolbar select {
+        background:#001; color:var(--fg); border:1px solid rgba(100,200,255,0.25);
+        padding:3px 6px; font:inherit;
+      }
+
+      main { padding:14px 18px 60px; display:flex; flex-direction:column; gap:18px; }
+      section.card {
+        border:1px solid rgba(100,200,255,0.18);
+        background:rgba(0,20,10,0.45);
+        border-radius:5px; padding:10px 14px;
+      }
+      section.card h2 {
+        margin:0 0 6px 0; font-size:12px; font-weight:600;
+        color:var(--accent); letter-spacing:0.5px; text-transform:uppercase;
+      }
+      section.card .subtle { color:var(--dim); font-size:11px; margin:2px 0 6px; }
+
+      .chart-row { display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); }
+      .chart-wrap { background:#001; padding:8px; border:1px solid rgba(100,200,255,0.12); border-radius:3px; }
+      .chart-wrap canvas { display:block; width:100% !important; height:200px !important; }
+
+      .gen-list {
+        max-height:520px; overflow-y:auto;
+        border:1px solid rgba(100,200,255,0.1); border-radius:3px;
+      }
+      .gen-row {
+        display:grid; grid-template-columns:60px 80px 80px 1fr 60px;
+        gap:8px; padding:6px 10px;
+        border-bottom:1px solid rgba(100,200,255,0.08);
+        cursor:pointer; font-size:12px;
+      }
+      .gen-row:hover { background:rgba(100,200,255,0.07); }
+      .gen-row.selected { background:rgba(100,255,200,0.12); }
+      .gen-row .num { color:var(--accent); font-weight:600; }
+      .gen-row .score { color:var(--fg); }
+      .gen-row .sigma { color:var(--dim); }
+      .gen-row .winner { color:var(--warm); }
+      .gen-row .nscored { color:var(--dim); text-align:right; }
+
+      .detail-cols { display:grid; gap:14px; grid-template-columns:1fr 1fr; }
+      @media (max-width: 900px) { .detail-cols { grid-template-columns:1fr; } }
+      .poem-box {
+        background:#001; padding:10px 12px; border-radius:3px; max-height:340px; overflow-y:auto;
+        white-space:pre-wrap; line-height:1.5; font-size:12px;
+      }
+      .poem-box .meta { color:var(--warm); font-size:11px; margin-bottom:6px; }
+      .windows-box { background:#001; padding:8px 12px; border-radius:3px; max-height:340px; overflow-y:auto; }
+      .window { padding:4px 0; border-bottom:1px dotted rgba(100,200,255,0.08); font-size:12px; }
+      .window .scores { color:var(--warm); margin-right:8px; font-variant-numeric:tabular-nums; }
+
+      .log-box {
+        background:#001; padding:10px 14px; border-radius:3px; border-left:3px solid var(--accent);
+        white-space:pre-wrap; font-style:italic; color:#cfc;
+      }
+      .log-box.skipped { border-left-color:var(--dim); color:var(--dim); font-style:normal; }
+
+      #heatmap {
+        display:block; width:100%; image-rendering:pixelated;
+        background:#001; border:1px solid rgba(100,200,255,0.15);
+      }
+      .heat-legend {
+        display:flex; gap:14px; align-items:center; font-size:11px; color:var(--dim);
+        margin-top:6px;
+      }
+      .heat-legend .swatch { display:inline-block; width:14px; height:14px; margin-right:4px; vertical-align:middle; border:1px solid #333; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>wormlet · generations <span style="opacity:0.55; font-weight:400; font-size:12px;">— created by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:underline;">Yitong</a></span></h1>
+      <nav><a href="/">worms</a> · <a href="/poems">poems</a> · <a href="/about">about</a></nav>
+    </header>
+
+    <div id="status">loading…</div>
+
+    <div class="toolbar">
+      <label>flask
+        <select id="flask-select"></select>
+      </label>
+      <span class="subtle" id="flask-meta"></span>
+    </div>
+
+    <main>
+      <section class="card">
+        <h2>summary across generations</h2>
+        <div class="chart-row">
+          <div class="chart-wrap"><canvas id="chart-best"></canvas></div>
+          <div class="chart-wrap"><canvas id="chart-avg"></canvas></div>
+          <div class="chart-wrap"><canvas id="chart-sigma"></canvas></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>generations</h2>
+        <div class="subtle">click a row to inspect the top poems, scored windows, and the gardener's log for that generation.</div>
+        <div class="gen-list" id="gen-list"></div>
+      </section>
+
+      <section class="card" id="detail-card" style="display:none;">
+        <h2 id="detail-title">generation detail</h2>
+        <div id="detail-log"></div>
+        <div class="detail-cols" style="margin-top:10px;">
+          <div>
+            <div class="subtle">top worm's full poem</div>
+            <div class="poem-box" id="detail-poem"></div>
+          </div>
+          <div>
+            <div class="subtle">highest-scored windows (across all worms)</div>
+            <div class="windows-box" id="detail-windows"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>neural network evolution</h2>
+        <div class="subtle" id="nn-subtle">heatmap of the 64 most-mutated edges across every generation that still has a winner's weights on disk. row = one connectome edge (sorted by total drift). column = generation. cool = negative (inhibitory), warm = positive (excitatory).</div>
+        <canvas id="heatmap" height="320"></canvas>
+        <div class="heat-legend">
+          <span><span class="swatch" style="background:#3366cc;"></span>negative</span>
+          <span><span class="swatch" style="background:#111;"></span>zero</span>
+          <span><span class="swatch" style="background:#ffaa33;"></span>positive</span>
+          <span id="heat-stats"></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>meta-gardener (cross-flask) log</h2>
+        <div class="subtle">one entry per epoch — the meta-gardener observes all flasks at once after every rollover.</div>
+        <div id="meta-log-list"></div>
+      </section>
+    </main>
+
+    <script src="/static/generations.js?v=1"></script>
+  </body>
+</html>

@@ -963,6 +963,195 @@ async def one_poem_flask(flask: str, name: str):
     return PlainTextResponse("")
 
 
+# --- Generations viewer (page + read-only API over data/generations/) ---
+#
+# Reconstructed to match the contract documented at the top of
+# viewer/generations.js. All endpoints read from disk on demand; they never
+# touch live sim state. Route order matters: the literal /meta/index must be
+# registered before /{flask}/{gen} so it isn't captured as flask="meta".
+
+_GV_ROOT = gens_mod.GENERATIONS_ROOT
+
+
+def _gv_read_json(path: Path, default=None):
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return default
+
+
+def _gv_gen_nums(flask_dir: Path) -> list[int]:
+    """Ascending generation numbers present under a flask (or meta) dir."""
+    if not flask_dir.is_dir():
+        return []
+    nums = []
+    for d in flask_dir.iterdir():
+        if d.is_dir() and d.name.startswith("gen-"):
+            try:
+                nums.append(int(d.name[4:]))
+            except ValueError:
+                pass
+    return sorted(nums)
+
+
+def _gv_flask_names() -> list[str]:
+    if not _GV_ROOT.is_dir():
+        return []
+    return sorted(d.name for d in _GV_ROOT.iterdir()
+                  if d.is_dir() and d.name.startswith("flask_"))
+
+
+def _gv_summary(flask: str, n: int) -> dict | None:
+    gen_dir = _GV_ROOT / flask / f"gen-{n:04d}"
+    meta = _gv_read_json(gen_dir / "metadata.json")
+    if meta is None:
+        return None
+    worms = []
+    for wd in sorted(gen_dir.iterdir()):
+        if not wd.is_dir():
+            continue
+        fit = _gv_read_json(wd / "fitness.json", {}) or {}
+        worms.append({
+            "name": wd.name,
+            "fitness": fit.get("fitness", 0.0),
+            "windows_scored": fit.get("windows_scored", 0),
+        })
+    return {
+        "generation": meta.get("generation", n),
+        "best_score": meta.get("best_score", 0.0),
+        "sigma_used": meta.get("sigma_used", 0.0),
+        "ranks": meta.get("ranks", []),
+        "worms": worms,
+    }
+
+
+@app.get("/generations")
+async def generations_page():
+    return FileResponse(VIEWER_DIR / "generations.html")
+
+
+@app.get("/api/generations")
+async def api_generations_index():
+    flasks = []
+    for name in _gv_flask_names():
+        state = _gv_read_json(_GV_ROOT / name / "state.json", {}) or {}
+        nums = _gv_gen_nums(_GV_ROOT / name)
+        flasks.append({
+            "name": name,
+            "current_generation": state.get("generation", nums[-1] if nums else 0),
+            "n_generations": len(nums),
+        })
+    return JSONResponse({"flasks": flasks})
+
+
+@app.get("/api/generations/meta/index")
+async def api_generations_meta_index():
+    meta_root = _GV_ROOT / "meta"
+    epochs = []
+    for n in sorted(_gv_gen_nums(meta_root), reverse=True):
+        gen_dir = meta_root / f"gen-{n:04d}"
+        winner = _gv_read_json(gen_dir / "winner.json", {}) or {}
+        entry = {
+            "epoch": winner.get("epoch", n),
+            "winner": ({
+                "flask": winner.get("flask"),
+                "worm": winner.get("worm"),
+                "score": winner.get("fitness", 0.0),
+            } if winner else None),
+        }
+        if (gen_dir / "gardeners_log.md").exists():
+            entry["log"] = (gen_dir / "gardeners_log.md").read_text()
+        elif (gen_dir / "gardeners_log.skipped").exists():
+            entry["log_skipped"] = True
+        epochs.append(entry)
+    return JSONResponse({"epochs": epochs})
+
+
+@app.get("/api/generations/{flask}/weights/trajectory")
+async def api_generations_trajectory(flask: str, top_n: int = 64):
+    flask_dir = _GV_ROOT / flask
+    per_gen = []  # [(gen_num, flat_weights_dict)]
+    for n in _gv_gen_nums(flask_dir):
+        gen_dir = flask_dir / f"gen-{n:04d}"
+        sel = _gv_read_json(gen_dir / "selection.json", {}) or {}
+        winner = sel.get("winner")
+        wpath = (gen_dir / winner / "weights.json") if winner else None
+        if not (wpath and wpath.exists()):
+            cand = [d for d in gen_dir.iterdir()
+                    if d.is_dir() and (d / "weights.json").exists()]
+            wpath = (cand[0] / "weights.json") if cand else None
+        if not wpath or not wpath.exists():
+            continue
+        w = _gv_read_json(wpath, {}) or {}
+        flat = {}
+        for src, tgts in w.items():
+            if isinstance(tgts, dict):
+                for tgt, val in tgts.items():
+                    flat[f"{src}→{tgt}"] = val
+        if flat:
+            per_gen.append((n, flat))
+    if not per_gen:
+        return JSONResponse({"keys": [], "trajectory": []})
+    last_flat = per_gen[-1][1]
+    keys = sorted(last_flat, key=lambda k: abs(last_flat.get(k, 0)), reverse=True)[:top_n]
+    trajectory = [{"weights": [fl.get(k, 0) for k in keys]} for (_, fl) in per_gen]
+    return JSONResponse({"keys": keys, "trajectory": trajectory})
+
+
+@app.get("/api/generations/{flask}")
+async def api_generations_flask(flask: str, limit: int = 500):
+    flask_dir = _GV_ROOT / flask
+    if not flask_dir.is_dir():
+        return JSONResponse({"total": 0, "generations": []})
+    nums = _gv_gen_nums(flask_dir)
+    newest = list(reversed(nums))[:max(0, limit)]
+    gens = [s for n in newest if (s := _gv_summary(flask, n)) is not None]
+    return JSONResponse({"total": len(nums), "generations": gens})
+
+
+@app.get("/api/generations/{flask}/{gen}")
+async def api_generations_detail(flask: str, gen: int):
+    gen_dir = _GV_ROOT / flask / f"gen-{gen:04d}"
+    if not gen_dir.is_dir():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    meta = _gv_read_json(gen_dir / "metadata.json", {}) or {}
+    out: dict = {"summary": {"ranks": meta.get("ranks", [])}, "worms": []}
+    if (gen_dir / "gardeners_log.md").exists():
+        out["log"] = (gen_dir / "gardeners_log.md").read_text()
+    elif (gen_dir / "gardeners_log.skipped").exists():
+        out["log_skipped"] = True
+    for wd in sorted(gen_dir.iterdir()):
+        if not wd.is_dir():
+            continue
+        poem = ""
+        if (wd / "poem_clean.txt").exists():
+            poem = (wd / "poem_clean.txt").read_text()
+        windows = []
+        sj = wd / "scores.jsonl"
+        if sj.exists():
+            for line in sj.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                emo = rec.get("emotional", 0)
+                coh = rec.get("coherence", 0)
+                windows.append({
+                    "emotional": emo,
+                    "coherence": coh,
+                    "quality": emo + coh,
+                    "tokens": rec.get("tokens", []),
+                })
+        out["worms"].append({
+            "name": wd.name,
+            "poem_clean": poem,
+            "scored_windows": windows,
+        })
+    return JSONResponse(out)
+
+
 # --- WebSockets ---
 
 @app.websocket("/ws/overview")
