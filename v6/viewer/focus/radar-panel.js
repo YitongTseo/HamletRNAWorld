@@ -66,9 +66,13 @@ function _radarLayout() {
   // 4 cols × 3 rows = 12 charts, one per PC / neuron pair. (L and R of the
   // same pair have identical emotion content — only their magnitudes
   // differ — so 24 separate charts were redundant.)
+  // W/H are the LOGICAL (CSS-pixel) drawing dims. Use the constants, not
+  // canvas.width/devicePixelRatio: the backing store is sized with a capped
+  // dpr (min(dpr,2)), so dividing the raw width by an uncapped devicePixelRatio
+  // (e.g. 3 on many phones) yielded a too-small layout and clipped the charts.
   const COLS = 4, ROWS = 3;
-  const W = radarcanvas.width / (window.devicePixelRatio || 1);
-  const H = radarcanvas.height / (window.devicePixelRatio || 1);
+  const W = RADAR_W;
+  const H = RADAR_H;
   const padTop = 28, padBottom = 6, padX = 6;
   const cellW = (W - padX * 2) / COLS;
   const cellH = (H - padTop - padBottom) / ROWS;
@@ -225,9 +229,8 @@ export function drawRadar(state) {
 // onShow/onHide can flip radarVisible. Saved visibility applied immediately.
 chrome.register({
   id: 'radar',
-  glyph: '<*+*>',
-  label: 'emotion radar',
-  panelEl: radarcanvas,
+  label: 'emotion compass',
+  panelEl: document.getElementById('radarpanel'),
   onShow: () => { radarVisible = true; },
   onHide: () => { radarVisible = false; },
 });

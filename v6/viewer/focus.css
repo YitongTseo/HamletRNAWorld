@@ -8,17 +8,14 @@
         text-shadow: 0 0 4px #0f0a;
         z-index: 12;
       }
-      #help {
-        position: fixed; bottom: 8px; left: 10px;
-        font: 11px/1.35 ui-monospace, monospace; color: #5a5; opacity: 0.5;
-      }
-      #netcanvas {
-        position: fixed; bottom: 8px; right: 10px;
+      #netpanel {
+        position: fixed; bottom: 56px; right: 10px;
         width: 500px; height: 360px;
         background: rgba(0, 10, 0, 0.75);
         border: 1px solid rgba(68, 255, 119, 0.3);
-        pointer-events: none; z-index: 10;
+        z-index: 10;
       }
+      #netpanel canvas { display: block; width: 100%; height: 100%; }
       #chemosensoryPanel {
         position: fixed; bottom: 8px; left: 10px;
         width: 320px; max-height: 600px;
@@ -32,7 +29,7 @@
       #chemosensoryPanel .neuron { margin: 4px 0; padding: 3px 4px; border-radius: 2px; font-weight: bold; }
       #chemosensoryPanel .word { margin: 2px 0; padding: 2px 4px; font-size: 10px; }
       #textcanvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 5; }
-      #radarcanvas {
+      #radarpanel {
         position: fixed;
         top: 60px;
         right: 10px;
@@ -40,10 +37,10 @@
         height: 280px;
         background: rgba(8, 12, 18, 0.9);
         border: 1px solid rgba(100, 200, 255, 0.3);
-        pointer-events: none;
         z-index: 11;
         display: none;
       }
+      #radarpanel canvas { display: block; width: 100%; height: 100%; }
       /* Wrapper for #wormtitle + #nav so a single panelEl toggles both via
          panel-chrome. The wrap itself ignores pointer events (pointer-events:
          none) — children opt back in with pointer-events: auto so links and
@@ -67,58 +64,84 @@
         text-shadow: 0 0 4px #0f0a; z-index: 20;
         pointer-events: auto;
       }
-      #dock {
+      /* Labelled toggle bar (bottom-center): one word-button per popup. */
+      #toggle-bar {
         position: fixed;
-        bottom: 8px; right: 10px;
-        display: flex;
-        gap: 6px;
-        z-index: 30;
+        bottom: 8px; left: 50%; transform: translateX(-50%);
+        display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+        max-width: calc(100vw - 20px);
+        z-index: 40;
       }
-      #dock button {
-        background: rgba(0, 0, 0, 0.5);
+      .toggle-btn {
+        background: rgba(0, 0, 0, 0.55);
         border: 1px solid rgba(102, 255, 153, 0.4);
         color: #6f9;
-        font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
         text-shadow: 0 0 4px #0f0a;
-        width: 48px; height: 28px;
-        padding: 0;
+        padding: 7px 13px;
+        border-radius: 4px;
         cursor: pointer;
-        opacity: 0.75;
-        transition: opacity 0.15s, color 0.15s;
+        opacity: 0.8;
+        transition: opacity 0.15s, background 0.15s, color 0.15s, border-color 0.15s;
       }
-      #dock button:hover { opacity: 1.0; color: #afa; }
-      #dock button:active { color: #fff; }
+      .toggle-btn:hover { opacity: 1.0; color: #afa; }
+      .toggle-btn.active {
+        background: rgba(102, 255, 153, 0.22);
+        color: #cfc;
+        border-color: rgba(102, 255, 153, 0.85);
+        opacity: 1.0;
+      }
 .panel-close-btn {
-  position: absolute; top: 2px; right: 4px;
-  width: 16px; height: 16px;
-  background: transparent;
-  border: none;
-  color: inherit;
+  position: absolute; top: 3px; right: 4px;
+  width: 22px; height: 22px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(200, 220, 255, 0.25);
+  border-radius: 4px;
+  color: #cde;
   font: 14px ui-monospace, monospace;
   cursor: pointer;
-  opacity: 0.6;
+  opacity: 0.7;
   padding: 0;
-  line-height: 14px;
-  z-index: 1;
+  line-height: 20px;
+  z-index: 6;
   pointer-events: auto;
 }
-.panel-close-btn:hover { opacity: 1.0; }
+.panel-close-btn:hover { opacity: 1.0; color: #fff; }
+
+/* Bottom-right corner grip for resizing draggable panels. */
+.panel-resize-handle {
+  position: absolute; right: 0; bottom: 0;
+  width: 20px; height: 20px;
+  cursor: nwse-resize;
+  z-index: 6;
+  pointer-events: auto;
+  touch-action: none;
+  background: linear-gradient(135deg,
+    transparent 0 55%, rgba(160, 200, 255, 0.55) 55% 63%,
+    transparent 63% 72%, rgba(160, 200, 255, 0.55) 72% 80%, transparent 80%);
+}
 /* The magnifier ships its own circular .magnifier-close button outside the
    border; suppress the generic chrome close inside the lens to avoid two
    stacked ✕ buttons in the top-right corner. */
 .magnifier .panel-close-btn { display: none; }
 
-/* Mobile bottom-sheet layout applies to normal panels only — the magnifier
-   is a circular lens; full-width bottom-sheet would defeat its purpose, so
-   we exclude .magnifier from this rule. */
-.panel--mobile:not(.magnifier) {
-  left: 0 !important;
-  right: 0 !important;
-  bottom: 0 !important;
-  top: auto !important;
-  width: 100vw !important;
-  max-height: 75vh !important;
-  border-radius: 12px 12px 0 0 !important;
+/* On mobile the panels stay free-floating + draggable + resizable; we just
+   shrink them to fit the viewport. aspect-ratio keeps the canvas panels
+   undistorted. No !important, so a user drag/resize (inline styles) wins. */
+#netpanel.panel--mobile { width: 92vw; height: auto; aspect-ratio: 500 / 360; }
+#radarpanel.panel--mobile { width: 92vw; height: auto; aspect-ratio: 460 / 280; }
+#chemosensoryPanel.panel--mobile { width: 90vw; max-height: 58vh; }
+
+@media (max-width: 768px) {
+  /* #9: stack the top-right nav vertically instead of one long overlapping
+     row, and shrink the worm title so it doesn't collide. */
+  #nav {
+    display: flex; flex-direction: column; align-items: flex-end;
+    top: 6px; right: 8px; gap: 1px; font-size: 11px;
+  }
+  #nav a { padding: 2px 6px; }
+  #wormtitle { font-size: 12px; }
+  .toggle-btn { font-size: 11px; padding: 6px 10px; }
 }
 
 .magnifier {
@@ -126,6 +149,10 @@
   border: 2px solid rgba(100, 200, 255, 0.6);
   border-radius: 50%;
   box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+  /* Translucent dark fill sits between the lens canvas (x-ray + neurons,
+     drawn opaque on top) and the bright green worm body showing through
+     from #c below — so the body reads fainter and the neurons stand out. */
+  background: rgba(0, 13, 7, 0.42);
   cursor: grab;
   z-index: 35;
   touch-action: none;

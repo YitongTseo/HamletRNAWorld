@@ -96,6 +96,23 @@ function _bodyHalfWidthAt(axial) {
   return XRAY_BODY_HALF_WIDTH * factor;
 }
 
+function _tracePolyline(ctx, pts, startNew) {
+  // Trace pts as a smooth open curve using the quadratic-midpoint method:
+  // each original vertex becomes a control point, the curve passes through
+  // the midpoints between vertices. Rounds off the faceting/kinks that a
+  // straight lineTo chain would show on a bending body.
+  if (!pts.length) return;
+  if (startNew) ctx.moveTo(pts[0][0], pts[0][1]);
+  else ctx.lineTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i][0] + pts[i + 1][0]) / 2;
+    const my = (pts[i][1] + pts[i + 1][1]) / 2;
+    ctx.quadraticCurveTo(pts[i][0], pts[i][1], mx, my);
+  }
+  const last = pts[pts.length - 1];
+  ctx.lineTo(last[0], last[1]);
+}
+
 function drawNeuronLegend(ctx, x0, yBase) {
   // Compact legend: dot + label, packed to fit horizontally starting at x0.
   ctx.font = '8px ui-monospace,monospace';
@@ -157,13 +174,13 @@ export function drawXRay(ctx, screenRect, opts) {
     ctx.font = 'bold 11px ui-monospace, monospace';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
-    ctx.fillText('● X-RAY  (live body overlay)', X0 + 8, Y0 + 6);
+    ctx.fillText('● LIVE BODY CONNECTOME', X0 + 8, Y0 + 6);
     ctx.fillStyle = '#9c9';
     ctx.font = '9px ui-monospace, monospace';
     ctx.fillText(`${neuronBodyCoords.n_neurons} neurons mapped to wormbody`, X0 + 8, Y0 + 19);
     ctx.fillStyle = '#9c9';
     ctx.textAlign = 'right';
-    ctx.fillText("'x' graph · 'l' labels" + (xrayLabelsVisible ? ' ✓' : ''), X0 + W - 8, Y0 + 19);
+    ctx.fillText("'x' → connectome graph · 'l' labels" + (xrayLabelsVisible ? ' ✓' : ''), X0 + W - 8, Y0 + 19);
     ctx.textAlign = 'left';
 
     drawNeuronLegend(ctx, X0, Y0 + 36);
@@ -206,7 +223,10 @@ export function drawXRay(ctx, screenRect, opts) {
   }
 
   // ── Body outline (two parallel curves) ──
-  const samples = 80;
+  // Sample the silhouette densely so the edge reads as a smooth curve
+  // rather than a faceted polygon, and trace it with quadratic segments
+  // (see _tracePolyline) so hard bends stay rounded instead of kinking.
+  const samples = 200;
   const top = [], bot = [];
   for (let i = 0; i <= samples; i++) {
     const a = i / samples;
@@ -217,14 +237,13 @@ export function drawXRay(ctx, screenRect, opts) {
     bot.push([m.x - m.nx * r, m.y - m.ny * r]);
   }
 
-  // Filled body, soft outline
+  // Filled body, soft outline — smooth curve through both edges.
   ctx.fillStyle = 'rgba(40, 80, 60, 0.35)';
   ctx.strokeStyle = 'rgba(120, 220, 170, 0.55)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(top[0][0], top[0][1]);
-  for (let i = 1; i < top.length; i++) ctx.lineTo(top[i][0], top[i][1]);
-  for (let i = bot.length - 1; i >= 0; i--) ctx.lineTo(bot[i][0], bot[i][1]);
+  _tracePolyline(ctx, top, true);
+  _tracePolyline(ctx, bot.slice().reverse(), false);
   ctx.closePath();
   ctx.fill();
   ctx.stroke();

@@ -14,29 +14,16 @@ import {
 } from './network-panel.js';
 import { drawChemoPanel, toggleChemo, isChemoVisible } from './chemo-panel.js';
 import { drawRadar, toggleRadar, isRadarVisible } from './radar-panel.js';
-import * as chrome from './panel-chrome.js';
 import * as magnifier from './magnifier.js';
 // Bridge module — synchronizes the network panel's labels-toggle setter
 // with the magnifier's labels-toggle setter so the 'l' key updates both.
 import { setXrayLabelsVisible as setNetworkXrayLabelsVisible } from './network-panel.js';
 
-// Register the static HTML overlays (#title-nav-wrap, #help) with
-// panel-chrome so the dock can hide / reopen them like any other panel.
-// The panel modules (network, chemo, radar, pca) register themselves at
-// their own import time — these two don't have modules, so they're
-// registered here in the entrypoint.
-chrome.register({
-  id: 'titleNav',
-  glyph: '>><>><',
-  label: 'worm title + nav',
-  panelEl: document.getElementById('title-nav-wrap'),
-});
-chrome.register({
-  id: 'help',
-  glyph: '[ ? ]',
-  label: 'keyboard legend',
-  panelEl: document.getElementById('help'),
-});
+// The worm title + nav (#title-nav-wrap) and the UMAP hexgrid hover popup are
+// always-on by default now — they're no longer registered as toggleable
+// panels. The four toggle buttons (x-ray, connectome, chemosensory, emotion
+// compass) come from the panel modules registering themselves at import time.
+// The bottom keyboard-legend bar was removed entirely.
 
 const hud = document.getElementById('hud');
 
@@ -393,7 +380,7 @@ let smellsVisible = true;     // toggle with 'o' key
 // X-ray neuron-label visibility ('l' key). Single source of truth — the
 // network panel and the magnifier are both notified on every toggle. This
 // replaces the network panel's internal flag as authoritative state.
-let xrayLabelsVisible = false;
+let xrayLabelsVisible = true;
 
 // Simulation state
 let isPaused = false;         // toggled with spacebar

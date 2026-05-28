@@ -152,6 +152,45 @@ def tokenize(sentence: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(sentence) if t.strip()]
 
 
+# --- Dialogue vs. set-dressing classification -------------------------------
+# Only spoken dialogue is edible / chemosensory. Speaker-name headings
+# ("BARNARDO."), act/scene cues ("SCENE I. Elsinore..."), and stage
+# directions ("Enter Francisco and Barnardo, two sentinels." / "[_Exit._]")
+# are inert decoration: they still scroll past and render, but the worm
+# can't eat them and they emit no smell.
+_SCENE_RE = re.compile(r"^(ACT|SCENE)\b", re.IGNORECASE)
+# Lines that open with an entrance/exit/effect verb are bare stage directions
+# in this Gutenberg edition (mid-line directions are bracketed/italicized).
+_STAGE_VERB_RE = re.compile(
+    r"^(Enter|Exit|Exeunt|Re-enter|Manet|Manent|Flourish|Alarums?|"
+    r"Hautboys|Trumpets?|Drums?)\b"
+)
+
+
+def is_dialogue_line(raw_line: str) -> bool:
+    """True only for spoken dialogue. False for speaker-name headings,
+    ACT/SCENE cues, and stage directions — the inert set-dressing the worm
+    must neither eat nor smell."""
+    s = raw_line.replace("﻿", "").strip()
+    if not s:
+        return False
+    # Bracketed or fully-italicized stage direction: [_Exit._], _Exeunt._
+    if (s[0] == "[" and s[-1] == "]") or (s[0] == "_" and s[-1] == "_"):
+        return False
+    # ACT / SCENE heading.
+    if _SCENE_RE.match(s):
+        return False
+    # All-caps speaker name (no lowercase letters but at least one letter):
+    # "BARNARDO.", "KING CLAUDIUS.", "GHOST.". Dialogue always lives on its
+    # own line in this edition, so this never swallows spoken text.
+    if any(c.isalpha() for c in s) and not any(c.islower() for c in s):
+        return False
+    # Bare stage direction opening with an entrance/exit/effect verb.
+    if _STAGE_VERB_RE.match(s):
+        return False
+    return True
+
+
 def _get_raw_passage(passage: str) -> list[str]:
     if passage == "full":
         return _load_full_play()
@@ -166,6 +205,18 @@ def get_sentences(passage: str = "opening", n: int | None = None) -> list[list[s
     if n is not None:
         raw = raw[:n]
     return [tokenize(s) for s in raw]
+
+
+def get_sentences_with_flags(
+    passage: str = "opening", n: int | None = None
+) -> tuple[list[list[str]], list[bool]]:
+    """Like get_sentences, but also return a parallel list of per-sentence
+    `edible` flags. False marks set-dressing (speaker names, ACT/SCENE cues,
+    stage directions) the worm must not eat or smell; True marks dialogue."""
+    raw = _get_raw_passage(passage)
+    if n is not None:
+        raw = raw[:n]
+    return [tokenize(s) for s in raw], [is_dialogue_line(s) for s in raw]
 
 
 def get_raw_and_tokens(

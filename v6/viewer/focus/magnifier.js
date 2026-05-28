@@ -24,7 +24,7 @@ import { loadMagnifierPos, saveMagnifierPos } from './state.js';
 import { onViewportChange } from './responsive.js';
 
 let lensEl, lensCanvas, lensCtx, closeBtn;
-let xrayLabelsVisible = false;
+let xrayLabelsVisible = true;
 
 // Module-local handle on live sim data; set by `setState` each frame from
 // index.js so we can forward it into drawXRay. Avoids each-frame allocation.
@@ -35,8 +35,10 @@ let liveState = null;
 // phones (~120 px) and big desktops (~360 px).
 // ---------------------------------------------------------------------------
 function diameter() {
-  const d = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.30);
-  return Math.max(120, Math.min(360, d));
+  // ~2x the previous size (was 0.30 / clamp 120–360) per design feedback —
+  // big enough to read neurons on phones and desktop alike.
+  const d = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.55);
+  return Math.max(200, Math.min(640, d));
 }
 
 // ---------------------------------------------------------------------------
@@ -190,8 +192,8 @@ export function setXrayLabelsVisible(v) { xrayLabelsVisible = !!v; }
 build();
 chrome.register({
   id: 'magnifier',
-  glyph: '(°o°)',  // (°o°)
-  label: 'neural x-ray magnifier',
+  label: 'x-ray',
   panelEl: lensEl,
+  manageChrome: false,  // the lens ships its own circular ✕ + drag
 });
 onViewportChange(() => { applySize(); applyInitialPosition(); });

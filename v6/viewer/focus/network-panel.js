@@ -73,9 +73,9 @@ export function buildPositions(neurons, rawPositions) {
 // chrome.register applies the saved visibility (default = hidden) and fires
 // the appropriate callback, so the flag starts coherent with the DOM.
 let netVisible = false;
-let xrayMode = true;           // 'x' toggles between x-ray (default) and the legacy static graph
-let xrayLabelsVisible = false; // 'l' toggles neuron-name labels in the x-ray view
-let motorLabelsVisible = false; // 'm' toggles motor labels in the legacy graph view
+let xrayMode = false;          // default = labelled anatomical graph; 'x' flips to the live body overlay
+let xrayLabelsVisible = true;  // neuron-name labels on by default in the live body view
+let motorLabelsVisible = true; // motor labels on by default in the anatomical graph
 
 export function isNetVisible() { return netVisible; }
 // toggleNetVisible delegates to panel-chrome so the dock button + saved
@@ -109,11 +109,11 @@ function drawNetCanvas(graph, neuronActivity, stimFlags) {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#8f8';
   ctx.font = 'bold 11px ui-monospace, monospace';
-  ctx.fillText('● NEURAL GRAPH (anatomical layout)', 8, 6);
+  ctx.fillText('● CONNECTOME (anatomical layout)', 8, 6);
   ctx.fillStyle = '#9c9';
   ctx.font = '9px ui-monospace, monospace';
   ctx.textAlign = 'right';
-  ctx.fillText("'x' to flip to x-ray view", NET_W - 8, 19);
+  ctx.fillText("'x' → live body connectome", NET_W - 8, 19);
   ctx.textAlign = 'left';
 
   drawNeuronLegend(ctx, 0, 36);
@@ -261,9 +261,8 @@ export function drawNetworkPanel(state) {
 // saved visibility immediately, so on a fresh visit the panel is hidden.
 chrome.register({
   id: 'network',
-  glyph: 'o-+-o',
-  label: 'neural network / x-ray',
-  panelEl: netcanvas,
+  label: 'connectome',
+  panelEl: document.getElementById('netpanel'),
   onShow: () => { netVisible = true; },
   onHide: () => { netVisible = false; },
 });

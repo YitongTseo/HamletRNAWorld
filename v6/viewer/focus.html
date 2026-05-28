@@ -17,15 +17,14 @@
   <body>
     <canvas id="c"></canvas>
     <canvas id="textcanvas"></canvas>
-    <canvas id="netcanvas"></canvas>
-    <canvas id="radarcanvas"></canvas>
+    <div id="netpanel"><canvas id="netcanvas"></canvas></div>
+    <div id="radarpanel"><canvas id="radarcanvas"></canvas></div>
     <div id="chemosensoryPanel"></div>
     <div id="hud">connecting…</div>
     <div id="title-nav-wrap">
       <div id="wormtitle"></div>
       <div id="nav"><a href="/">← all worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about">about</a><a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="opacity:0.55; font-size:11px;">by Yitong</a></div>
     </div>
-    <div id="help">press 'c' chemo · 'n' network · 'x' x-ray ↔ graph · 'l' neuron labels · 'o' smells · 'e' emotion radar</div>
     <script>
       // Show worm name in the title.
       const wormName = decodeURIComponent(location.pathname.replace(/^\/focus\//, '').replace(/\/$/, ''));

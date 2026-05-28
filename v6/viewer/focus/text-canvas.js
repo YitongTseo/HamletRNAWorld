@@ -10,7 +10,8 @@
 // Consequence: `textcanvas.width` / `textcanvas.height` are now in PHYSICAL
 // pixels, NOT CSS pixels. Any code computing screen-space positions in CSS
 // coords must read `window.innerWidth` / `window.innerHeight` instead.
-import { camera } from './three-scene.js';
+import { camera, canvas } from './three-scene.js';
+import { isMobile } from './responsive.js';
 import { drawPcaPopup, isPcaVisible } from './pca-popup.js';
 
 // ---------------------------------------------------------------------------
@@ -36,10 +37,26 @@ window.addEventListener('resize', resizeTextCanvas);
 // magnifier). Returns CSS pixel coords; the context's DPR transform handles
 // the upscale to physical pixels.
 // ---------------------------------------------------------------------------
+// Project against the #c canvas's ACTUAL on-screen box, not window.innerWidth/
+// innerHeight. On mobile the canvas is CSS-sized 100vh (the large viewport,
+// incl. the area behind the address bar) while innerHeight is the small
+// viewport, so dividing by innerHeight placed overlays (notably the magnifier
+// x-ray) higher than the worm three.js actually renders. The rect is cached
+// and refreshed only on viewport changes, so this stays cheap per-frame.
+let _canvasRect = canvas.getBoundingClientRect();
+function refreshCanvasRect() { _canvasRect = canvas.getBoundingClientRect(); }
+window.addEventListener('resize', refreshCanvasRect);
+window.addEventListener('scroll', refreshCanvasRect, true);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', refreshCanvasRect);
+  window.visualViewport.addEventListener('scroll', refreshCanvasRect);
+}
+
 function worldToScreen(wx, wy) {
+  const r = _canvasRect;
   const nx = (wx - camera.left) / (camera.right - camera.left);
   const ny = (wy - camera.top) / (camera.bottom - camera.top);
-  return [nx * window.innerWidth, ny * window.innerHeight];
+  return [r.left + nx * r.width, r.top + ny * r.height];
 }
 
 function screenScale() {
@@ -86,8 +103,9 @@ function drawTextCanvas(state) {
     }
   }
 
-  // Draw each word
-  tctx.font = '18px ui-monospace, monospace';
+  // Draw each word. Smaller on mobile so the lines don't overlap when the
+  // camera frustum is zoomed in (#9).
+  tctx.font = (isMobile() ? '13px' : '18px') + ' ui-monospace, monospace';
   for (const [key, item] of wordFoodMap) {
     const [sx, sy] = worldToScreen(item.x, item.y);
     const isHovered = nearestWord === item && minDist < 80;

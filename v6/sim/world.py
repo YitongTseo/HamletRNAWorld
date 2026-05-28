@@ -24,7 +24,7 @@ from sim.connectome import Connectome
 from sim.muscle_body import MuscleBody
 from sim.worm import WormBody
 from sim.text_scroller import TextScroller
-from corpus.hamlet import get_sentences
+from corpus.hamlet import get_sentences_with_flags
 from sim.chemosensory_mapping import (
     compute_pca_activation, PC_NEURON_PAIRS,
 )
@@ -112,6 +112,7 @@ class Food:
     word: str = ""
     line_id: int = -1
     word_idx: int = -1
+    edible: bool = True  # False = inert set-dressing (no eat, no smell)
 
 
 @dataclass
@@ -178,7 +179,8 @@ class World:
         # v6 behavior).
         passage = os.environ.get("WORMLET_PASSAGE", "opening")
         loop = os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") != "1"
-        self.text_scroller = TextScroller(get_sentences(passage), loop=loop)
+        sentences, edible_flags = get_sentences_with_flags(passage)
+        self.text_scroller = TextScroller(sentences, loop=loop, edible_flags=edible_flags)
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))
@@ -195,7 +197,7 @@ class World:
         self.sensed_smells.clear()
 
         for f in self.food:
-            if not f.word:
+            if not f.word or not f.edible:
                 continue
             pca = _word_pca(f.word)
             if pca is None:
@@ -239,6 +241,9 @@ class World:
         i = 0
         while i < len(self.food):
             f = self.food[i]
+            if not f.edible:
+                i += 1
+                continue
             d = math.hypot(wx - f.x, wy - f.y)
             if d <= FOOD_SENSE_RADIUS:
                 self.stim_food_sense = True
@@ -284,7 +289,8 @@ class World:
 
         # Rebuild food from alive scrolling words.
         self.food = [
-            Food(x=w.x, y=w.y, word=w.text, line_id=w.line_id, word_idx=w.word_idx)
+            Food(x=w.x, y=w.y, word=w.text, line_id=w.line_id, word_idx=w.word_idx,
+                 edible=w.edible)
             for w in self.text_scroller.alive_words()
         ]
 

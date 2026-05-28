@@ -29,3 +29,17 @@ export function loadMagnifierPos() {
 export function saveMagnifierPos(pos) {
   try { localStorage.setItem(magKey, JSON.stringify(pos)); } catch {}
 }
+
+// Per-panel drag/resize geometry ({left, top, width, height} as CSS strings),
+// keyed by panel id, scoped per (flask, worm) like visibility above.
+const geomKey = `wormlet:focus:${flaskName}:${wormName}:geom`;
+export function loadPanelGeom(id) {
+  try { return (JSON.parse(localStorage.getItem(geomKey)) || {})[id] || null; }
+  catch { return null; }
+}
+export function savePanelGeom(id, geom) {
+  let cur = {};
+  try { cur = JSON.parse(localStorage.getItem(geomKey)) || {}; } catch {}
+  cur[id] = geom;
+  try { localStorage.setItem(geomKey, JSON.stringify(cur)); } catch {}
+}

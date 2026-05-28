@@ -148,8 +148,7 @@ export function drawChemoPanel(state) {
 // applies saved visibility immediately (default = hidden on fresh visit).
 chrome.register({
   id: 'chemo',
-  glyph: '<~~~>',
-  label: 'chemosensory neurons',
+  label: 'chemosensory',
   panelEl: chemosensoryPanel,
   onShow: () => { chemosensoryVisible = true; },
   onHide: () => { chemosensoryVisible = false; },

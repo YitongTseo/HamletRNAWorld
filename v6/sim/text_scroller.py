@@ -23,14 +23,22 @@ class WordState:
     x: float
     y: float
     alive: bool = True
+    edible: bool = True  # False for set-dressing words (names, cues, directions)
 
 
 class TextScroller:
-    def __init__(self, sentences: list[list[str]], loop: bool = True):
+    def __init__(self, sentences: list[list[str]], loop: bool = True,
+                 edible_flags: list[bool] | None = None):
         """If loop=False, stop spawning new lines after one full pass; the
         `corpus_exhausted` property goes True once the last line has scrolled
-        off the screen. Generation mode passes loop=False."""
+        off the screen. Generation mode passes loop=False.
+
+        `edible_flags` is a per-sentence list (same indexing as `sentences`):
+        False makes every word in that sentence inert (non-edible,
+        non-smellable) — used to exclude speaker names / scene cues / stage
+        directions. Omitted → all words edible (legacy behavior)."""
         self.sentences = sentences
+        self.edible_flags = edible_flags or []
         self.loop = loop
         self._sent_idx = 0
         self._line_id = 0
@@ -72,11 +80,13 @@ class TextScroller:
     def _spawn(self) -> None:
         """Create a new line of words from the next sentence."""
         if self.loop:
-            tokens = self.sentences[self._sent_idx % len(self.sentences)]
+            si = self._sent_idx % len(self.sentences)
         else:
             if self._sent_idx >= len(self.sentences):
                 return  # nothing left; corpus_exhausted will go True after last line scrolls off
-            tokens = self.sentences[self._sent_idx]
+            si = self._sent_idx
+        tokens = self.sentences[si]
+        edible = self.edible_flags[si] if si < len(self.edible_flags) else True
         self._sent_idx += 1
         lid = self._line_id
         self._line_id += 1
@@ -93,6 +103,7 @@ class TextScroller:
                 word_idx=idx,
                 x=x + len(tok) * CHAR_W / 2,  # center of word
                 y=SPAWN_Y,
+                edible=edible,
             )
             line.append(w)
             x += len(tok) * CHAR_W + WORD_GAP

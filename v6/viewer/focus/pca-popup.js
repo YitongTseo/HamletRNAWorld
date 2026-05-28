@@ -6,36 +6,16 @@
 // nearest word and distance threshold). This module only handles the
 // actual popup rendering once the hover decision has been made.
 import { tctx } from './text-canvas.js';
-import * as chrome from './panel-chrome.js';
-import { loadVisibility } from './state.js';
 
 // ---------------------------------------------------------------------------
-// Visibility flag. The PCA popup draws into #textcanvas (it has no DOM
-// element of its own), so panel-chrome can't toggle a real panel — instead
-// we register a 1x1 hidden sentinel div so panel-chrome can still attach a
-// close button and dock entry, and let onShow/onHide flip this flag.
-// text-canvas.js gates the actual drawPcaPopup call on isPcaVisible().
+// Visibility flag. The UMAP/PCA hover popup (hex-density plot) draws into
+// #textcanvas; it's ON by default and is no longer a toggle-bar entry — it
+// just appears when you hover near a word. text-canvas.js gates the actual
+// drawPcaPopup call on isPcaVisible().
 // ---------------------------------------------------------------------------
-let pcaVisible = false;
+let pcaVisible = true;
 export function setPcaVisible(v) { pcaVisible = v; }
 export function isPcaVisible() { return pcaVisible; }
-
-const sentinel = document.createElement('div');
-sentinel.style.cssText = 'position:fixed; width:1px; height:1px; pointer-events:none; opacity:0;';
-document.body.appendChild(sentinel);
-
-chrome.register({
-  id: 'pca',
-  glyph: '[x,y]',
-  label: 'word PCA popup',
-  panelEl: sentinel,
-  onShow: () => { pcaVisible = true; },
-  onHide: () => { pcaVisible = false; },
-});
-
-// chrome.register already applied saved visibility via onShow/onHide, but be
-// explicit so the flag is correct even if onShow/onHide order ever changes.
-pcaVisible = loadVisibility().pca === true;
 
 function drawPcaPopup(word, mouseScreenPos, pcaData) {
   const PW = 200, PH = 200, PAD_X = 20, PAD_Y = 20;

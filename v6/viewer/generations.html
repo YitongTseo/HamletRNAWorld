@@ -74,6 +74,14 @@
       .window { padding:4px 0; border-bottom:1px dotted rgba(100,200,255,0.08); font-size:12px; }
       .window .scores { color:var(--warm); margin-right:8px; font-variant-numeric:tabular-nums; }
 
+      .highlights { display:grid; gap:10px; grid-template-columns:repeat(3, 1fr); margin-top:10px; }
+      @media (max-width: 760px) { .highlights { grid-template-columns:1fr; } }
+      .highlight { background:#001; border:1px solid rgba(100,200,255,0.15); border-radius:3px; padding:8px 10px; }
+      .highlight .hl-label { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px; font-weight:600; }
+      .highlight .hl-scores { font-variant-numeric:tabular-nums; font-size:11px; margin-bottom:5px; }
+      .highlight .hl-worm { color:var(--dim); }
+      .highlight .hl-text { font-size:12px; line-height:1.45; color:#cfc; }
+
       .log-box {
         background:#001; padding:10px 14px; border-radius:3px; border-left:3px solid var(--accent);
         white-space:pre-wrap; font-style:italic; color:#cfc;
@@ -125,7 +133,9 @@
       <section class="card" id="detail-card" style="display:none;">
         <h2 id="detail-title">generation detail</h2>
         <div id="detail-log"></div>
-        <div class="detail-cols" style="margin-top:10px;">
+        <div class="subtle" style="margin-top:10px;">standout windows — graded on two axes: <span style="color:var(--warm);">artsy</span> (emotional/poetic impact) and <span style="color:#9cf;">comprehensible</span> (reads as language).</div>
+        <div class="highlights" id="detail-highlights"></div>
+        <div class="detail-cols" style="margin-top:14px;">
           <div>
             <div class="subtle">top worm's full poem</div>
             <div class="poem-box" id="detail-poem"></div>
@@ -156,6 +166,6 @@
       </section>
     </main>
 
-    <script src="/static/generations.js?v=1"></script>
+    <script src="/static/generations.js?v=2"></script>
   </body>
 </html>

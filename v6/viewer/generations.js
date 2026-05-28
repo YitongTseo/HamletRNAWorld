@@ -19,6 +19,7 @@ const detailTitle = document.getElementById('detail-title');
 const detailLog = document.getElementById('detail-log');
 const detailPoem = document.getElementById('detail-poem');
 const detailWindows = document.getElementById('detail-windows');
+const detailHighlights = document.getElementById('detail-highlights');
 const heatmapEl = document.getElementById('heatmap');
 const heatStatsEl = document.getElementById('heat-stats');
 const metaLogListEl = document.getElementById('meta-log-list');
@@ -70,8 +71,8 @@ function lineDataset(label, color, data) {
 // the band σ is allowed to bounce in. If the user retunes those constants,
 // update them here too — there's no /api/config to fetch from yet.
 const SIGMA_MIN = 0.05;
-const SIGMA_INIT = 0.3;
-const SIGMA_MAX = 1.0;
+const SIGMA_INIT = 0.5;
+const SIGMA_MAX = 3.0;
 
 function constDataset(label, color, value, n, dash) {
   return {
@@ -197,6 +198,7 @@ async function selectGeneration(genNum, rowEl) {
   detailLog.innerHTML = '<div class="subtle">loading…</div>';
   detailPoem.textContent = '';
   detailWindows.innerHTML = '';
+  detailHighlights.innerHTML = '';
   let data;
   try {
     data = await fetchJSON(`/api/generations/${currentFlask}/${genNum}`);
@@ -234,6 +236,20 @@ async function selectGeneration(genNum, rowEl) {
     }
   }
   allWindows.sort((a, b) => (b.quality || 0) - (a.quality || 0));
+
+  // Standout windows on each axis. "artsy" = emotional, "comprehensible" =
+  // coherence (the two axes the judge grades). Combined = emotional+coherence.
+  if (allWindows.length) {
+    const bestBy = (key) => allWindows.reduce((a, b) => ((b[key] || 0) > (a[key] || 0) ? b : a));
+    detailHighlights.innerHTML = [
+      hlCard('best combined', 'var(--accent)', bestBy('quality')),
+      hlCard('most artsy', 'var(--warm)', bestBy('emotional')),
+      hlCard('most comprehensible', '#9cf', bestBy('coherence')),
+    ].join('');
+  } else {
+    detailHighlights.innerHTML = '<div class="subtle">no scored windows for this generation yet.</div>';
+  }
+
   const top = allWindows.slice(0, 12);
   detailWindows.innerHTML = top.length
     ? top.map(w => `
@@ -243,6 +259,19 @@ async function selectGeneration(genNum, rowEl) {
           “${escapeHtml((w.tokens || []).join(' '))}”
         </div>`).join('')
     : '<div class="subtle">no scored windows for this generation.</div>';
+}
+
+function hlCard(label, color, w) {
+  return `
+    <div class="highlight" style="border-color:${color};">
+      <div class="hl-label" style="color:${color};">${label}</div>
+      <div class="hl-scores">
+        <span style="color:var(--warm);">artsy ${w.emotional}</span> ·
+        <span style="color:#9cf;">comprehensible ${w.coherence}</span>
+        <span class="hl-worm">· ${escapeHtml(w.worm)}</span>
+      </div>
+      <div class="hl-text">“${escapeHtml((w.tokens || []).join(' '))}”</div>
+    </div>`;
 }
 
 function escapeHtml(s) {

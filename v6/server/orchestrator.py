@@ -128,11 +128,15 @@ def load_worms(n_worms: int | None = None) -> list[Worm]:
 
 
 # ----- Multi-flask loader ---------------------------------------------------
-# 10 worm names per flask. Each flask gets the same 10 names; uniqueness comes
+# 20 worm names per flask. Each flask gets the same names; uniqueness comes
 # from the (flask, name) pair. Seeds are unique across all flasks so worm
-# trajectories don't repeat across flasks.
+# trajectories don't repeat across flasks. The list MUST be at least as long
+# as WORMLET_N_WORMS_PER_FLASK — if it's shorter, load_flasks cycles names
+# and multiple worms collide onto one directory (shared poem.txt/weights.json).
 FLASK_WORM_NAMES = ["Alice", "Bob", "Carol", "Dave", "Eve",
-                    "Frank", "Grace", "Heidi", "Ivan", "Judy"]
+                    "Frank", "Grace", "Heidi", "Ivan", "Judy",
+                    "Kara", "Liam", "Mallory", "Niaj", "Oscar",
+                    "Peggy", "Quentin", "Ruth", "Sybil", "Trent"]
 FLASKS_DIR = _DATA_ROOT / "flasks"
 
 
@@ -154,6 +158,12 @@ def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Wor
     flask. Caller wraps each inner list in a WormGroup. Seeds are unique
     across all worms in all flasks (flask_idx * 1000 + worm_idx + 1)
     so no two worms ever share trajectories."""
+    if n_worms_per_flask > len(FLASK_WORM_NAMES):
+        raise ValueError(
+            f"n_worms_per_flask={n_worms_per_flask} exceeds the {len(FLASK_WORM_NAMES)} "
+            f"available worm names; worms would collide onto shared directories. "
+            f"Add more names to FLASK_WORM_NAMES."
+        )
     FLASKS_DIR.mkdir(parents=True, exist_ok=True)
     flasks: list[list[Worm]] = []
     for fi in range(n_flasks):
