@@ -1,8 +1,0 @@
-.
-.
-make
-bid
-them
-?
-him
-.

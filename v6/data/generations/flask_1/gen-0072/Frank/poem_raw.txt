@@ -1,6 +1,0 @@
-haste
-story
-.
-this
-,
-one
