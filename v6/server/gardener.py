@@ -1,6 +1,6 @@
 """Per-generation gardener's log.
 
-The gardener is Opus 4.7 with adaptive thinking. The briefing document
+The gardener is Opus 4.8 with adaptive thinking. The briefing document
 (docs/specs/2026-05-26-gardener-briefing.md) is included verbatim in the
 system prompt and is identical across every call across every
 generation, so prompt caching covers most of the input cost. Selection
@@ -21,12 +21,20 @@ from pathlib import Path
 
 import anthropic
 
+from server.evolution import GAMMA, EMOTIONAL_WEIGHT
 from server.judge import ScoredWindow
 
 V6_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _window_q(emotional: float, coherence: float) -> float:
+    """Per-window quality, matching the engine's fitness shape (evolution.py)
+    so the gardener surfaces the same 'best window' selection actually rewards.
+    Kept in sync with GAMMA / EMOTIONAL_WEIGHT — do not hardcode the exponent."""
+    return EMOTIONAL_WEIGHT * (emotional / 100.0) ** GAMMA + (coherence / 100.0) ** GAMMA
 BRIEFING_PATH = V6_ROOT / "docs" / "specs" / "2026-05-26-gardener-briefing.md"
 
-MODEL = "claude-opus-4-7"
+MODEL = "claude-opus-4-8"
 MAX_LOG_TOKENS = 300            # 2 sentences fits comfortably; hard cap
 MAX_SELECTION_TOKENS = 200      # JSON selection blobs are tiny
 
@@ -93,7 +101,7 @@ def _format_this_gen_fragments(
         windows = scored_by_worm.get(name, [])
         ranked = sorted(
             windows,
-            key=lambda w: -(1.5 * (w.emotional / 100.0) ** 2.5 + (w.coherence / 100.0) ** 2.5),
+            key=lambda w: -_window_q(w.emotional, w.coherence),
         )[:TOP_WINDOWS_PER_WORM]
         for w in ranked:
             lines.append(f"- (E={w.emotional} C={w.coherence}) “{' '.join(w.tokens)}”")
@@ -115,7 +123,7 @@ def _sample_window_from_gen(gen_root: Path, gen: int, worm: str) -> str | None:
                 s = json.loads(line)
             except Exception:
                 continue
-            q = 1.5 * (s["emotional"] / 100.0) ** 2.5 + (s["coherence"] / 100.0) ** 2.5
+            q = _window_q(s["emotional"], s["coherence"])
             if q > best_q:
                 best_q = q
                 best = s
@@ -484,7 +492,7 @@ def _format_all_flasks_fragments(flasks) -> str:
                         s = json.loads(line)
                     except Exception:
                         continue
-                    q = 1.5 * (s["emotional"] / 100.0) ** 2.5 + (s["coherence"] / 100.0) ** 2.5
+                    q = _window_q(s["emotional"], s["coherence"])
                     if q > best_q:
                         best_q = q
                         best = s
@@ -570,7 +578,7 @@ def _format_all_flasks_full_metrics(flasks) -> str:
                                 s = json.loads(line)
                             except Exception:
                                 continue
-                            q = 1.5 * (s["emotional"] / 100.0) ** 2.5 + (s["coherence"] / 100.0) ** 2.5
+                            q = _window_q(s["emotional"], s["coherence"])
                             if q > best_q:
                                 best_q = q
                                 best = s

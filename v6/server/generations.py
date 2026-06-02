@@ -33,9 +33,8 @@ import numpy as np
 
 from corpus.hamlet import is_non_reactive  # punctuation set is in PUNCTUATION below
 from server.evolution import (
-    SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT,
-    adapt_sigma, fitness, flatten_weights, nes_update,
-    rank_weights, spawn_children, unflatten_weights, WeightDict,
+    SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT, N_ELITES,
+    evolve_generation, fitness, flatten_weights, unflatten_weights, WeightDict,
 )
 from server.gardener import maybe_write_log
 from server.judge import judge_poem, ScoredWindow
@@ -69,6 +68,12 @@ class GenerationState:
     # parent_vector and parent_keys regenerate from disk if missing.
     parent_vector: list[float] | None = None
     parent_keys: list[list[str]] | None = None  # JSON-friendly [src, tgt] pairs
+    # Change 2: the spawn record for the CURRENTLY-LIVE generation, keyed by
+    # worm name: {name: {"eps": [float]|None, "is_elite": bool}}. The next
+    # rollover reads the TRUE eps from here for the NES gradient instead of
+    # reconstructing it from (rounded) weight files. None until the first
+    # rollover under the new engine (cold-start / upgrade fallback path).
+    children: dict[str, dict] | None = None
 
     def state_path(self) -> Path:
         return GENERATIONS_ROOT / self.group_name / "state.json"
@@ -265,7 +270,12 @@ def run_generation_rollover(
         poems_raw[w.name] = raw
         poems_clean[w.name] = clean
         try:
-            scored = judge_poem(clean, worm_name=w.name, seed=state.generation * 1000 + hash(w.name) % 1000)
+            # Change 3: same sampling seed for every worm in a generation, so
+            # all worms are judged under the SAME window-sampling protocol —
+            # otherwise one worm might get its good windows sampled and another
+            # not, making the cross-worm fitness comparison (i.e. selection)
+            # unfair. Seed varies per generation for audit-trail variety.
+            scored = judge_poem(clean, worm_name=w.name, seed=state.generation)
         except Exception as e:
             print(f"[GENERATIONS] judge failed for {w.name}: {e}", flush=True)
             scored = []
@@ -280,37 +290,58 @@ def run_generation_rollover(
     parent_vec = np.array(state.parent_vector, dtype=np.float64)
     parent_keys = [tuple(k) for k in state.parent_keys]  # type: ignore[arg-type]
 
-    # Reconstruct each child's eps from the current weight files vs parent.
-    # On first run there are no children yet (cold-start path); skip the
-    # NES step and just promote the worms' current weights as the new parent.
-    eps_list: list[np.ndarray] = []
+    # Gather, per live worm: its float genome, the TRUE eps it was spawned with
+    # (Change 2 — read from state.children, not reconstructed from rounded
+    # weights), whether it was carried as an elite, and its fitness.
+    genomes: list[np.ndarray] = []
+    epses: list[np.ndarray | None] = []
+    is_elite_flags: list[bool] = []
     scores_list: list[float] = []
     worm_order: list[str] = []
+    records = state.children or {}
     for w in worms:
         worm_order.append(w.name)
         cur_vec, _ = flatten_weights(json.loads(w.poem_path.parent.joinpath("weights.json").read_text()))
-        eps = (cur_vec - parent_vec) / state.sigma if state.sigma > 0 else np.zeros_like(parent_vec)
-        eps_list.append(eps)
+        genomes.append(cur_vec)
         scores_list.append(fitness_by_worm[w.name])
+        rec = records.get(w.name)
+        if rec is not None:
+            eps_rec = rec.get("eps")
+            epses.append(np.array(eps_rec, dtype=np.float64) if eps_rec is not None else None)
+            is_elite_flags.append(bool(rec.get("is_elite", False)))
+        else:
+            # Cold-start / first-rollover-after-upgrade fallback: no spawn record
+            # on file, so reconstruct eps from the genome and treat it as fresh.
+            eps = (cur_vec - parent_vec) / state.sigma if state.sigma > 0 else np.zeros_like(parent_vec)
+            epses.append(eps)
+            is_elite_flags.append(False)
 
-    new_parent_vec = nes_update(parent_vec, eps_list, scores_list, sigma=state.sigma)
-    best_score = max(scores_list) if scores_list else 0.0
-    improved = (
-        not state.best_score_history
-        or best_score > state.best_score_history[-1]
+    prev_best = state.best_score_history[-1] if state.best_score_history else None
+    rng = np.random.default_rng(state.generation + 1)
+    ng = evolve_generation(
+        parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
+        n_elites=N_ELITES, rng=rng, prev_best_fitness=prev_best,
     )
-    new_sigma = adapt_sigma(state.sigma, improved=improved)
+    new_parent_vec = ng.new_parent
+    new_sigma = ng.new_sigma
+    best_score = max(scores_list) if scores_list else 0.0
 
     # Rank ordering for write-out (highest fitness = rank 0).
-    ranked = sorted(range(len(worms)), key=lambda i: -scores_list[i])
+    ranked = ng.ranked_indices
     rank_of = {worm_order[idx]: r for r, idx in enumerate(ranked)}
 
-    # Spawn next-generation children: one elite + (N-1) perturbed.
-    rng = np.random.default_rng(state.generation + 1)
-    next_children, next_eps = spawn_children(new_parent_vec, n=len(worms), sigma=new_sigma, rng=rng)
+    # Assign next-generation genomes to worm slots (elites first, then fresh)
+    # and record each slot's TRUE eps + elite flag for the next rollover.
     new_weights: dict[str, WeightDict] = {}
-    for w, child_vec in zip(worms, next_children):
+    new_children: dict[str, dict] = {}
+    for w, child_vec, child_eps, child_elite in zip(
+        worms, ng.next_genomes, ng.next_epses, ng.next_is_elite
+    ):
         new_weights[w.name] = unflatten_weights(child_vec, parent_keys)
+        new_children[w.name] = {
+            "eps": child_eps.tolist() if child_eps is not None else None,
+            "is_elite": bool(child_elite),
+        }
 
     # --- Phase: writing artifacts ---
     gen_dir = GENERATIONS_ROOT / group / f"gen-{state.generation + 1:04d}"
@@ -351,6 +382,7 @@ def run_generation_rollover(
         state.sigma = new_sigma
         state.best_score_history.append(best_score)
         state.parent_vector = new_parent_vec.tolist()
+        state.children = new_children
         state.save()
         return new_weights
 
@@ -407,6 +439,7 @@ def run_generation_rollover(
     state.sigma = new_sigma
     state.best_score_history.append(best_score)
     state.parent_vector = new_parent_vec.tolist()
+    state.children = new_children
     # parent_keys unchanged across generations (same connectome topology).
     state.save()
 

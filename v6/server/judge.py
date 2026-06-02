@@ -28,7 +28,11 @@ import anthropic
 
 WINDOW_SIZE = 15
 STRIDE = 15  # non-overlapping; matches the spec
-SAMPLE_FRACTION = 0.1  # 1 in 4 windows
+# Change 3: bumped 0.1 → 0.25 (the comment always claimed "1 in 4" while the
+# code sampled 1 in 10). More windows judged = a less noisy fitness estimate,
+# which matters now that selection can actually accumulate. ~2.5× the judge
+# cost per generation; still pennies at Haiku pricing.
+SAMPLE_FRACTION = 0.25  # 1 in 4 windows
 MODEL = "claude-haiku-4-5"
 MAX_OUTPUT_TOKENS = 8192  # 210 sampled windows × ~8 tokens output + buffer
 

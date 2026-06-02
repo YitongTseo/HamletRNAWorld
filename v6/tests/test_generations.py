@@ -13,7 +13,8 @@ from corpus.hamlet import get_sentences
 from server.poem_clean import clean
 from server.evolution import (
     fitness, flatten_weights, unflatten_weights,
-    rank_weights, nes_update, spawn_children, adapt_sigma,
+    rank_weights, nes_update, spawn_population, adapt_sigma,
+    evolve_generation,
     SIGMA_MIN, SIGMA_MAX,
 )
 from server.judge import make_windows, sample_windows, _parse_scores, ScoredWindow
@@ -67,6 +68,19 @@ def test_flatten_unflatten_roundtrip_with_negatives():
     assert rt == w
 
 
+def test_unflatten_preserves_fractional_weights():
+    """Change 1: the genome evolves in CONTINUOUS space. unflatten must NOT
+    round to int — a sub-unit mutation like +0.3 has to survive write-back,
+    otherwise the NES gradient (≈0.05/weight/gen) never crosses the rounding
+    boundary and the genome stays frozen. The sim consumes weights as float
+    (connectome.py: psyn[post] += w*scale) so fractional weights are valid."""
+    keys = [("ASEL", "AVAL"), ("ASEL", "AVAR")]
+    vec = np.array([5.3, -2.7])
+    rt = unflatten_weights(vec, keys)
+    assert rt["ASEL"]["AVAL"] == 5.3
+    assert rt["ASEL"]["AVAR"] == -2.7
+
+
 def test_flatten_is_sorted_deterministic():
     """Same dict must always flatten to the same key order regardless of
     insertion order — otherwise NES indices drift across runs."""
@@ -83,14 +97,24 @@ def test_fitness_empty_is_zero():
     assert fitness([]) == 0.0
 
 
-def test_fitness_top_window_dominates():
-    """A single near-100 window must outweigh many low-30s windows because
-    of γ=2.5 — that's the whole point of the non-linear shape.
-    Quantitatively: (0.99)^2.5 ≈ 0.975, (0.3)^2.5 ≈ 0.049 — ~20× ratio per
-    window, so 1 top beats 10 lows."""
+def test_fitness_consistency_beats_one_lucky_window():
+    """Change 3: γ is lowered so the score is NOT dominated by a single
+    lucky window. Ten coherent-ish windows (E/C=30) should now outweigh one
+    spike (E/C=99) — otherwise selection rewards the one-off lottery the
+    gardener flagged ("the lead passes to whoever got lucky") instead of a
+    worm that is consistently more language-like. At the old γ=2.5 the spike
+    won; at the lowered γ the body of decent windows wins."""
     one_top = [ScoredWindow(0, ["x"], 99, 99)]
     many_low = [ScoredWindow(i, ["x"], 30, 30) for i in range(10)]
-    assert fitness(one_top) > fitness(many_low)
+    assert fitness(many_low) > fitness(one_top)
+
+
+def test_fitness_higher_scores_still_win_per_window():
+    """Lowering γ must not invert the basic ordering: a better window still
+    scores higher than a worse one of the same count."""
+    better = fitness([ScoredWindow(0, ["x"], 90, 90)])
+    worse = fitness([ScoredWindow(0, ["x"], 30, 30)])
+    assert better > worse
 
 
 def test_fitness_emotional_weighted_above_coherence():
@@ -144,39 +168,136 @@ def test_nes_update_no_change_when_eps_all_zero():
     assert np.allclose(new_parent, parent)
 
 
-def test_adapt_sigma_shrinks_on_improvement():
-    """1/5-rule: shrink when we found a better local optimum, grow when stuck."""
-    s = 1.0
-    s = adapt_sigma(s, improved=True)
-    assert s < 1.0
-    s = adapt_sigma(s, improved=False)
-    s = adapt_sigma(s, improved=False)
-    assert s > SIGMA_MIN
+def test_adapt_sigma_rechenberg_1_5_rule():
+    """Change 4: σ adapts off the SUCCESS RATE (fraction of fresh children
+    that beat the incumbent), not a single noisy best-score flag. Classic
+    Rechenberg 1/5 rule: success > 1/5 means steps are too timid → grow;
+    success < 1/5 means we're mostly missing → shrink; ~1/5 holds steady.
+    This is far more stable than reacting to one lucky window."""
+    assert adapt_sigma(1.0, success_rate=0.5) > 1.0     # succeeding a lot → grow
+    assert adapt_sigma(1.0, success_rate=0.0) < 1.0     # mostly failing → shrink
+    assert adapt_sigma(1.0, success_rate=0.2) == 1.0    # right at 1/5 → hold
 
 
 def test_adapt_sigma_clips_to_range():
-    """Repeated shrink / grow must not run sigma to zero or infinity."""
+    """Repeated grow / shrink must not run sigma to zero or infinity."""
     s = 1.0
     for _ in range(100):
-        s = adapt_sigma(s, improved=True)
-    assert s >= SIGMA_MIN
-    s = 1.0
-    for _ in range(100):
-        s = adapt_sigma(s, improved=False)
+        s = adapt_sigma(s, success_rate=1.0)
     assert s <= SIGMA_MAX
+    s = 1.0
+    for _ in range(100):
+        s = adapt_sigma(s, success_rate=0.0)
+    assert s >= SIGMA_MIN
 
 
-def test_spawn_children_elite_is_unchanged():
-    """First child must be the elite — exact copy of the parent."""
+def test_spawn_population_all_perturbed():
+    """Change 5: spawn_population produces N *fresh* samples (no forced
+    elite-copy — elitism is handled one level up by carrying real genomes).
+    Each child must equal parent + sigma*eps for its recorded eps."""
     rng = np.random.default_rng(0)
     parent = np.array([1.0, 2.0, 3.0])
-    children, eps = spawn_children(parent, n=4, sigma=0.5, rng=rng)
-    assert np.array_equal(children[0], parent)
-    assert np.array_equal(eps[0], np.zeros_like(parent))
-    # The others should have actual perturbations
-    for c, e in zip(children[1:], eps[1:]):
+    children, eps = spawn_population(parent, n=4, sigma=0.5, rng=rng)
+    assert len(children) == 4 and len(eps) == 4
+    for c, e in zip(children, eps):
         assert not np.array_equal(c, parent)
-        assert not np.array_equal(e, np.zeros_like(parent))
+        assert np.allclose(c, parent + 0.5 * e)
+
+
+# --- evolve_generation: the elitist-NES step ------------------------------
+# evolve_generation(parent, sigma, genomes, epses, is_elite, fitnesses,
+#                   n_elites, rng, prev_best) -> NextGen
+# It (a) updates the parent via NES using only fresh children's TRUE eps,
+# (b) carries the top-n_elites genomes forward verbatim, (c) fills the rest
+# with fresh samples of the updated parent, (d) adapts sigma off success rate.
+
+def _evolve(parent, sigma, genomes, epses, is_elite, fitnesses,
+            n_elites=1, seed=0, prev_best=None):
+    return evolve_generation(
+        parent_vec=np.asarray(parent, dtype=float),
+        sigma=sigma,
+        genomes=[np.asarray(g, dtype=float) for g in genomes],
+        epses=[None if e is None else np.asarray(e, dtype=float) for e in epses],
+        is_elite=is_elite,
+        fitnesses=fitnesses,
+        n_elites=n_elites,
+        rng=np.random.default_rng(seed),
+        prev_best_fitness=prev_best,
+    )
+
+
+def test_evolve_carries_top_elites_verbatim():
+    """The top-n_elites genomes (by fitness) must reappear UNCHANGED in the
+    next generation — this is the 'hold what's good' the gardener begged for.
+    Here worm #2 has the best fitness, worm #0 second; with n_elites=2 both
+    their exact genomes must be present in next_genomes."""
+    parent = [0.0, 0.0]
+    genomes = [[1.0, 1.0], [2.0, 2.0], [9.0, 9.0], [3.0, 3.0]]
+    epses = [[1, 1], [2, 2], [9, 9], [3, 3]]  # fresh (non-elite) this gen
+    res = _evolve(parent, 0.5, genomes, epses,
+                  is_elite=[False] * 4, fitnesses=[5.0, 1.0, 99.0, 4.0],
+                  n_elites=2, seed=1)
+    survivors = [g.tolist() for g in res.next_genomes]
+    assert [9.0, 9.0] in survivors      # best
+    assert [1.0, 1.0] in survivors      # second best (worm #0)
+
+
+def test_evolve_fresh_children_are_parent_plus_sigma_eps():
+    """Non-elite slots in the next gen must be genuine samples of the UPDATED
+    parent: genome == new_parent + new_sigma * its recorded eps."""
+    parent = [0.0, 0.0]
+    genomes = [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+    res = _evolve(parent, 0.5, genomes, epses=[[1, 0], [0, 1], [1, 1]],
+                  is_elite=[False] * 3, fitnesses=[3.0, 2.0, 1.0],
+                  n_elites=1, seed=2)
+    for genome, eps, elite in zip(res.next_genomes, res.next_epses, res.next_is_elite):
+        if not elite:
+            assert eps is not None
+            assert np.allclose(genome, res.new_parent + res.new_sigma * eps)
+
+
+def test_evolve_gradient_ignores_elite_genomes():
+    """Change 2/5: an elite carried from a prior gen is NOT a Gaussian sample
+    of the current parent, so it must be EXCLUDED from the NES gradient. Here
+    the elite has a huge fitness but eps=None; the parent must move toward the
+    high-scoring FRESH child (eps=[1,0]), not get yanked by the elite."""
+    parent = [0.0, 0.0]
+    genomes = [[5.0, 5.0], [1.0, 0.0], [0.0, 1.0]]
+    epses = [None, [1.0, 0.0], [0.0, 1.0]]
+    res = _evolve(parent, 0.5, genomes, epses,
+                  is_elite=[True, False, False], fitnesses=[100.0, 10.0, 1.0],
+                  n_elites=1, seed=3)
+    # fresh child [1,0] outscores [0,1] → parent moves +x more than +y
+    assert res.new_parent[0] > res.new_parent[1]
+    # and the elite genome still survives verbatim
+    assert [5.0, 5.0] in [g.tolist() for g in res.next_genomes]
+
+
+def test_evolve_success_rate_drives_sigma():
+    """σ should grow when most fresh children beat the incumbent (steps too
+    small) and shrink when none do (steps too large)."""
+    parent = [0.0, 0.0]
+    genomes = [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+    epses = [[1, 0], [0, 1], [1, 1]]
+    grew = _evolve(parent, 1.0, genomes, epses, is_elite=[False] * 3,
+                   fitnesses=[10.0, 10.0, 10.0], n_elites=1, seed=4, prev_best=1.0)
+    shrank = _evolve(parent, 1.0, genomes, epses, is_elite=[False] * 3,
+                     fitnesses=[0.1, 0.1, 0.1], n_elites=1, seed=4, prev_best=1.0)
+    assert grew.new_sigma > 1.0
+    assert shrank.new_sigma < 1.0
+
+
+def test_evolve_next_generation_is_full_size():
+    """next_genomes must have one entry per worm slot (n_elites + fresh)."""
+    parent = [0.0, 0.0]
+    genomes = [[float(i), 0.0] for i in range(6)]
+    res = _evolve(parent, 0.5, genomes, epses=[[1, 0]] * 6,
+                  is_elite=[False] * 6, fitnesses=[float(i) for i in range(6)],
+                  n_elites=2, seed=5)
+    assert len(res.next_genomes) == 6
+    assert len(res.next_epses) == 6
+    assert len(res.next_is_elite) == 6
+    assert sum(res.next_is_elite) == 2  # exactly two elites carried
 
 
 # --- end-of-corpus detection ----------------------------------------------
