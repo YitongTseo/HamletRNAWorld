@@ -1,0 +1,20 @@
+[Unit]
+Description=Wormlet sanity experiment — pos_chain (port 8004)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=web
+Group=web
+WorkingDirectory=/home/web/HamletRNAWorld/v6
+EnvironmentFile=-/home/web/.wormlet.env
+Environment=WORMLET_EXPERIMENT_MODE=pos_chain
+Environment=WORMLET_DATA_DIR=/home/web/HamletRNAWorld/v6/data/experiments/pos_chain
+ExecStart=/home/web/HamletRNAWorld/v6/.venv/bin/python /home/web/HamletRNAWorld/v6/main.py --host 127.0.0.1 --port 8004
+Restart=always
+RestartSec=5
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,34 @@
+# Cloudflared tunnel config for the 4 sanity-check wormlet experiments.
+#
+# Place at: /etc/cloudflared/config.yml (or ~/.cloudflared/config.yml)
+#
+# Before this works you need a tunnel:
+#   bin/setup_cloudflared.sh
+# which interactively walks you through:
+#   1. cloudflared tunnel login            (browser auth, one-time)
+#   2. cloudflared tunnel create wormlet   (creates the tunnel UUID)
+#   3. cloudflared tunnel route dns wormlet words.wordswordsworms.org
+#      (and the other three subdomains)
+# Then it fills in <TUNNEL_UUID> below and copies this file into place.
+#
+# Once installed, run as a systemd service:
+#   sudo cloudflared service install
+#
+# Each ingress rule maps a hostname to a local port. Cloudflared sits in
+# front; the 4 wormlet processes never need to be reachable from the
+# public internet — they only listen on 127.0.0.1.
+
+tunnel: <TUNNEL_UUID>
+credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
+
+ingress:
+  - hostname: words.wordswordsworms.org
+    service: http://127.0.0.1:8001
+  - hostname: nouns.wordswordsworms.org
+    service: http://127.0.0.1:8002
+  - hostname: adj-noun.wordswordsworms.org
+    service: http://127.0.0.1:8003
+  - hostname: pos-chain.wordswordsworms.org
+    service: http://127.0.0.1:8004
+  # Required final rule: anything unmatched gets a 404.
+  - service: http_status:404

@@ -4,8 +4,13 @@ __pycache__/
 .cloudflared/
 *.pem
 *.env
+.venv/
+nltk_data/
 
 # Running-state per-worm files (poems, current weights). The frozen
 # per-generation snapshots in v6/data/generations/ ARE committed.
 v6/data/flasks/
 v6/data/worms/
+# Sanity-check experiments are local-only by design (cheaper iteration,
+# no judge-LLM cost worth archiving). Generated under v6/data/experiments/<mode>/.
+v6/data/experiments/

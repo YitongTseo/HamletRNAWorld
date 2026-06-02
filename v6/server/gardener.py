@@ -779,3 +779,153 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
     log_path = epoch_dir / "gardeners_log.md"
     log_path.write_text(header + text + "\n")
     return log_path
+
+
+
+# ===================================================================
+# Experiment-mode gardener (one Claude call, every-N gens)
+# ===================================================================
+# Much simpler than maybe_write_log / maybe_write_meta_log: the four
+# sanity-check experiments have small metric surfaces (POS counts,
+# fitness, sigma, lineage) and no rich poems to sample windows from,
+# so the multi-round selection dance prod uses adds no signal.
+#
+# Inputs:
+#   - the experiment briefing (per-mode markdown under docs/briefings/)
+#   - last 5 gardener logs from this experiment's generation tree
+#   - this generation's metrics + the best worm's eaten-word sample
+# Output:
+#   - one short prose log (or PASS), written to gen-NNNN/gardeners_log.md
+
+
+EXPERIMENT_MAX_RECENT_LOGS = 5
+EXPERIMENT_MODEL = "claude-opus-4-8"
+EXPERIMENT_MAX_TOKENS = 400
+
+
+def _format_experiment_per_worm(per_worm: list[dict]) -> str:
+    """Compact per-worm table for the current generation."""
+    lines = ["| name | rank | fitness | words | longest_chain | POS breakdown |",
+             "|------|-----:|--------:|------:|--------------:|----------------|"]
+    for r in sorted(per_worm, key=lambda x: x.get("rank", 999)):
+        pos = r.get("pos_breakdown", {}) or {}
+        pos_str = ", ".join(f"{k}:{v}" for k, v in sorted(pos.items(), key=lambda kv: -kv[1])[:5])
+        lines.append(
+            f"| {r.get('name','?')} | {r.get('rank','?')} | "
+            f"{r.get('fitness',0):.2f} | {r.get('words_eaten',0)} | "
+            f"{r.get('longest_chain',0)} | {pos_str} |"
+        )
+    return "\n".join(lines)
+
+
+def _format_experiment_recent_logs(generations_root: Path, current_gen: int) -> str:
+    """Last N gardener logs from this experiment's generation tree, oldest first.
+    `generations_root` is data/generations/<mode>/ for the active experiment."""
+    if current_gen <= 1:
+        return "(no prior gardener logs)"
+    # Walk backwards through gen dirs, collecting up to N existing logs.
+    found: list[tuple[int, str]] = []
+    for g in range(current_gen - 1, 0, -1):
+        path = generations_root / f"gen-{g:04d}" / "gardeners_log.md"
+        if path.exists():
+            try:
+                found.append((g, path.read_text()))
+            except Exception:
+                continue
+        if len(found) >= EXPERIMENT_MAX_RECENT_LOGS:
+            break
+    if not found:
+        return "(no prior gardener logs)"
+    # Render oldest first so the gardener reads in chronological order.
+    chunks = []
+    for g, text in reversed(found):
+        chunks.append(f"--- gen {g} ---\n{text.strip()}")
+    return "\n\n".join(chunks)
+
+
+def maybe_write_experiment_log(
+    gen_dir: Path,
+    experiment,                      # server.experiments.Experiment
+    metrics: dict,
+    eaten_by_worm: dict[str, list[str]],
+    generations_root: Path,
+    keepalive=None,
+) -> Path | None:
+    """One Claude call per scheduled gardener cadence. Returns the path to
+    the written log, or None on PASS / disabled / failure."""
+    if os.environ.get("WORMLET_GARDENER", "1") == "0":
+        return None
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        # No key = no log; non-fatal (the experiment still runs).
+        return None
+
+    generation_num = metrics.get("generation", 0)
+    briefing = experiment.briefing_text()
+    per_worm_table = _format_experiment_per_worm(metrics.get("per_worm", []))
+    recent_logs = _format_experiment_recent_logs(generations_root, generation_num)
+
+    # Pick a small sample of the best worm's eaten words so the gardener
+    # has a tangible artifact to comment on, not just numbers.
+    best_name = None
+    for r in metrics.get("per_worm", []):
+        if r.get("rank") == 0:
+            best_name = r.get("name")
+            break
+    best_sample = ""
+    if best_name and eaten_by_worm.get(best_name):
+        words = eaten_by_worm[best_name]
+        sample = words[:60]
+        best_sample = f"### Best worm ({best_name}, fitness {metrics.get('best_score',0):.2f}), first 60 words eaten:\n\n> {' '.join(sample)}"
+
+    system_blocks = [
+        {"type": "text", "text": briefing, "cache_control": {"type": "ephemeral"}},
+    ]
+    user = (
+        f"# Generation {generation_num} — {experiment.label}\n\n"
+        f"**This generation's metrics**\n"
+        f"- best fitness: {metrics.get('best_score', 0):.3f}\n"
+        f"- avg fitness:  {metrics.get('avg_score', 0):.3f}\n"
+        f"- σ used: {metrics.get('sigma_used', 0):.3f}  →  σ next: {metrics.get('sigma_next', 0):.3f}\n"
+        f"- 1/5-rule success rate: {metrics.get('success_rate', 0):.2f}\n"
+        f"- parent vector Δ-norm this gen: {metrics.get('delta_parent_norm', 0):.4f}\n\n"
+        f"**Per worm this generation**\n\n{per_worm_table}\n\n"
+        f"{best_sample}\n\n"
+        f"**Your last {EXPERIMENT_MAX_RECENT_LOGS} gardener logs (oldest first):**\n\n"
+        f"{recent_logs}\n\n---\n\n"
+        f"Write your log for generation {generation_num} now. Two sentences max, "
+        f"or the single word `PASS` if there is nothing worth saying this round."
+    )
+
+    try:
+        client = anthropic.Anthropic()
+    except Exception as e:
+        print(f"[GARDENER-EXP] anthropic client init failed: {e}", flush=True)
+        return None
+
+    try:
+        if keepalive: keepalive()
+        resp = client.messages.create(
+            model=EXPERIMENT_MODEL,
+            max_tokens=EXPERIMENT_MAX_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "low"},
+            system=system_blocks,
+            messages=[{"role": "user", "content": user}],
+        )
+        text = next((b.text for b in resp.content if b.type == "text"), "").strip()
+    except Exception as e:
+        print(f"[GARDENER-EXP] Claude call failed: {e}", flush=True)
+        return None
+
+    if not text:
+        return None
+    if text.strip().upper() == "PASS" or text.strip().split()[0:1] == ["PASS"]:
+        (gen_dir / "gardeners_log.skipped").write_text(
+            "the gardener chose not to write this generation.\n"
+        )
+        return None
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = f"# {experiment.label} — gen {generation_num} — {ts}\n\n"
+    log_path = gen_dir / "gardeners_log.md"
+    log_path.write_text(header + text + "\n")
+    return log_path

@@ -103,7 +103,18 @@
     <header>
       <h1>wormlet · generations <span style="opacity:0.55; font-weight:400; font-size:12px;">— created by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:underline;">Yitong</a></span></h1>
       <nav><a href="/">worms</a> · <a href="/poems">poems</a> · <a href="/about">about</a></nav>
+      <div id="experiment-switcher"></div>
     </header>
+
+    <section id="experiment-banner" class="card" style="display:none; padding:10px 14px; margin:0 18px;">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+        <div>
+          <strong id="experiment-banner-label" style="color:var(--accent);"></strong>
+          <span id="experiment-banner-blurb" class="subtle" style="margin-left:8px;"></span>
+        </div>
+        <code id="experiment-banner-mode" style="opacity:0.6; font-size:11px;"></code>
+      </div>
+    </section>
 
     <div id="status">loading…</div>
 
@@ -122,6 +133,18 @@
           <div class="chart-wrap"><canvas id="chart-avg"></canvas></div>
           <div class="chart-wrap"><canvas id="chart-sigma"></canvas></div>
         </div>
+      </section>
+
+      <section class="card" id="lineage-card" style="display:none;">
+        <h2 id="lineage-title">per-worm fitness + lineage</h2>
+        <div class="subtle">one dot per worm per generation. lines connect each worm to its parent in the previous generation — elites trace back to themselves (top-5), the rest descend from the previous winner via the NES update.</div>
+        <div class="chart-wrap" style="height:280px;"><canvas id="chart-lineage"></canvas></div>
+      </section>
+
+      <section class="card" id="pos-card" style="display:none;">
+        <h2>POS breakdown of eaten words</h2>
+        <div class="subtle">stacked counts per generation, summed across all worms. NOUN / VERB / ADJ / ADV are the experiment-relevant tags; everything else is bucketed as <em>other</em>.</div>
+        <div class="chart-wrap" style="height:240px;"><canvas id="chart-pos"></canvas></div>
       </section>
 
       <section class="card">
@@ -166,6 +189,7 @@
       </section>
     </main>
 
-    <script src="/static/generations.js?v=2"></script>
+    <script src="/static/experiment_dropdown.js?v=1"></script>
+    <script src="/static/generations.js?v=3"></script>
   </body>
 </html>

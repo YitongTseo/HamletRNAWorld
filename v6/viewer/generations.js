@@ -24,9 +24,10 @@ const heatmapEl = document.getElementById('heatmap');
 const heatStatsEl = document.getElementById('heat-stats');
 const metaLogListEl = document.getElementById('meta-log-list');
 
-const charts = { best: null, avg: null, sigma: null };
+const charts = { best: null, avg: null, sigma: null, lineage: null, pos: null };
 let currentFlask = null;
 let currentGenerations = []; // newest-first
+let currentExperiment = null; // set by /api/experiment via experiment_dropdown.js
 
 async function fetchJSON(url) {
   const r = await fetch(url);
@@ -155,6 +156,10 @@ function renderCharts(gens) {
     },
     options: chartOptsWithLegend('σ (learning rate) — is it steady?'),
   });
+  // New experiment-mode-aware charts (no-op when the flask has no per-worm
+  // / pos-totals data — i.e. prod-format generations).
+  try { renderLineageChart(gens); } catch (e) { console.warn('lineage chart failed:', e); }
+  try { renderPOSChart(gens); } catch (e) { console.warn('POS chart failed:', e); }
 }
 
 function renderGenList(gens) {
@@ -376,6 +381,195 @@ async function loadFlask(flaskName) {
   } catch (e) {
     setStatus(`error: ${e.message}`, true);
   }
+}
+
+// --- Experiment banner -------------------------------------------------
+// Populated by the experiment_dropdown.js fetch via window.__experimentLoaded
+// or by reading the global it stashes (in case load order is reversed).
+function paintExperimentBanner(payload) {
+  if (!payload) return;
+  currentExperiment = payload;
+  const banner = document.getElementById('experiment-banner');
+  const lab = document.getElementById('experiment-banner-label');
+  const blurb = document.getElementById('experiment-banner-blurb');
+  const mode = document.getElementById('experiment-banner-mode');
+  if (!banner) return;
+  lab.textContent = payload.current_label || payload.current || '';
+  blurb.textContent = payload.current_blurb || '';
+  mode.textContent = `mode = ${payload.current}`;
+  banner.style.display = 'block';
+}
+
+window.__experimentLoaded = paintExperimentBanner;
+if (window.__experiment) paintExperimentBanner(window.__experiment);
+
+// --- Per-worm lineage chart (Chart.js scatter with manual connector lines)
+function renderLineageChart(gens) {
+  const card = document.getElementById('lineage-card');
+  const canvas = document.getElementById('chart-lineage');
+  if (!card || !canvas) return;
+  if (charts.lineage) { charts.lineage.destroy(); charts.lineage = null; }
+  // Need per_worm data; bail if this is a prod flask (no per_worm field).
+  const hasPerWorm = gens.some(g => Array.isArray(g.per_worm) && g.per_worm.length);
+  if (!hasPerWorm) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  const chrono = [...gens].reverse();
+  // Build a fitness lookup: byGen.get(genNum) = {wormName: fitness}.
+  const byGen = new Map();
+  for (const g of chrono) {
+    const m = new Map();
+    for (const r of g.per_worm || []) m.set(r.name, r.fitness);
+    byGen.set(g.generation, m);
+  }
+
+  const dotsElite = [];
+  const dotsFresh = [];
+  const connectors = []; // array of [{x,y},{x,y}] pairs for lines
+
+  for (let i = 0; i < chrono.length; i++) {
+    const g = chrono[i];
+    for (const r of g.per_worm || []) {
+      const pt = { x: g.generation, y: r.fitness, name: r.name };
+      // is_elite info lives in g.next_gen_lineage from the PREVIOUS gen,
+      // but here we just want to plot points — use rank=0..N_ELITES-1
+      // as a proxy for "this is what fed forward as elite next round".
+      // For visual emphasis: rank-0 worm = brightest dot.
+      if (r.rank === 0) dotsElite.push(pt);
+      else dotsFresh.push(pt);
+    }
+    // Lineage lines: gen N+1 (which is this gen, if i>0) has lineage info
+    // about each slot's parent in the PREVIOUS gen.
+    if (i > 0) {
+      const prev = chrono[i - 1];
+      const prevFit = byGen.get(prev.generation) || new Map();
+      const curFit = byGen.get(g.generation) || new Map();
+      for (const link of g.next_gen_lineage || []) {
+        // next_gen_lineage was written at the END of gen N describing slots
+        // FOR gen N+1, with name (the slot's worm name) and
+        // parent_name_in_this_gen (the prev-gen worm whose genome flowed in).
+        // The lineage we're rendering now connects gen N+1's worm to its
+        // parent in gen N — so when reading gen g's per_worm we want
+        // gen (g-1)'s next_gen_lineage. But here `g.next_gen_lineage` is
+        // the lineage written for the FOLLOWING gen, not the current one.
+        // So skip: lineage data is consumed on the NEXT iteration below.
+      }
+      // Read the prev gen's next_gen_lineage instead, which tells us where
+      // each of THIS gen's worms came from.
+      for (const link of prev.next_gen_lineage || []) {
+        const childY = curFit.get(link.name);
+        const parentY = prevFit.get(link.parent_name_in_this_gen);
+        if (childY === undefined || parentY === undefined) continue;
+        connectors.push({
+          from: { x: prev.generation, y: parentY },
+          to: { x: g.generation, y: childY },
+          elite: link.is_elite,
+        });
+      }
+    }
+  }
+
+  // Custom plugin: after Chart.js draws, draw connectors on top of dots.
+  const connectorPlugin = {
+    id: 'connectors',
+    afterDatasetsDraw(chart) {
+      const { ctx, scales } = chart;
+      ctx.save();
+      for (const c of connectors) {
+        ctx.beginPath();
+        ctx.moveTo(scales.x.getPixelForValue(c.from.x), scales.y.getPixelForValue(c.from.y));
+        ctx.lineTo(scales.x.getPixelForValue(c.to.x), scales.y.getPixelForValue(c.to.y));
+        ctx.strokeStyle = c.elite ? 'rgba(255,170,51,0.6)' : 'rgba(150,150,150,0.22)';
+        ctx.lineWidth = c.elite ? 1.2 : 0.6;
+        ctx.stroke();
+      }
+      ctx.restore();
+    },
+  };
+
+  charts.lineage = new Chart(canvas, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        { label: 'gen winner (rank 0)', data: dotsElite, backgroundColor: '#ffcc66', borderColor: '#ffaa33', pointRadius: 4, pointHoverRadius: 6 },
+        { label: 'other worms', data: dotsFresh, backgroundColor: 'rgba(150,255,200,0.7)', borderColor: 'rgba(120,210,170,0.9)', pointRadius: 3, pointHoverRadius: 5 },
+      ],
+    },
+    options: {
+      ...chartOptsWithLegend('per-worm fitness with lineage lines (orange = elite carry, grey = fresh NES child)'),
+      parsing: false,
+      plugins: {
+        legend: { display: true, position: 'top', align: 'end', labels: { color: '#9c9', font: { size: 9 }, boxWidth: 8, boxHeight: 8 } },
+        title: { display: true, text: 'per-worm fitness with lineage lines', color: '#6f9', font: { size: 11, weight: 'normal' } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const p = ctx.raw;
+              return `${p.name || ''} · gen ${p.x} · fitness ${p.y.toFixed(2)}`;
+            },
+          },
+        },
+      },
+    },
+    plugins: [connectorPlugin],
+  });
+}
+
+// --- POS-breakdown stacked area ----------------------------------------
+const POS_COLORS = {
+  NOUN: '#6f9', VERB: '#9cf', ADJ: '#ffcc66', ADV: '#cc99ff',
+  DET: 'rgba(160,160,160,0.7)', ADP: 'rgba(120,180,140,0.6)',
+  PRON: 'rgba(180,140,180,0.6)', PRT: 'rgba(140,170,180,0.5)',
+  CONJ: 'rgba(180,170,140,0.5)', other: 'rgba(80,80,80,0.45)',
+};
+const POS_KEYS = ['NOUN', 'VERB', 'ADJ', 'ADV', 'DET', 'ADP', 'PRON', 'PRT', 'CONJ', 'other'];
+
+function renderPOSChart(gens) {
+  const card = document.getElementById('pos-card');
+  const canvas = document.getElementById('chart-pos');
+  if (!card || !canvas) return;
+  if (charts.pos) { charts.pos.destroy(); charts.pos = null; }
+  const hasPOS = gens.some(g => g.pos_totals && Object.keys(g.pos_totals).length);
+  if (!hasPOS) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  const chrono = [...gens].reverse();
+  const labels = chrono.map(g => g.generation);
+  const datasets = POS_KEYS.map(tag => ({
+    label: tag,
+    data: chrono.map(g => {
+      const pt = g.pos_totals || {};
+      if (tag === 'other') {
+        const known = new Set(POS_KEYS.filter(k => k !== 'other'));
+        let s = 0;
+        for (const [k, v] of Object.entries(pt)) if (!known.has(k)) s += v;
+        return s;
+      }
+      return pt[tag] || 0;
+    }),
+    backgroundColor: POS_COLORS[tag],
+    borderColor: POS_COLORS[tag],
+    fill: true,
+    pointRadius: 0,
+    tension: 0.2,
+  }));
+
+  charts.pos = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, position: 'top', align: 'end', labels: { color: '#9c9', font: { size: 9 }, boxWidth: 8, boxHeight: 8 } },
+        title: { display: true, text: 'POS breakdown of eaten words (stacked, all worms in flask)', color: '#6f9', font: { size: 11, weight: 'normal' } },
+      },
+      scales: {
+        x: { ticks: { color: '#5a5', font: { size: 10 } }, grid: { color: 'rgba(100,200,255,0.06)' } },
+        y: { stacked: true, ticks: { color: '#5a5', font: { size: 10 } }, grid: { color: 'rgba(100,200,255,0.06)' } },
+      },
+    },
+  });
 }
 
 async function init() {
