@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=1"></script>
     <title>wormlet</title>
     <style>
       :root {
@@ -19,7 +20,7 @@
       }
       header h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--accent); }
       header nav a { color: var(--accent); text-decoration: none; padding: 4px 8px; margin-left: 4px; }
-      header nav a:hover { background: rgba(100, 200, 255, 0.15); }
+      header nav a:hover { background: var(--line, rgba(100, 200, 255, 0.15)); }
       #grid {
         display: grid; gap: 14px; padding: 12px 18px;
         grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -27,14 +28,14 @@
       .card {
         display: flex; flex-direction: column; cursor: pointer;
         background: rgba(0, 20, 10, 0.6);
-        border: 1px solid rgba(100, 200, 255, 0.2);
+        border: 1px solid var(--line, rgba(100, 200, 255, 0.2));
         border-radius: 4px; overflow: hidden;
         transition: border-color 120ms, transform 120ms;
       }
       .card:hover { border-color: rgba(100, 255, 200, 0.6); transform: translateY(-1px); }
       .card .name { padding: 6px 10px; color: var(--accent); font-weight: 600; display: flex; justify-content: space-between; }
       .card .name .count { color: var(--dim); font-weight: 400; }
-      .card canvas { display: block; width: 100%; height: 175px; background: #001; }
+      .card canvas { display: block; width: 100%; height: 175px; background: var(--stage, #001); }
       .card .recent { padding: 6px 10px; color: var(--dim); font-size: 11px; min-height: 16px; }
       #status { padding: 4px 18px; color: var(--dim); font-size: 11px; }
     </style>
@@ -48,6 +49,6 @@
     <div id="status">connecting…</div>
     <div id="grid"></div>
     <script src="/static/experiment_dropdown.js?v=1"></script>
-    <script src="/static/index.js?v=2"></script>
+    <script src="/static/index.js?v=3"></script>
   </body>
 </html>
