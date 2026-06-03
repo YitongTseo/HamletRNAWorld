@@ -18,7 +18,7 @@
     nouns:     { label: "black / purple", bg: "#050011", fg: "#e7d6ff", accent: "#b388ff", dim: "#8a6cb0", warm: "#ffcf6b", hot: "#ff6b9d", panel: "#0c0420", line: "rgba(179,136,255,0.20)", stage: "#0c0420" },
     adj_noun:  { label: "white / pink", bg: "#fff6fa", fg: "#3a1020", accent: "#e5447f", dim: "#b06b84", warm: "#e08a00", hot: "#dd1133", panel: "#ffe6ef", line: "rgba(229,68,127,0.22)", stage: "#1a0512" },
     pos_chain: { label: "black / gold", bg: "#0a0700", fg: "#f3e4b0", accent: "#ffcc33", dim: "#a8893f", warm: "#ffd97a", hot: "#ff7a45", panel: "#140d00", line: "rgba(255,204,51,0.20)", stage: "#140d00" },
-    poetry:    { label: "white / blue", bg: "#f4f8ff", fg: "#0d2138", accent: "#0a6cff", dim: "#5a7aa0", warm: "#c87800", hot: "#e0364f", panel: "#e7f0fb", line: "rgba(10,108,255,0.20)", stage: "#001229" }
+    poetry:    { label: "black / green", bg: "#000000", fg: "#c6f6d5", accent: "#3ddc84", dim: "#5a8f6a", warm: "#ffcc66", hot: "#ff6b6b", panel: "#03140a", line: "rgba(61,220,132,0.18)", stage: "#03140a" }
   };
 
   function detectMode() {
