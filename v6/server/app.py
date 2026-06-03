@@ -104,7 +104,7 @@ GENERATIONS_ENABLED: bool = (
     EXPERIMENT is not None
     or os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") == "1"
 )
-N_FLASKS: int = 1 if EXPERIMENT is not None else int(os.environ.get("WORMLET_N_FLASKS", "4"))
+N_FLASKS: int = int(os.environ.get("WORMLET_N_FLASKS", "1" if EXPERIMENT is not None else "4"))
 N_WORMS_PER_FLASK: int = int(os.environ.get("WORMLET_N_WORMS_PER_FLASK", "10"))
 GENERATION_PROGRESS = GenerationProgress()
 GENERATION_GRACE_S = 3.0           # seconds after corpus exhausts before scoring fires
@@ -826,13 +826,19 @@ async def lifespan(app: FastAPI):
         default_weights = _load_initial_default_weights()
         FLASKS = []
         for fi, worms in enumerate(per_flask_worms):
-            # Experiment mode: name the single flask after the experiment
-            # mode (e.g., "words"), so the generation artifacts land at
-            # data/generations/words/gen-NNNN/ inside this process's
-            # isolated data dir.
+            # Experiment mode: name flasks after the experiment mode (e.g.,
+            # "words"), so the generation artifacts land at
+            # data/generations/words/gen-NNNN/ inside this process's isolated
+            # data dir. With a single flask we keep the bare mode name (back-
+            # compat with existing single-flask experiment data); with N>1 we
+            # suffix so the flasks don't collide on the same data dir.
             if EXPERIMENT is not None:
-                flask_name = EXPERIMENT.mode
-                flask_display = EXPERIMENT.label
+                if N_FLASKS == 1:
+                    flask_name = EXPERIMENT.mode
+                    flask_display = EXPERIMENT.label
+                else:
+                    flask_name = f"{EXPERIMENT.mode}_{fi + 1}"
+                    flask_display = f"{EXPERIMENT.label} {fi + 1}"
             else:
                 flask_name = f"flask_{fi + 1}"
                 flask_display = f"Flask {fi + 1}"
@@ -849,8 +855,9 @@ async def lifespan(app: FastAPI):
             for w in worms:
                 WORM_BY_KEY[(flask_name, w.name)] = w
         if EXPERIMENT is not None:
-            LOG.info("experiment mode %r: loaded 1 flask × %d worms",
-                     EXPERIMENT.mode, len(FLASKS[0].worms) if FLASKS else 0)
+            LOG.info("experiment mode %r: loaded %d flask(s) × %d worms",
+                     EXPERIMENT.mode, len(FLASKS),
+                     len(FLASKS[0].worms) if FLASKS else 0)
         else:
             LOG.info("loaded %d flasks × %d worms = %d total",
                      len(FLASKS), len(FLASKS[0].worms) if FLASKS else 0, len(WORMS))

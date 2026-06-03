@@ -11,6 +11,8 @@ WorkingDirectory=/home/web/HamletRNAWorld/v6
 EnvironmentFile=-/home/web/.wormlet.env
 Environment=WORMLET_EXPERIMENT_MODE=adj_noun
 Environment=WORMLET_DATA_DIR=/home/web/HamletRNAWorld/v6/data/experiments/adj_noun
+Environment=WORMLET_N_FLASKS=2
+Environment=WORMLET_N_WORMS_PER_FLASK=16
 ExecStart=/home/web/HamletRNAWorld/v6/.venv/bin/python /home/web/HamletRNAWorld/v6/main.py --host 127.0.0.1 --port 8003
 Restart=always
 RestartSec=5
