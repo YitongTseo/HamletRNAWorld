@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=1"></script>
     <title>wormlet — focus</title>
     <link rel="stylesheet" href="/static/focus.css?v=5">
     <script type="importmap">
@@ -24,7 +25,9 @@
     <div id="title-nav-wrap">
       <div id="wormtitle"></div>
       <div id="nav"><a href="/">← all worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about">about</a><a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="opacity:0.55; font-size:11px;">by Yitong</a></div>
+      <div id="experiment-switcher" style="margin-top:6px;"></div>
     </div>
+    <script src="/static/experiment_dropdown.js?v=1"></script>
     <script>
       // Show worm name in the title.
       const wormName = decodeURIComponent(location.pathname.replace(/^\/focus\//, '').replace(/\/$/, ''));

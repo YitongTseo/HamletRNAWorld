@@ -3,24 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=1"></script>
     <title>wormlet · about</title>
     <style>
-      html, body { margin: 0; padding: 0; background: #000; color: #cfc; }
+      html, body { margin: 0; padding: 0; background: var(--bg, #000); color: var(--fg, #cfc); }
       body { font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
              max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
-      header { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 6px; border-bottom: 1px solid rgba(150, 230, 180, 0.15); margin-bottom: 18px; }
-      header h1 { margin: 0; font-size: 18px; color: #6f9; font-family: ui-monospace, monospace; font-weight: 600; }
-      header nav a { color: #6f9; text-decoration: none; padding: 4px 8px; margin-left: 4px; font-family: ui-monospace, monospace; font-size: 13px; }
+      header { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 6px; border-bottom: 1px solid var(--line, rgba(150, 230, 180, 0.15)); margin-bottom: 18px; }
+      header h1 { margin: 0; font-size: 18px; color: var(--accent, #6f9); font-family: ui-monospace, monospace; font-weight: 600; }
+      header nav a { color: var(--accent, #6f9); text-decoration: none; padding: 4px 8px; margin-left: 4px; font-family: ui-monospace, monospace; font-size: 13px; }
       header nav a:hover { background: rgba(100, 200, 255, 0.15); }
-      h2 { color: #afa; font-family: ui-monospace, monospace; font-size: 15px; margin: 28px 0 6px; border-left: 3px solid #6f9; padding-left: 8px; }
-      h3 { color: #9ec; font-family: ui-monospace, monospace; font-size: 13px; margin: 18px 0 4px; }
+      h2 { color: var(--fg, #afa); font-family: ui-monospace, monospace; font-size: 15px; margin: 28px 0 6px; border-left: 3px solid var(--accent, #6f9); padding-left: 8px; }
+      h3 { color: var(--accent, #9ec); font-family: ui-monospace, monospace; font-size: 13px; margin: 18px 0 4px; }
       p { margin: 6px 0 12px; opacity: 0.88; }
-      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(20, 40, 30, 0.5); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel, rgba(20, 40, 30, 0.5)); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
       pre { padding: 8px 10px; line-height: 1.4; overflow-x: auto; }
-      a { color: #6cf; }
+      a { color: var(--accent, #6cf); }
       ul { padding-left: 22px; }
       li { margin: 4px 0; opacity: 0.9; }
-      .lead { color: #cfc; opacity: 0.95; font-size: 15px; border-left: 3px solid rgba(100,200,255,0.4); padding-left: 12px; margin: 14px 0 20px; }
+      .lead { color: var(--fg, #cfc); opacity: 0.95; font-size: 15px; border-left: 3px solid var(--accent, rgba(100,200,255,0.4)); padding-left: 12px; margin: 14px 0 20px; }
       .credit { opacity: 0.55; font-size: 11px; font-family: ui-monospace, monospace; margin-top: 40px; padding-top: 10px; border-top: 1px solid rgba(150, 230, 180, 0.15); }
     </style>
   </head>
@@ -31,7 +32,9 @@
         <a href="/">worms</a>
         <a href="/poems">poems</a>
       </nav>
+      <div id="experiment-switcher"></div>
     </header>
+    <script src="/static/experiment_dropdown.js?v=1"></script>
 
     <div class="lead">
       Six independent <em>C. elegans</em> brains, each one a faithful port of

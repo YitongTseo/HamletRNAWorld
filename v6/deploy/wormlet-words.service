@@ -1,0 +1,21 @@
+[Unit]
+Description=Wormlet sanity experiment — words (port 8001)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=web
+Group=web
+WorkingDirectory=/home/web/HamletRNAWorld/v6
+EnvironmentFile=-/home/web/.wormlet.env
+Environment=WORMLET_EXPERIMENT_MODE=words
+Environment=WORMLET_DATA_DIR=/home/web/HamletRNAWorld/v6/data/experiments/words
+ExecStart=/home/web/HamletRNAWorld/v6/.venv/bin/python /home/web/HamletRNAWorld/v6/main.py --host 127.0.0.1 --port 8001
+Restart=always
+RestartSec=5
+# Cap memory + watchdog to make sure a single experiment can't take the others down.
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

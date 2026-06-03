@@ -42,7 +42,12 @@ from server.orchestrator import Worm
 from server.poem_clean import clean as clean_punctuation
 
 V6_ROOT = Path(__file__).resolve().parent.parent
-GENERATIONS_ROOT = V6_ROOT / "data" / "generations"
+# Honor WORMLET_DATA_DIR so each experiment process (which sets its own
+# WORMLET_DATA_DIR) lands its generation artifacts under that process's
+# isolated data tree. Default unchanged — prod (no env var set) still writes
+# to v6/data/generations/.
+_DATA_ROOT = Path(os.environ.get("WORMLET_DATA_DIR", V6_ROOT / "data"))
+GENERATIONS_ROOT = _DATA_ROOT / "generations"
 
 
 # Phase strings exposed via /api/generation_status so the frontend can show
@@ -441,6 +446,215 @@ def run_generation_rollover(
     state.parent_vector = new_parent_vec.tolist()
     state.children = new_children
     # parent_keys unchanged across generations (same connectome topology).
+    state.save()
+
+    return new_weights
+
+
+# =====================================================================
+# Experiment-mode rollover
+# =====================================================================
+# A simpler, cheaper variant of run_generation_rollover for the four
+# sanity-check experiments (words / nouns / adj_noun / pos_chain). Key
+# differences from the prod path:
+#   - Scoring is a free, deterministic POS function (no Claude call)
+#   - Storage is light (metrics.json + best_worm.json + lineage), no
+#     per-worm poem dumps or scores.jsonl
+#   - No git commits — sim experiments are local-only
+#   - Gardener runs every N gens (configurable per experiment), not every gen
+#   - One flask per process (10 worms); the multi-flask global-winner /
+#     meta-gardener dance does not apply
+# Same NES math as prod: float genome, true-eps gradient, top-5 elitism,
+# Rechenberg 1/5-rule σ adaptation.
+
+
+def run_experiment_rollover(
+    worms: list[Worm],
+    state: GenerationState,
+    progress: GenerationProgress,
+    experiment,                     # server.experiments.Experiment
+    keepalive: KEEPALIVE_FN | None = None,
+) -> dict[str, WeightDict]:
+    """Score with experiment.scorer, NES-evolve, write light artifacts,
+    return new weights. No Claude judge, no git commit."""
+    from server.pos_scorers import pos_breakdown, longest_valid_chain
+
+    group = state.group_name
+    progress.group = group
+    progress.generation = state.generation + 1
+    progress.error = None
+    if not progress.started_at:
+        progress.started_at = time.time()
+    if progress.worms_total == 0:
+        progress.worms_total = len(worms)
+        progress.worms_done = 0
+
+    # --- Phase: scoring (no LLM) ---
+    progress.phase = PHASE_JUDGING
+    eaten_by_worm: dict[str, list[str]] = {}
+    fitness_by_worm: dict[str, float] = {}
+    pos_by_worm: dict[str, dict[str, int]] = {}
+    longest_chain_by_worm: dict[str, int] = {}
+    for w in worms:
+        if keepalive: keepalive()
+        eaten = _read_eaten_tokens(w)
+        eaten_by_worm[w.name] = eaten
+        fitness_by_worm[w.name] = experiment.scorer(eaten) if experiment.scorer else 0.0
+        pos_by_worm[w.name] = pos_breakdown(eaten)
+        longest_chain_by_worm[w.name] = longest_valid_chain(eaten)
+        progress.worms_done += 1
+
+    # --- Phase: evolving (same NES math as prod) ---
+    progress.phase = PHASE_EVOLVING
+    if keepalive: keepalive()
+
+    parent_vec = np.array(state.parent_vector, dtype=np.float64)
+    parent_keys = [tuple(k) for k in state.parent_keys]  # type: ignore[arg-type]
+
+    genomes: list[np.ndarray] = []
+    epses: list[np.ndarray | None] = []
+    is_elite_flags: list[bool] = []
+    scores_list: list[float] = []
+    worm_order: list[str] = []
+    records = state.children or {}
+    for w in worms:
+        worm_order.append(w.name)
+        cur_vec, _ = flatten_weights(
+            json.loads(w.poem_path.parent.joinpath("weights.json").read_text())
+        )
+        genomes.append(cur_vec)
+        scores_list.append(fitness_by_worm[w.name])
+        rec = records.get(w.name)
+        if rec is not None:
+            eps_rec = rec.get("eps")
+            epses.append(np.array(eps_rec, dtype=np.float64) if eps_rec is not None else None)
+            is_elite_flags.append(bool(rec.get("is_elite", False)))
+        else:
+            eps = (cur_vec - parent_vec) / state.sigma if state.sigma > 0 else np.zeros_like(parent_vec)
+            epses.append(eps)
+            is_elite_flags.append(False)
+
+    prev_best = state.best_score_history[-1] if state.best_score_history else None
+    rng = np.random.default_rng(state.generation + 1)
+    ng = evolve_generation(
+        parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
+        n_elites=N_ELITES, rng=rng, prev_best_fitness=prev_best,
+    )
+    new_parent_vec = ng.new_parent
+    new_sigma = ng.new_sigma
+    best_score = max(scores_list) if scores_list else 0.0
+    ranked = ng.ranked_indices
+
+    # --- Lineage: which prev-gen worm is each new slot descended from? ---
+    # Elites (slots 0..N_ELITES-1) carry verbatim from ranked[0..N_ELITES-1].
+    # Fresh worms (slots N_ELITES..) descend from the updated parent, but
+    # for visualization we point them at the prev-gen winner (rank 0) since
+    # that's the worm whose ε contributed most strongly to the gradient.
+    winner_name = worm_order[ranked[0]] if ranked else None
+    parent_name_for_slot: list[str | None] = []
+    for slot_i in range(len(worms)):
+        if slot_i < min(N_ELITES, len(ranked)):
+            parent_name_for_slot.append(worm_order[ranked[slot_i]])
+        else:
+            parent_name_for_slot.append(winner_name)
+
+    # Per-worm fitness + lineage record (the data the new generations
+    # graph reads to draw cross-generation lines).
+    rank_of = {worm_order[idx]: r for r, idx in enumerate(ranked)}
+    per_worm = []
+    for w in worms:
+        per_worm.append({
+            "name": w.name,
+            "fitness": fitness_by_worm[w.name],
+            "rank": rank_of[w.name],
+            "words_eaten": len(eaten_by_worm[w.name]),
+            "pos_breakdown": pos_by_worm[w.name],
+            "longest_chain": longest_chain_by_worm[w.name],
+            # Set at evolve time (after we know which slot each worm fills
+            # in gen N+1). Below we re-zip to attach next-gen lineage info.
+        })
+
+    # Assign next-gen genomes to slots and record children records.
+    new_weights: dict[str, WeightDict] = {}
+    new_children: dict[str, dict] = {}
+    next_gen_lineage: list[dict] = []
+    for slot_i, (w, child_vec, child_eps, child_elite) in enumerate(zip(
+        worms, ng.next_genomes, ng.next_epses, ng.next_is_elite
+    )):
+        new_weights[w.name] = unflatten_weights(child_vec, parent_keys)
+        new_children[w.name] = {
+            "eps": child_eps.tolist() if child_eps is not None else None,
+            "is_elite": bool(child_elite),
+        }
+        next_gen_lineage.append({
+            "slot": slot_i,
+            "name": w.name,
+            "is_elite": bool(child_elite),
+            "parent_name_in_this_gen": parent_name_for_slot[slot_i],
+        })
+
+    # --- Write light artifacts ---
+    gen_dir = GENERATIONS_ROOT / group / f"gen-{state.generation + 1:04d}"
+    gen_dir.mkdir(parents=True, exist_ok=True)
+    metrics = {
+        "experiment_mode": experiment.mode,
+        "experiment_label": experiment.label,
+        "scorer": experiment.scorer.__name__ if experiment.scorer else None,
+        "generation": state.generation + 1,
+        "sigma_used": state.sigma,
+        "sigma_next": new_sigma,
+        "best_score": best_score,
+        "avg_score": float(np.mean(scores_list)) if scores_list else 0.0,
+        "success_rate": ng.success_rate,
+        "delta_parent_norm": float(np.linalg.norm(new_parent_vec - parent_vec)),
+        "new_parent_norm": float(np.linalg.norm(new_parent_vec)),
+        "started_at": progress.started_at,
+        "ended_at": time.time(),
+        "per_worm": per_worm,
+        "next_gen_lineage": next_gen_lineage,
+        "passage": os.environ.get("WORMLET_PASSAGE", "act1"),
+    }
+    (gen_dir / "metrics.json").write_text(json.dumps(metrics))
+
+    # The "best worm" record: name, score, eaten-word sample for the gardener
+    # and the public viewer (so we keep something tangible without storing
+    # every worm's full poem).
+    if winner_name and eaten_by_worm.get(winner_name):
+        sample = eaten_by_worm[winner_name][:200]
+        (gen_dir / "best_worm.json").write_text(json.dumps({
+            "name": winner_name,
+            "fitness": best_score,
+            "words_eaten_sample": sample,
+            "total_words_eaten": len(eaten_by_worm[winner_name]),
+            "pos_breakdown": pos_by_worm[winner_name],
+            "longest_chain": longest_chain_by_worm[winner_name],
+        }))
+
+    # --- Optional gardener (every N gens) ---
+    new_generation = state.generation + 1
+    if experiment.gardener_every and new_generation % experiment.gardener_every == 0:
+        if keepalive: keepalive()
+        try:
+            from server.gardener import maybe_write_experiment_log
+            log_path = maybe_write_experiment_log(
+                gen_dir=gen_dir,
+                experiment=experiment,
+                metrics=metrics,
+                eaten_by_worm=eaten_by_worm,
+                generations_root=GENERATIONS_ROOT / group,
+                keepalive=keepalive,
+            )
+            if log_path:
+                print(f"[EXPERIMENT] gardener wrote {log_path.name}", flush=True)
+        except Exception:
+            print("[EXPERIMENT] gardener raised; continuing", flush=True)
+
+    # --- Persist state (no git commit) ---
+    state.generation = new_generation
+    state.sigma = new_sigma
+    state.best_score_history.append(best_score)
+    state.parent_vector = new_parent_vec.tolist()
+    state.children = new_children
     state.save()
 
     return new_weights

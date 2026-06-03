@@ -8,6 +8,16 @@ const WORLD_H = 1000;
 const grid = document.getElementById('grid');
 const status = document.getElementById('status');
 
+// Palette (set by palette.js on <html> before this loads). The worm reshades
+// to the experiment's accent color; the stage stays dark in every theme so
+// the light-on-dark worms remain legible (even under the white themes).
+const _cssVar = (name, fb) => {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return (v && v.trim()) || fb;
+};
+const STAGE_BG = _cssVar('--stage', '#001');
+const WORM_COLOR = _cssVar('--accent', '#6f9');
+
 // "flask/name" -> { card, canvas, ctx, dpr }
 const cards = new Map();
 // flask_name -> { section, sectionGrid, headerGen }
@@ -88,7 +98,7 @@ function drawWorm(entry, worm) {
   const ch = canvas.height / entry.dpr;
   ctx.clearRect(0, 0, cw, ch);
   // Background.
-  ctx.fillStyle = '#001';
+  ctx.fillStyle = STAGE_BG;
   ctx.fillRect(0, 0, cw, ch);
 
   // Map world coords to canvas (letterbox to keep aspect).
@@ -119,7 +129,7 @@ function drawWorm(entry, worm) {
 
   // Worm midline.
   if (worm.midline && worm.midline.length > 1) {
-    ctx.strokeStyle = '#6f9';
+    ctx.strokeStyle = WORM_COLOR;
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';

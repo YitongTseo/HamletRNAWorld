@@ -54,8 +54,26 @@ from server.worm_group import WormGroup
 from server import generations as gens_mod
 from server.generations import (
     GenerationProgress, GenerationState, run_generation_rollover,
+    run_experiment_rollover,
     PHASE_RUNNING, PHASE_CORPUS_DRAINING,
 )
+from server import experiments
+
+# Experiment mode (WORMLET_EXPERIMENT_MODE=words|nouns|adj_noun|pos_chain)
+# replaces the prod judge+commit path with a deterministic POS-tagger scorer
+# and local-only storage. Set at import time so the rest of this module can
+# branch off it without re-reading the env each time.
+EXPERIMENT = experiments.current()
+if EXPERIMENT is not None:
+    # Force passage to the experiment's setting unless the user override
+    # is already there (lets you debug an experiment against the full play).
+    os.environ.setdefault("WORMLET_PASSAGE", EXPERIMENT.passage)
+    # Sim experiments don't commit to git; default the kill switch off.
+    os.environ.setdefault("WORMLET_GIT_COMMIT", "0")
+    # World reads this env var directly to decide whether the text_scroller
+    # loops (default) or runs once (generations mode). Experiments need
+    # one-shot scrolling so the corpus_exhausted flag actually fires.
+    os.environ.setdefault("WORMLET_GENERATIONS_ENABLED", "1")
 
 V6_ROOT = Path(__file__).resolve().parent.parent
 VIEWER_DIR = V6_ROOT / "viewer"
@@ -81,8 +99,12 @@ _LAST_TICK_AT: float = time.monotonic()  # updated each sim_loop iteration; read
 
 # Generational evolution state. Off by default for backward compat — set
 # WORMLET_GENERATIONS_ENABLED=1 in /home/web/.wormlet.env to turn it on.
-GENERATIONS_ENABLED: bool = os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") == "1"
-N_FLASKS: int = int(os.environ.get("WORMLET_N_FLASKS", "4"))
+# Experiment mode implies generations enabled with a 1-flask layout.
+GENERATIONS_ENABLED: bool = (
+    EXPERIMENT is not None
+    or os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") == "1"
+)
+N_FLASKS: int = 1 if EXPERIMENT is not None else int(os.environ.get("WORMLET_N_FLASKS", "4"))
 N_WORMS_PER_FLASK: int = int(os.environ.get("WORMLET_N_WORMS_PER_FLASK", "10"))
 GENERATION_PROGRESS = GenerationProgress()
 GENERATION_GRACE_S = 3.0           # seconds after corpus exhausts before scoring fires
@@ -582,6 +604,26 @@ def _run_all_flask_rollovers_sync() -> None:
             _respawn_flask(flask, new_weights)
 
 
+def _run_experiment_rollover_sync() -> None:
+    """Experiment-mode rollover: one flask, POS scoring, no LLM, no commit.
+    Simpler than the prod path — no meta-gardener, no global-winner dance."""
+    if not FLASKS or EXPERIMENT is None:
+        return
+    flask = FLASKS[0]
+    GENERATION_PROGRESS.worms_total = len(flask.worms)
+    GENERATION_PROGRESS.worms_done = 0
+    GENERATION_PROGRESS.started_at = time.time()
+    try:
+        new_weights = run_experiment_rollover(
+            flask.worms, flask.state, GENERATION_PROGRESS, EXPERIMENT,
+            keepalive=_generation_keepalive,
+        )
+        GENERATION_PROGRESS.phase = gens_mod.PHASE_RESPAWNING
+        _respawn_flask(flask, new_weights)
+    except Exception:
+        LOG.exception("experiment rollover raised; continuing")
+
+
 async def _trigger_generation_rollover() -> None:
     """Drive one end-of-generation cycle across all flasks. Runs the
     synchronous heavy lifting in a thread so the event loop stays
@@ -594,7 +636,10 @@ async def _trigger_generation_rollover() -> None:
     # SIGKILL us mid-rollover (which would corrupt the generation it's scoring).
     _set_rollover_lock(True)
     try:
-        await asyncio.to_thread(_run_all_flask_rollovers_sync)
+        if EXPERIMENT is not None:
+            await asyncio.to_thread(_run_experiment_rollover_sync)
+        else:
+            await asyncio.to_thread(_run_all_flask_rollovers_sync)
         LOG.info("epoch rollover complete")
     except Exception as e:
         LOG.exception("epoch rollover failed")
@@ -781,21 +826,34 @@ async def lifespan(app: FastAPI):
         default_weights = _load_initial_default_weights()
         FLASKS = []
         for fi, worms in enumerate(per_flask_worms):
-            flask_name = f"flask_{fi + 1}"
+            # Experiment mode: name the single flask after the experiment
+            # mode (e.g., "words"), so the generation artifacts land at
+            # data/generations/words/gen-NNNN/ inside this process's
+            # isolated data dir.
+            if EXPERIMENT is not None:
+                flask_name = EXPERIMENT.mode
+                flask_display = EXPERIMENT.label
+            else:
+                flask_name = f"flask_{fi + 1}"
+                flask_display = f"Flask {fi + 1}"
             state = GenerationState.load_or_init(flask_name, default_weights)
             for w in worms:
                 _restore_or_reset_worm(w, state.generation)
             FLASKS.append(WormGroup(
                 name=flask_name,
-                display=f"Flask {fi + 1}",
+                display=flask_display,
                 worms=worms,
                 state=state,
             ))
             WORMS.extend(worms)
             for w in worms:
                 WORM_BY_KEY[(flask_name, w.name)] = w
-        LOG.info("loaded %d flasks × %d worms = %d total",
-                 len(FLASKS), len(FLASKS[0].worms) if FLASKS else 0, len(WORMS))
+        if EXPERIMENT is not None:
+            LOG.info("experiment mode %r: loaded 1 flask × %d worms",
+                     EXPERIMENT.mode, len(FLASKS[0].worms) if FLASKS else 0)
+        else:
+            LOG.info("loaded %d flasks × %d worms = %d total",
+                     len(FLASKS), len(FLASKS[0].worms) if FLASKS else 0, len(WORMS))
     else:
         # Legacy single-group mode for backward compat.
         n = int(os.environ.get("WORMLET_N_WORMS", "0")) or None
@@ -886,6 +944,23 @@ async def healthz():
             "focus": {name: len(s) for name, s in FOCUS_CLIENTS.items() if s},
             "poems": len(POEM_CLIENTS),
         },
+    })
+
+
+@app.get("/api/experiment")
+async def api_experiment():
+    """Tell the frontend which experiment THIS process is, plus the full
+    dropdown list so the page header can render the switcher. `current` is
+    None when the legacy / prod path is active (the shared JS still
+    renders the switcher; prod just appears highlighted)."""
+    cur = EXPERIMENT
+    return JSONResponse({
+        "current": cur.mode if cur else "poetry",
+        "current_label": cur.label if cur else "Coherent poetry (prod)",
+        "current_blurb": cur.blurb if cur else (
+            "The real experiment — Claude Haiku judges windows for emotional + coherent impact."
+        ),
+        "options": experiments.all_for_dropdown(),
     })
 
 
@@ -1093,33 +1168,71 @@ def _gv_gen_nums(flask_dir: Path) -> list[int]:
 
 
 def _gv_flask_names() -> list[str]:
+    """Every flask-shaped subdir of GENERATIONS_ROOT — prod's flask_1.. AND
+    any experiment-mode group (e.g. 'words', 'nouns'). Skips 'meta' (the
+    meta-gardener's logs) and anything that doesn't contain gen-NNNN dirs."""
     if not _GV_ROOT.is_dir():
         return []
-    return sorted(d.name for d in _GV_ROOT.iterdir()
-                  if d.is_dir() and d.name.startswith("flask_"))
+    out = []
+    for d in _GV_ROOT.iterdir():
+        if not d.is_dir() or d.name == "meta":
+            continue
+        if any(c.is_dir() and c.name.startswith("gen-") for c in d.iterdir()):
+            out.append(d.name)
+    return sorted(out)
 
 
 def _gv_summary(flask: str, n: int) -> dict | None:
+    """Per-gen summary used by the existing best/avg/sigma charts. Reads
+    metadata.json (prod) or metrics.json (experiment mode) — they share
+    the same headline fields."""
     gen_dir = _GV_ROOT / flask / f"gen-{n:04d}"
     meta = _gv_read_json(gen_dir / "metadata.json")
     if meta is None:
+        # Experiment-mode generation: metrics.json holds the same headline data.
+        meta = _gv_read_json(gen_dir / "metrics.json")
+    if meta is None:
         return None
     worms = []
-    for wd in sorted(gen_dir.iterdir()):
-        if not wd.is_dir():
-            continue
-        fit = _gv_read_json(wd / "fitness.json", {}) or {}
-        worms.append({
-            "name": wd.name,
-            "fitness": fit.get("fitness", 0.0),
-            "windows_scored": fit.get("windows_scored", 0),
-        })
+    # Prod writes per-worm subdirs with fitness.json; experiment mode rolls
+    # per-worm data into metrics.json["per_worm"]. Handle both.
+    per_worm = meta.get("per_worm")
+    if per_worm:
+        for r in per_worm:
+            worms.append({
+                "name": r.get("name", "?"),
+                "fitness": r.get("fitness", 0.0),
+                "words_eaten": r.get("words_eaten", 0),
+            })
+    else:
+        for wd in sorted(gen_dir.iterdir()):
+            if not wd.is_dir():
+                continue
+            fit = _gv_read_json(wd / "fitness.json", {}) or {}
+            worms.append({
+                "name": wd.name,
+                "fitness": fit.get("fitness", 0.0),
+                "windows_scored": fit.get("windows_scored", 0),
+            })
+    ranks = meta.get("ranks")
+    if not ranks and per_worm:
+        ranks = [r["name"] for r in sorted(per_worm, key=lambda r: r.get("rank", 999))]
+    # Aggregate POS counts across all worms for this gen (experiment mode only).
+    pos_totals: dict[str, int] = {}
+    for r in per_worm or []:
+        for tag, c in (r.get("pos_breakdown") or {}).items():
+            pos_totals[tag] = pos_totals.get(tag, 0) + int(c)
     return {
         "generation": meta.get("generation", n),
         "best_score": meta.get("best_score", 0.0),
+        "avg_score": meta.get("avg_score", 0.0),
         "sigma_used": meta.get("sigma_used", 0.0),
-        "ranks": meta.get("ranks", []),
+        "ranks": ranks or [],
         "worms": worms,
+        "experiment_mode": meta.get("experiment_mode"),
+        "per_worm": per_worm or [],
+        "next_gen_lineage": meta.get("next_gen_lineage") or [],
+        "pos_totals": pos_totals,
     }
 
 
@@ -1163,6 +1276,17 @@ async def api_generations_meta_index():
             entry["log_skipped"] = True
         epochs.append(entry)
     return JSONResponse({"epochs": epochs})
+
+
+@app.get("/api/generations/{flask}/{gen}/metrics")
+async def api_generations_metrics(flask: str, gen: int):
+    """Full experiment-mode metrics.json for one generation. Drives the new
+    per-worm lineage and POS-breakdown charts. Returns 404 for prod-format
+    generations (those use the worm-detail endpoint above)."""
+    p = _GV_ROOT / flask / f"gen-{gen:04d}" / "metrics.json"
+    if not p.exists():
+        return JSONResponse({"error": "no metrics.json"}, status_code=404)
+    return JSONResponse(_gv_read_json(p, {}))
 
 
 @app.get("/api/generations/{flask}/weights/trajectory")

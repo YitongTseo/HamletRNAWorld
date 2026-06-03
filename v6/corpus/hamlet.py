@@ -95,6 +95,10 @@ _GUTENBERG_PATH = Path(__file__).resolve().parent / "hamlet_gutenberg.txt"
 _GUTENBERG_START_RE = re.compile(r"\*\*\* START OF THE PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
 _GUTENBERG_END_RE = re.compile(r"\*\*\* END OF THE PROJECT GUTENBERG EBOOK.*?\*\*\*", re.IGNORECASE)
 _FULL_PLAY_CACHE: list[str] | None = None
+# Match "ACT I" alone (not "ACT II"/"III"/...) — used to find Act 1's start.
+_ACT_I_RE = re.compile(r"^ACT\s+I\s*$", re.IGNORECASE)
+_ACT_II_RE = re.compile(r"^ACT\s+II\s*$", re.IGNORECASE)
+_ACT1_CACHE: list[str] | None = None
 
 
 def _load_full_play() -> list[str]:
@@ -191,12 +195,39 @@ def is_dialogue_line(raw_line: str) -> bool:
     return True
 
 
+def _load_act1() -> list[str]:
+    """Just Act 1, sliced from the full Gutenberg edition. ~1200 lines,
+    short enough for the sanity-check experiments to iterate fast.
+
+    The Gutenberg dump opens with a table of contents that lists ACT I..V
+    one after another, so we take the *second* occurrence of each marker
+    (the first is the TOC, the second is the actual play heading)."""
+    global _ACT1_CACHE
+    if _ACT1_CACHE is not None:
+        return _ACT1_CACHE
+    lines = _load_full_play()
+    acti_idxs = [i for i, ln in enumerate(lines) if _ACT_I_RE.match(ln)]
+    actii_idxs = [i for i, ln in enumerate(lines) if _ACT_II_RE.match(ln)]
+    if len(acti_idxs) >= 2 and len(actii_idxs) >= 2:
+        start, end = acti_idxs[1], actii_idxs[1]
+    elif acti_idxs and actii_idxs:
+        start, end = acti_idxs[0], actii_idxs[0]
+    else:
+        # Defensive fallback: just use the first ~1500 lines.
+        _ACT1_CACHE = lines[:1500]
+        return _ACT1_CACHE
+    _ACT1_CACHE = lines[start:end]
+    return _ACT1_CACHE
+
+
 def _get_raw_passage(passage: str) -> list[str]:
     if passage == "full":
         return _load_full_play()
+    if passage == "act1":
+        return _load_act1()
     if passage in _PASSAGES:
         return _PASSAGES[passage]
-    raise ValueError(f"unknown passage {passage!r}; pick from {list(_PASSAGES) + ['full']}")
+    raise ValueError(f"unknown passage {passage!r}; pick from {list(_PASSAGES) + ['act1', 'full']}")
 
 
 def get_sentences(passage: str = "opening", n: int | None = None) -> list[list[str]]:
