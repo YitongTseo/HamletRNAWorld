@@ -123,7 +123,7 @@ EXPERIMENTS: list[Experiment] = [
     ),
     Experiment(
         mode="poetry",
-        label="Coherent poetry (prod)",
+        label="poetry",
         scorer=None,
         briefing_file="../specs/2026-05-26-gardener-briefing.md",
         port=8000,
