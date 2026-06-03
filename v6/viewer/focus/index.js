@@ -380,7 +380,9 @@ let smellsVisible = true;     // toggle with 'o' key
 // X-ray neuron-label visibility ('l' key). Single source of truth — the
 // network panel and the magnifier are both notified on every toggle. This
 // replaces the network panel's internal flag as authoritative state.
-let xrayLabelsVisible = true;
+// Default OFF: the x-ray (live body) view stays uncluttered; neuron names are
+// available in the connectome graph view ('x') or by pressing 'l' to toggle on.
+let xrayLabelsVisible = false;
 
 // Simulation state
 let isPaused = false;         // toggled with spacebar

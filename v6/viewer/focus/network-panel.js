@@ -74,7 +74,7 @@ export function buildPositions(neurons, rawPositions) {
 // the appropriate callback, so the flag starts coherent with the DOM.
 let netVisible = false;
 let xrayMode = false;          // default = labelled anatomical graph; 'x' flips to the live body overlay
-let xrayLabelsVisible = true;  // neuron-name labels on by default in the live body view
+let xrayLabelsVisible = false; // neuron-name labels OFF by default in the live body view — press 'l' to show, or read them in the connectome graph ('x')
 let motorLabelsVisible = true; // motor labels on by default in the anatomical graph
 
 export function isNetVisible() { return netVisible; }

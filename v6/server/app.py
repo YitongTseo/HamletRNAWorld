@@ -87,6 +87,104 @@ N_WORMS_PER_FLASK: int = int(os.environ.get("WORMLET_N_WORMS_PER_FLASK", "10"))
 GENERATION_PROGRESS = GenerationProgress()
 GENERATION_GRACE_S = 3.0           # seconds after corpus exhausts before scoring fires
 
+# Sentinel the external systemd healthcheck checks for: while it exists, the
+# watchdog skips probing/restarting (a rollover is intentionally busy). Lives
+# in the systemd RuntimeDirectory (/run/wormlet, tmpfs) so it can never
+# survive a process death and wedge the watchdog off permanently.
+ROLLOVER_LOCK = Path(os.environ.get("WORMLET_RUNTIME_DIR", "/run/wormlet")) / "rollover.lock"
+
+
+def _set_rollover_lock(active: bool) -> None:
+    """Create/remove the rollover sentinel. Best-effort: in dev (no writable
+    /run/wormlet) this silently no-ops, which just means the watchdog stays
+    naive — acceptable, since dev doesn't run the watchdog."""
+    try:
+        if active:
+            ROLLOVER_LOCK.parent.mkdir(parents=True, exist_ok=True)
+            ROLLOVER_LOCK.write_text(str(os.getpid()))
+        else:
+            ROLLOVER_LOCK.unlink(missing_ok=True)
+    except Exception:
+        LOG.debug("rollover lock %s failed (non-fatal)",
+                  "set" if active else "clear", exc_info=True)
+
+
+# How often (wall seconds) sim_loop snapshots each worm's corpus position to
+# disk. Bounds how much in-generation progress a restart can lose. Cheap
+# (small JSON per worm), so a minute is comfortably conservative.
+CHECKPOINT_INTERVAL_S = float(os.environ.get("WORMLET_CHECKPOINT_INTERVAL_S", "60"))
+
+
+def _checkpoint_path(worm) -> Path:
+    return worm.poem_path.parent / "checkpoint.json"
+
+
+def _write_checkpoint(worm, generation: int) -> None:
+    """Persist a worm's mid-generation corpus progress (Approach C). Atomic
+    temp+rename so a crash mid-write never leaves a half-file. Best-effort:
+    a write failure must never break the sim loop."""
+    try:
+        data = {
+            "version": 1,
+            "generation": generation,
+            "tick_count": worm.world.tick_count,
+            "word_count": worm.word_count,
+            "scroller": worm.world.text_scroller.snapshot(),
+        }
+        path = _checkpoint_path(worm)
+        tmp = path.with_name("checkpoint.json.tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.replace(path)
+    except Exception:
+        LOG.exception("checkpoint write failed for %s", getattr(worm, "name", "?"))
+
+
+def _delete_checkpoint(worm) -> None:
+    try:
+        _checkpoint_path(worm).unlink(missing_ok=True)
+    except Exception:
+        LOG.debug("checkpoint delete failed for %s", getattr(worm, "name", "?"),
+                  exc_info=True)
+
+
+def _reset_worm_poem(worm) -> None:
+    """Truncate a worm's poem and zero its counters — used when no valid
+    checkpoint exists, so the generation genuinely starts from word 0.
+    Mirrors the poem reset in _respawn_flask."""
+    try:
+        worm.poem_file.close()
+    except Exception:
+        pass
+    worm.poem_path.write_text("")
+    worm.poem_file = open(worm.poem_path, "a", buffering=1)
+    worm.word_count = 0
+    worm.recent_words = []
+
+
+def _restore_or_reset_worm(worm, generation: int) -> None:
+    """Startup recovery for one worm. If a checkpoint from THIS generation
+    exists, restore the scroll position and keep the existing poem (resume
+    mid-sentence). Otherwise the partial poem is discarded and the generation
+    restarts cleanly — the same behavior as before checkpoints existed, which
+    is the safe fallback for a missing/corrupt/stale-generation checkpoint."""
+    path = _checkpoint_path(worm)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            if data.get("generation") == generation and "scroller" in data:
+                worm.world.text_scroller.restore(data["scroller"])
+                LOG.info("restored mid-gen checkpoint: %s (gen=%d, words=%d)",
+                         worm.poem_path.parent, generation, worm.word_count)
+                return
+            LOG.info("discarding stale checkpoint for %s (ckpt gen=%r, now gen=%d)",
+                     worm.poem_path.parent, data.get("generation"), generation)
+        except Exception:
+            LOG.exception("checkpoint restore failed for %s; starting gen fresh",
+                          worm.poem_path.parent)
+    # No usable checkpoint → fresh generation.
+    _reset_worm_poem(worm)
+    _delete_checkpoint(worm)
+
 
 def _focus_key(flask: str, worm: str) -> str:
     return f"{flask}/{worm}"
@@ -208,7 +306,7 @@ def _build_snapshot(worm: Worm) -> dict:
         "speed": round(w.worm.speed, 4),
         "food": [
             {"x": round(f.x, 2), "y": round(f.y, 2), "word": f.word,
-             "line_id": f.line_id, "word_idx": f.word_idx}
+             "line_id": f.line_id, "word_idx": f.word_idx, "edible": f.edible}
             for f in w.food
         ],
         "smells": [
@@ -310,6 +408,10 @@ def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
         w.poem_file = open(w.poem_path, "a", buffering=1)
         w.word_count = 0
         w.recent_words = []
+        # The previous generation's mid-gen checkpoint is now meaningless (and
+        # its generation number is stale); drop it so the new generation can't
+        # accidentally resume from it.
+        _delete_checkpoint(w)
     flask.corpus_exhausted_at = None
 
 
@@ -485,6 +587,12 @@ async def _trigger_generation_rollover() -> None:
     synchronous heavy lifting in a thread so the event loop stays
     responsive for /healthz and the progress overlay."""
     LOG.info("starting epoch rollover (%d flasks)", len(FLASKS))
+    # Tell the external healthcheck watchdog we're deliberately busy: even
+    # though the rollover runs in a thread, the live API judge calls + NES
+    # math can saturate the GIL enough to make HTTP probes slow. The
+    # watchdog skips its check entirely while this lock exists, so it can't
+    # SIGKILL us mid-rollover (which would corrupt the generation it's scoring).
+    _set_rollover_lock(True)
     try:
         await asyncio.to_thread(_run_all_flask_rollovers_sync)
         LOG.info("epoch rollover complete")
@@ -493,6 +601,7 @@ async def _trigger_generation_rollover() -> None:
         GENERATION_PROGRESS.error = str(e)
     finally:
         GENERATION_PROGRESS.phase = PHASE_RUNNING
+        _set_rollover_lock(False)
         _generation_keepalive()
 
 
@@ -515,6 +624,7 @@ async def sim_loop():
     next_t = time.monotonic()
     overview_counter = 0
     epoch_exhausted_at: float | None = None
+    last_checkpoint_at = time.monotonic()
     while True:
         # If a rollover is in progress, skip ticking entirely — the rollover
         # path keeps the watchdog alive via _generation_keepalive.
@@ -578,6 +688,16 @@ async def sim_loop():
                     epoch_exhausted_at = None
                     if GENERATION_PROGRESS.phase == PHASE_CORPUS_DRAINING:
                         GENERATION_PROGRESS.phase = PHASE_RUNNING
+
+                # Periodic mid-generation checkpoint: snapshot each worm's
+                # corpus position so a restart resumes mid-sentence instead of
+                # restarting the generation. Tiny JSON per worm, ~once a minute.
+                if time.monotonic() - last_checkpoint_at >= CHECKPOINT_INTERVAL_S:
+                    last_checkpoint_at = time.monotonic()
+                    for flask in FLASKS:
+                        gen = flask.state.generation if flask.state else 0
+                        for w in flask.worms:
+                            _write_checkpoint(w, gen)
         except Exception:
             LOG.exception("sim_loop iteration raised; watchdog will recover if persistent")
 
@@ -639,29 +759,6 @@ def _asyncio_exception_handler(loop, context: dict) -> None:
         LOG.error("asyncio: %s | context=%r", msg, context)
 
 
-def _truncate_partial_gen_poems(roots: list[Path]) -> None:
-    """Clear each worm's poem.txt at startup across the given roots. The
-    new generation always starts from empty poems regardless of whether
-    this is a fresh enable, a clean restart between generations, or a
-    crash recovery mid-generation. Voluntary restarts during a
-    generation will lose the partial poem — intentional for consistency:
-    a generation must correspond to a single contiguous run through the
-    corpus, not a spliced one. Per-generation poem.txt files are
-    already persisted to data/generations/<flask>/gen-NNNN/<worm>/poem_raw.txt
-    by the rollover step, so this truncation never destroys anything
-    that completed."""
-    for root in roots:
-        if not root.exists():
-            continue
-        for poem in root.rglob("poem.txt"):
-            try:
-                if poem.stat().st_size > 0:
-                    poem.write_text("")
-                    LOG.info("truncated partial-gen poem: %s", poem)
-            except Exception:
-                LOG.exception("failed to truncate %s", poem)
-
-
 def _load_initial_default_weights() -> dict:
     """The starter connectome every flask's parent vector is seeded from."""
     from server.orchestrator import DEFAULT_WEIGHTS
@@ -674,19 +771,20 @@ async def lifespan(app: FastAPI):
     _STARTED_AT = time.monotonic()
     _LAST_TICK_AT = time.monotonic()
 
-    from server.orchestrator import DATA_DIR, FLASKS_DIR
-
     if GENERATIONS_ENABLED:
-        _truncate_partial_gen_poems([DATA_DIR, FLASKS_DIR])
-        # Build 4 flasks of 10 worms each. Each flask's GenerationState is
-        # loaded from disk (or initialized cold) so the lineage survives
-        # process restarts.
+        # Build the flasks first (load_flasks reads each worm's existing
+        # poem.txt to recover word_count). Then, per worm, either resume from
+        # a same-generation checkpoint (keep the partial poem, restore the
+        # scroll position) or reset to a clean generation. This replaces the
+        # old blanket truncate-everything-at-startup behavior.
         per_flask_worms = load_flasks(n_flasks=N_FLASKS, n_worms_per_flask=N_WORMS_PER_FLASK)
         default_weights = _load_initial_default_weights()
         FLASKS = []
         for fi, worms in enumerate(per_flask_worms):
             flask_name = f"flask_{fi + 1}"
             state = GenerationState.load_or_init(flask_name, default_weights)
+            for w in worms:
+                _restore_or_reset_worm(w, state.generation)
             FLASKS.append(WormGroup(
                 name=flask_name,
                 display=f"Flask {fi + 1}",

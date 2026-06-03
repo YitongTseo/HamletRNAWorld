@@ -126,3 +126,51 @@ class TextScroller:
     def all_words(self) -> list[WordState]:
         """All words (alive + eaten) for rendering eaten words as faded."""
         return [w for line in self._active for w in line]
+
+    # ------------------------------------------------------------------
+    # Mid-generation checkpoint support.
+    #
+    # The scroll position (_sent_idx), the eaten set (_dead), and the words
+    # currently on screen (_active) are the entirety of a worm's *corpus*
+    # progress within a generation. Snapshotting them lets a restart resume
+    # mid-sentence/mid-chew instead of restarting the generation from word 0.
+    # The worm's physical body + brain are deliberately NOT captured (they
+    # re-settle within ~1s); see docs spec. `sentences`/`edible_flags`/`loop`
+    # are not serialized — they're fixed by the corpus + run mode and are
+    # reconstructed when the scroller is built.
+    # ------------------------------------------------------------------
+    def snapshot(self) -> dict:
+        """Serializable corpus-progress state. All plain JSON scalars."""
+        return {
+            "sent_idx": self._sent_idx,
+            "line_id": self._line_id,
+            "elapsed": self._elapsed,
+            "next_spawn": self._next_spawn,
+            "dead": [list(k) for k in self._dead],
+            "active": [
+                [
+                    {"text": w.text, "line_id": w.line_id, "word_idx": w.word_idx,
+                     "x": w.x, "y": w.y, "alive": w.alive, "edible": w.edible}
+                    for w in line
+                ]
+                for line in self._active
+            ],
+        }
+
+    def restore(self, state: dict) -> None:
+        """Overwrite scroll state from a snapshot() dict. Safe to call right
+        after construction; replaces all mutable progress fields in place."""
+        self._sent_idx = int(state["sent_idx"])
+        self._line_id = int(state["line_id"])
+        self._elapsed = float(state["elapsed"])
+        self._next_spawn = float(state["next_spawn"])
+        self._dead = {(int(a), int(b)) for a, b in state.get("dead", [])}
+        self._active = [
+            [
+                WordState(text=w["text"], line_id=w["line_id"], word_idx=w["word_idx"],
+                          x=w["x"], y=w["y"], alive=w.get("alive", True),
+                          edible=w.get("edible", True))
+                for w in line
+            ]
+            for line in state.get("active", [])
+        ]

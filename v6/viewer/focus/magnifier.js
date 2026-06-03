@@ -24,7 +24,7 @@ import { loadMagnifierPos, saveMagnifierPos } from './state.js';
 import { onViewportChange } from './responsive.js';
 
 let lensEl, lensCanvas, lensCtx, closeBtn;
-let xrayLabelsVisible = true;
+let xrayLabelsVisible = false;  // labels off by default; kept in sync with index.js via 'l'
 
 // Module-local handle on live sim data; set by `setState` each frame from
 // index.js so we can forward it into drawXRay. Avoids each-frame allocation.

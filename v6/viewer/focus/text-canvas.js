@@ -109,7 +109,16 @@ function drawTextCanvas(state) {
   for (const [key, item] of wordFoodMap) {
     const [sx, sy] = worldToScreen(item.x, item.y);
     const isHovered = nearestWord === item && minDist < 80;
-    tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
+    // Edible words are bright white (the worm can eat these). Inedible
+    // set-dressing (speaker names, stage cues, directions) is drawn in a dim
+    // blue-grey so it recedes — echoes the bluish word color in the overview
+    // view. `edible !== false` so older payloads (no flag) default to edible.
+    const edible = item.edible !== false;
+    if (edible) {
+      tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
+    } else {
+      tctx.fillStyle = isHovered ? 'rgba(170,190,225,0.85)' : 'rgba(150,170,205,0.45)';
+    }
     tctx.textAlign = 'center';
     tctx.textBaseline = 'middle';
     tctx.fillText(item.word, sx, sy);
