@@ -605,23 +605,30 @@ def _run_all_flask_rollovers_sync() -> None:
 
 
 def _run_experiment_rollover_sync() -> None:
-    """Experiment-mode rollover: one flask, POS scoring, no LLM, no commit.
-    Simpler than the prod path — no meta-gardener, no global-winner dance."""
+    """Experiment-mode rollover: roll over every flask (POS scoring, no LLM,
+    no commit). Each flask evolves independently and writes its own light
+    artifacts + (every gardener_every gens) its own gardener log into its own
+    data dir. Simpler than the prod path — no meta-gardener, no global-winner
+    dance."""
     if not FLASKS or EXPERIMENT is None:
         return
-    flask = FLASKS[0]
-    GENERATION_PROGRESS.worms_total = len(flask.worms)
+    # Pre-seed cumulative progress totals so run_experiment_rollover doesn't
+    # reset the bar per-flask (it skips the reset when worms_total > 0), giving
+    # the overlay one smooth 0→N bar across all flasks instead of a per-flask
+    # reset — same approach as the prod path.
+    GENERATION_PROGRESS.worms_total = sum(len(f.worms) for f in FLASKS)
     GENERATION_PROGRESS.worms_done = 0
     GENERATION_PROGRESS.started_at = time.time()
-    try:
-        new_weights = run_experiment_rollover(
-            flask.worms, flask.state, GENERATION_PROGRESS, EXPERIMENT,
-            keepalive=_generation_keepalive,
-        )
-        GENERATION_PROGRESS.phase = gens_mod.PHASE_RESPAWNING
-        _respawn_flask(flask, new_weights)
-    except Exception:
-        LOG.exception("experiment rollover raised; continuing")
+    for flask in FLASKS:
+        try:
+            new_weights = run_experiment_rollover(
+                flask.worms, flask.state, GENERATION_PROGRESS, EXPERIMENT,
+                keepalive=_generation_keepalive,
+            )
+            GENERATION_PROGRESS.phase = gens_mod.PHASE_RESPAWNING
+            _respawn_flask(flask, new_weights)
+        except Exception:
+            LOG.exception("experiment rollover raised for %s; continuing", flask.name)
 
 
 async def _trigger_generation_rollover() -> None:
