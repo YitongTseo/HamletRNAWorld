@@ -751,7 +751,13 @@ async def sim_loop():
         if sleep_for > 0:
             await asyncio.sleep(sleep_for)
         else:
+            # Behind schedule: a single pass over all worms took longer than
+            # TICK_DT (e.g. 40 worms on a 4-core box). Reset the clock, but
+            # still yield to the event loop so HTTP/WebSocket handlers get a
+            # slot — otherwise this loop holds the GIL indefinitely and the
+            # viewer/healthz starve while the sim runs full-tilt.
             next_t = time.monotonic()
+            await asyncio.sleep(0)
 
 
 def _start_tick_watchdog(stall_seconds: float = 20.0, poll_seconds: float = 2.0) -> None:
