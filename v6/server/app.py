@@ -758,7 +758,13 @@ async def sim_loop():
         if sleep_for > 0:
             await asyncio.sleep(sleep_for)
         else:
+            # Behind schedule: a single pass over all worms took longer than
+            # TICK_DT (e.g. 40 worms on a 4-core box). Reset the clock, but
+            # still yield to the event loop so HTTP/WebSocket handlers get a
+            # slot — otherwise this loop holds the GIL indefinitely and the
+            # viewer/healthz starve while the sim runs full-tilt.
             next_t = time.monotonic()
+            await asyncio.sleep(0)
 
 
 def _start_tick_watchdog(stall_seconds: float = 20.0, poll_seconds: float = 2.0) -> None:
@@ -870,6 +876,22 @@ async def lifespan(app: FastAPI):
                      len(FLASKS), len(FLASKS[0].worms) if FLASKS else 0, len(WORMS))
     else:
         # Legacy single-group mode for backward compat.
+        # Guard against a silent misconfig: if generation data already exists
+        # on disk (flask_*/ dirs) but generations are disabled — almost always
+        # a stripped/truncated /home/web/.wormlet.env — we'd quietly fall back
+        # here and the evolution loop would never run while the server still
+        # answers 200. That hid a 3.5-day stall once. Boot anyway (so the
+        # viewer stays up), but scream in the log so it's caught in seconds.
+        from server.generations import GENERATIONS_ROOT
+        existing_flasks = sorted(GENERATIONS_ROOT.glob("flask_*")) if GENERATIONS_ROOT.exists() else []
+        if existing_flasks:
+            LOG.error(
+                "MISCONFIG: generation data exists (%s) but GENERATIONS_ENABLED is off "
+                "— booting in legacy single-group mode; the evolution loop will NOT run. "
+                "Check WORMLET_GENERATIONS_ENABLED / WORMLET_N_FLASKS in /home/web/.wormlet.env "
+                "(known-good copy: .wormlet.env.bak).",
+                ", ".join(p.name for p in existing_flasks),
+            )
         n = int(os.environ.get("WORMLET_N_WORMS", "0")) or None
         WORMS = load_worms(n_worms=n)
         for w in WORMS:
