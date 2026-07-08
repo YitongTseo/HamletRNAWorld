@@ -1021,14 +1021,13 @@ async def about_page():
 
 @app.get("/healthz")
 async def healthz():
-    from sim.world import EMBEDDING_MODE
     now = time.monotonic()
     tick = WORMS[0].world.tick_count if WORMS else 0
     return JSONResponse({
         "tick": tick,
         "uptime_s": round(now - _STARTED_AT, 1),
         "last_tick_advance_s_ago": round(now - _LAST_TICK_AT, 2),
-        "embedding": EMBEDDING_MODE,
+        "embedding": "learned",
         "generations_enabled": GENERATIONS_ENABLED,
         "flasks": [
             {"name": f.name, "display": f.display,
