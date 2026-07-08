@@ -996,6 +996,10 @@ async def api_experiment():
         "current_blurb": cur.blurb if cur else (
             "The real experiment — Claude Haiku judges windows for emotional + coherent impact."
         ),
+        # How often THIS process's gardener writes a log. Experiment-mode
+        # processes write every N gens (per-flask, no meta-gardener); prod
+        # writes every gen and also runs a cross-flask meta-gardener.
+        "gardener_every": cur.gardener_every if cur else 1,
         "options": experiments.all_for_dropdown(),
     })
 
@@ -1312,6 +1316,30 @@ async def api_generations_meta_index():
             entry["log_skipped"] = True
         epochs.append(entry)
     return JSONResponse({"epochs": epochs})
+
+
+@app.get("/api/generations/gardener_logs")
+async def api_generations_gardener_logs(limit: int = 60):
+    """Every per-flask gardener log across this process's flasks, newest
+    first. Drives the gardener-log feed on the generations page in
+    experiment mode (where there is no meta-gardener — the gardener writes
+    one log per flask every `gardener_every` generations). Each entry:
+    {flask, generation, log} or {flask, generation, skipped: true}."""
+    entries = []
+    for flask in _gv_flask_names():
+        flask_dir = _GV_ROOT / flask
+        for n in _gv_gen_nums(flask_dir):
+            gen_dir = flask_dir / f"gen-{n:04d}"
+            log_path = gen_dir / "gardeners_log.md"
+            skip_path = gen_dir / "gardeners_log.skipped"
+            if log_path.exists():
+                entries.append({"flask": flask, "generation": n,
+                                "log": log_path.read_text()})
+            elif skip_path.exists():
+                entries.append({"flask": flask, "generation": n, "skipped": True})
+    # Newest first, ties broken by flask name for stable ordering.
+    entries.sort(key=lambda e: (e["generation"], e["flask"]), reverse=True)
+    return JSONResponse({"entries": entries[:max(0, limit)]})
 
 
 @app.get("/api/generations/{flask}/{gen}/metrics")

@@ -95,7 +95,7 @@ EXPERIMENTS: list[Experiment] = [
         gardener_every=10,
         store_full_poems=False,
         subdomain="nouns",
-        blurb="Sanity check 2 — maximize nouns eaten. Can selection steer the chemosensation toward a POS class?",
+        blurb="Sanity check 2 — eat nouns, avoid other words (fitness = nouns − 0.2·others). Can selection steer the chemosensation toward a POS class?",
     ),
     Experiment(
         mode="adj_noun",

@@ -8,7 +8,8 @@ the expensive coherent-poetry runs.
 The four modes:
 
   WORDS     — count edible words eaten (ceiling sanity check; no semantics)
-  NOUNS     — count nouns eaten (does the chemosensation steer toward a POS class?)
+  NOUNS     — reward nouns eaten, penalize other words eaten (does the
+              chemosensation steer toward a POS class when junk costs you?)
   ADJ_NOUN  — count adjacent (adj, noun) pairs in the eaten sequence
               (1-step memory: does the worm chain words?)
   POS_CHAIN — count consecutive eaten-word POS bigrams that match a
@@ -133,13 +134,34 @@ def score_words(eaten: list[str]) -> float:
     return float(sum(1 for t in tags if t != "."))
 
 
+# Penalty applied to each non-noun *word* eaten under score_nouns. Strictly
+# between 0 and 1 so a noun is always worth more than a non-noun costs — the
+# worm is still rewarded for eating, just rewarded much more for eating nouns.
+NOUN_OTHER_PENALTY = 0.2
+
+
 def score_nouns(eaten: list[str]) -> float:
-    """Count of NOUN-tagged words eaten. Tests whether selection can push
-    the chemosensation toward a single POS class."""
+    """Reward nouns, penalize other words. Each NOUN-tagged word eaten is
+    +1; each non-noun word eaten is -NOUN_OTHER_PENALTY. Punctuation (tag
+    '.') is ignored entirely — it isn't a word the worm chose to chase.
+
+    Why not a raw noun count: under a plain count, eating MORE of everything
+    also raises the noun total, so there's no gradient toward *selectivity*
+    — the reward is then indistinguishable from the 'eat words' experiment.
+    Subtracting a fraction for every non-noun makes the worm pay for junk it
+    eats, so a worm that eats 200 nouns and 0 other words beats one that eats
+    200 nouns and 500 other words. Scores can go negative (a mouthful of pure
+    non-nouns); the NES path ranks fitness, so negatives are fine."""
     if not eaten:
         return 0.0
     tags = tag_sequence(eaten)
-    return float(sum(1 for t in tags if t == NOUN))
+    score = 0.0
+    for t in tags:
+        if t == NOUN:
+            score += 1.0
+        elif t != ".":
+            score -= NOUN_OTHER_PENALTY
+    return score
 
 
 def score_adj_noun(eaten: list[str]) -> float:

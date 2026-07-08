@@ -218,7 +218,18 @@ async function selectGeneration(genNum, rowEl) {
   } else if (data.log_skipped) {
     detailLog.innerHTML = '<div class="log-box skipped">the gardener rested this generation.</div>';
   } else {
-    detailLog.innerHTML = '<div class="subtle">(no per-flask log; meta-gardener writes once per epoch — see bottom of page)</div>';
+    const every = (currentExperiment && currentExperiment.gardener_every) || 1;
+    if (every > 1) {
+      // Experiment mode: the gardener writes every N generations, so most
+      // generations have no log by design. Point at the nearest one that does.
+      const prev = Math.floor(genNum / every) * every;
+      const hint = prev >= 1
+        ? ` The gardener writes every ${every} generations — try gen ${prev}.`
+        : ` The gardener's first log lands at gen ${every}.`;
+      detailLog.innerHTML = `<div class="subtle">(no gardener log for gen ${genNum}.${hint})</div>`;
+    } else {
+      detailLog.innerHTML = '<div class="subtle">(no per-flask log; meta-gardener writes once per epoch — see bottom of page)</div>';
+    }
   }
 
   // Top worm's poem
@@ -358,6 +369,58 @@ function renderMetaLogs(epochs) {
     else body = `<div class="subtle">(no log on disk)</div>`;
     div.innerHTML = `<div style="color:var(--accent); font-weight:600; font-size:12px;">epoch ${ep.epoch} ${winner}</div>${body}`;
     metaLogListEl.appendChild(div);
+  }
+}
+
+// --- Experiment-mode gardener log feed ---------------------------------
+// Experiment mode has no meta-gardener; instead each flask's gardener writes
+// every N generations. Render those logs (newest first) in the same section.
+function renderGardenerLogs(entries) {
+  metaLogListEl.innerHTML = '';
+  if (!entries.length) {
+    metaLogListEl.innerHTML = '<div class="subtle">no gardener logs yet — the first lands once an experiment reaches its gardener cadence.</div>';
+    return;
+  }
+  for (const e of entries.slice(0, 60)) {
+    const div = document.createElement('div');
+    div.style.cssText = 'margin:8px 0; padding-left:8px; border-left:2px solid rgba(100,200,255,0.15);';
+    let body;
+    if (e.log) body = `<div class="log-box" style="margin-top:4px;">${escapeHtml(e.log)}</div>`;
+    else if (e.skipped) body = `<div class="log-box skipped" style="margin-top:4px;">(rested)</div>`;
+    else body = `<div class="subtle">(no log on disk)</div>`;
+    div.innerHTML = `<div style="color:var(--accent); font-weight:600; font-size:12px;">${escapeHtml(e.flask)} · gen ${e.generation}</div>${body}`;
+    metaLogListEl.appendChild(div);
+  }
+}
+
+// Swap the bottom section between the meta-gardener feed (prod) and the
+// per-flask gardener feed (experiment mode), based on this process's cadence.
+async function loadGardenerSection() {
+  // Fetch /api/experiment directly rather than depend on the dropdown's
+  // async banner callback having landed first.
+  let every = 1;
+  try {
+    const exp = await fetchJSON('/api/experiment');
+    every = exp.gardener_every || 1;
+  } catch (_) { /* fall back to meta-gardener view */ }
+  if (every > 1) {
+    const title = document.getElementById('gardener-section-title');
+    const sub = document.getElementById('gardener-section-subtitle');
+    if (title) title.textContent = "gardener's log";
+    if (sub) sub.textContent = `one entry per flask every ${every} generations — the gardener observes results and writes (or rests).`;
+    try {
+      const data = await fetchJSON('/api/generations/gardener_logs');
+      renderGardenerLogs(data.entries || []);
+    } catch (e) {
+      metaLogListEl.innerHTML = `<div class="subtle" style="color:#f99;">gardener logs unavailable: ${e.message}</div>`;
+    }
+  } else {
+    try {
+      const meta = await fetchJSON('/api/generations/meta/index');
+      renderMetaLogs(meta.epochs || []);
+    } catch (e) {
+      metaLogListEl.innerHTML = `<div class="subtle" style="color:#f99;">meta logs unavailable: ${e.message}</div>`;
+    }
   }
 }
 
@@ -595,12 +658,7 @@ async function init() {
   flaskSelect.addEventListener('change', e => loadFlask(e.target.value));
   await loadFlask(flasks[0].name);
 
-  try {
-    const meta = await fetchJSON('/api/generations/meta/index');
-    renderMetaLogs(meta.epochs || []);
-  } catch (e) {
-    metaLogListEl.innerHTML = `<div class="subtle" style="color:#f99;">meta logs unavailable: ${e.message}</div>`;
-  }
+  await loadGardenerSection();
 }
 
 init();
