@@ -123,10 +123,11 @@ EXPERIMENTS: list[Experiment] = [
     ),
     # The flagship poetry run is 8 flasks across 4 processes (2 flasks each,
     # one per core). These four entries are DROPDOWN VIEWERS — one per process
-    # — so all 8 flasks are reachable. The processes themselves run the legacy
-    # generations path (no WORMLET_EXPERIMENT_MODE); they share ONE co-evolved
-    # embedding genome via the cross-process coordinator. Each process sets
-    # WORMLET_VIEW_MODE so /api/experiment highlights the right entry.
+    # — so all 8 flasks are reachable. The processes run the legacy generations
+    # path (no WORMLET_EXPERIMENT_MODE). v7.1: each flask evolves its OWN
+    # embedder independently (no cross-process coordinator), so the 8 flasks
+    # diverge. Each process sets WORMLET_VIEW_MODE so /api/experiment highlights
+    # the right entry.
     Experiment(
         mode="poetry", label="Poetry · flasks 1–2", scorer=None,
         briefing_file="../specs/2026-05-26-gardener-briefing.md",
@@ -139,21 +140,21 @@ EXPERIMENTS: list[Experiment] = [
         briefing_file="../specs/2026-05-26-gardener-briefing.md",
         port=8010, passage="full", gardener_every=1, store_full_poems=True,
         subdomain="poetry-2",
-        blurb="Coherent-poetry run, flasks 3–4 of 8 (shared co-evolved embedding).",
+        blurb="Coherent-poetry run, flasks 3–4 of 8 (independent per-flask embedder).",
     ),
     Experiment(
         mode="poetry_3", label="Poetry · flasks 5–6", scorer=None,
         briefing_file="../specs/2026-05-26-gardener-briefing.md",
         port=8020, passage="full", gardener_every=1, store_full_poems=True,
         subdomain="poetry-3",
-        blurb="Coherent-poetry run, flasks 5–6 of 8 (shared co-evolved embedding).",
+        blurb="Coherent-poetry run, flasks 5–6 of 8 (independent per-flask embedder).",
     ),
     Experiment(
         mode="poetry_4", label="Poetry · flasks 7–8", scorer=None,
         briefing_file="../specs/2026-05-26-gardener-briefing.md",
         port=8030, passage="full", gardener_every=1, store_full_poems=True,
         subdomain="poetry-4",
-        blurb="Coherent-poetry run, flasks 7–8 of 8 (shared co-evolved embedding).",
+        blurb="Coherent-poetry run, flasks 7–8 of 8 (independent per-flask embedder).",
     ),
 ]
 

@@ -48,9 +48,10 @@ from corpus.hamlet import get_sentences
 from sim.world import World
 
 from server.orchestrator import (
-    load_worms, load_flasks, drain_and_persist, reset_worm, Worm, shared_manager,
+    load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm, Worm,
 )
 from server.worm_group import WormGroup
+from server import flask_embedder as flask_emb
 from server import generations as gens_mod
 from server.generations import (
     GenerationProgress, GenerationState, run_generation_rollover,
@@ -107,19 +108,10 @@ GENERATIONS_ENABLED: bool = (
 N_FLASKS: int = int(os.environ.get("WORMLET_N_FLASKS", "1" if EXPERIMENT is not None else "4"))
 N_WORMS_PER_FLASK: int = int(os.environ.get("WORMLET_N_WORMS_PER_FLASK", "10"))
 
-# v7 poetry shared-embedding coordination (multi-process). When
-# WORMLET_POETRY_SHARED_DIR is set, all poetry processes co-evolve ONE shared
-# embedding genome across all 8 flasks via server.shared_evolution.
-# WORMLET_POETRY_FLASK_OFFSET maps this process's local flask_i to a GLOBAL id
-# (flask_{offset+i}); WORMLET_POETRY_ALL_FLASKS lists every global flask id so
-# the barrier knows who to wait for. Unset → single-process poetry (this
-# process's flasks are the whole population).
-POETRY_SHARED: bool = bool(os.environ.get("WORMLET_POETRY_SHARED_DIR")) and EXPERIMENT is None
-POETRY_FLASK_OFFSET: int = int(os.environ.get("WORMLET_POETRY_FLASK_OFFSET", "0"))
-POETRY_ALL_FLASKS: list[str] = [
-    s for s in os.environ.get("WORMLET_POETRY_ALL_FLASKS", "").split(",") if s
-]
-POETRY_BARRIER_TIMEOUT_S: float = float(os.environ.get("WORMLET_POETRY_BARRIER_TIMEOUT", "1200"))
+# v7.1: each flask evolves its OWN embedder independently (no cross-process
+# coordination). WORMLET_EMBEDDING_SEED is the base seed; flask i uses
+# base + i so the flasks diverge. Set a distinct base per poetry process so all
+# 8 flasks across the 4 processes start from distinct embedders.
 EMBEDDING_SEED: int = int(os.environ.get("WORMLET_EMBEDDING_SEED", "0"))
 
 GENERATION_PROGRESS = GenerationProgress()
@@ -420,8 +412,9 @@ def _mutate_seed(s: int) -> int:
 def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
     """Install new per-worm weights + mutate per-worm seeds for the next
     generation, and reset poem state. Caller has already persisted the
-    previous gen's artifacts (including pre-mutation seed.txt) to disk."""
-    mgr = shared_manager()   # v7: reload each worm's (freshly-written) embedding genome
+    previous gen's artifacts (including pre-mutation seed.txt) to disk, and has
+    already stepped + rebuilt the flask's shared embedding model (v7.1), so the
+    new Worlds pick up the flask's next-generation embedder by reference."""
     for w in flask.worms:
         wt = new_weights.get(w.name)
         if wt is None:
@@ -442,9 +435,7 @@ def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
             w.poem_file.close()
         except Exception:
             pass
-        genome, eps = mgr.assign_worm(w.poem_path.parent, w.seed)
-        w.embedding_eps = eps
-        w.world = World(seed=w.seed, weights=wt, embedding_genome=genome)
+        w.world = World(seed=w.seed, weights=wt, embedding_model=flask.embedding_model)
         w.poem_path.write_text("")  # truncate previous-generation poem
         w.poem_file = open(w.poem_path, "a", buffering=1)
         w.word_count = 0
@@ -612,17 +603,16 @@ def _run_all_flask_rollovers_sync() -> None:
             except Exception:
                 LOG.exception("purge for %s gen-%04d raised; continuing", flask.name, gen)
 
-    # --- v7: co-evolve the SHARED embedding net across ALL poetry flasks ---
-    # Pools every worm's (embedding_eps, fitness) into one NES step for the
-    # shared genome. Cross-process via SharedNetCoordinator's filesystem barrier
-    # (a fast process blocks here until the slow ones contribute, or a timeout
-    # quorum fires so a dead flask can't freeze evolution). Writes each worm's
-    # new embedding.json BEFORE respawn so _respawn_flask picks up the fresh
-    # genome. Wrapped so a shared-net hiccup never blocks the brain respawn.
-    try:
-        _poetry_shared_coevolve()
-    except Exception:
-        LOG.exception("poetry shared-embedding co-evolution raised; continuing")
+    # --- v7.1: step each flask's INDEPENDENT embedder (no barrier) ---
+    # Every flask hill-climbs its own embedder from its worms' mean fitness and
+    # rebuilds its shared model in place, so _respawn_flask below installs the
+    # next candidate. Wrapped per-flask so one embedder hiccup can't block the
+    # brain respawn — and, crucially, no flask waits on any other.
+    for flask in FLASKS:
+        try:
+            _step_flask_embedder(flask)
+        except Exception:
+            LOG.exception("flask %s embedder step raised; continuing", flask.name)
 
     # Install new weights into each flask only after all rollovers + the
     # meta-gardener + commit + purge have completed. Doing this in a separate
@@ -635,36 +625,30 @@ def _run_all_flask_rollovers_sync() -> None:
             _respawn_flask(flask, new_weights)
 
 
-def _poetry_shared_coevolve() -> None:
-    """One pooled NES step for the shared embedding genome over every poetry
-    worm, coordinated across processes. Called once per epoch after all flasks'
-    brain rollovers. No-op if there are no flasks."""
-    if not FLASKS:
+def _embedder_path(flask_name: str) -> Path:
+    from server.generations import GENERATIONS_ROOT
+    return GENERATIONS_ROOT / flask_name / "embedder.json"
+
+
+def _step_flask_embedder(flask: WormGroup) -> None:
+    """Advance ONE flask's independent embedder by a (1+1)-ES generation, using
+    the mean fitness of its worms as the deployed candidate's score, then rebuild
+    the flask's shared EmbeddingModel in place so the subsequent respawn installs
+    the next candidate. Self-contained per flask — no barrier, no other flask
+    involved, so a fast flask never blocks on a slow one."""
+    est = flask.embedder_state
+    model = flask.embedding_model
+    if est is None or model is None or not flask.worms:
         return
-    from server.shared_evolution import SharedNetCoordinator
-
-    mgr = shared_manager()
-    # Global flask ids: this process owns flask_{offset+1..offset+N}.
-    def gid(fi: int) -> str:
-        return f"flask_{POETRY_FLASK_OFFSET + fi + 1}" if POETRY_SHARED else FLASKS[fi].name
-    expected = POETRY_ALL_FLASKS if (POETRY_SHARED and POETRY_ALL_FLASKS) else [gid(i) for i in range(len(FLASKS))]
-
-    coord = SharedNetCoordinator(mgr.dir, expected,
-                                 timeout_s=POETRY_BARRIER_TIMEOUT_S, seed=EMBEDDING_SEED)
-    shared_gen = coord.state().generation
-    for fi, flask in enumerate(FLASKS):
-        epses = [w.embedding_eps for w in flask.worms if w.embedding_eps is not None]
-        scores = [float(w.last_fitness) for w in flask.worms if w.embedding_eps is not None]
-        if epses:
-            coord.contribute(shared_gen, gid(fi), epses, scores)
-    new_state = coord.barrier_update(shared_gen, keepalive=_generation_keepalive)
-    # Write each worm's fresh perturbation of the updated shared genome; the
-    # respawn pass below reloads it via _respawn_flask -> assign_worm.
-    for flask in FLASKS:
-        for w in flask.worms:
-            mgr.respawn_worm(w.poem_path.parent, w.seed, new_state)
-    LOG.info("poetry shared-embedding gen=%d σ=%.4f mean=%s",
-             new_state.generation, new_state.sigma, new_state.prev_fresh_mean)
+    scores = [float(w.last_fitness) for w in flask.worms]
+    mean_fit = sum(scores) / len(scores)
+    flask_emb.step(est, mean_fit)
+    est.save(_embedder_path(flask.name))
+    model.set_genome(est.candidate_vec())   # rebuilds the shared E-table
+    LOG.info("flask %s embedder gen=%d σ=%.4f incumbent=%s mean=%.4f",
+             flask.name, est.generation, est.sigma,
+             f"{est.incumbent_score:.4f}" if est.incumbent_score is not None else "—",
+             mean_fit)
 
 
 def _run_experiment_rollover_sync() -> None:
@@ -689,6 +673,7 @@ def _run_experiment_rollover_sync() -> None:
                 keepalive=_generation_keepalive,
             )
             GENERATION_PROGRESS.phase = gens_mod.PHASE_RESPAWNING
+            _step_flask_embedder(flask)   # v7.1: this flask's own embedder ES
             _respawn_flask(flask, new_weights)
         except Exception:
             LOG.exception("experiment rollover raised for %s; continuing", flask.name)
@@ -919,6 +904,15 @@ async def lifespan(app: FastAPI):
                 flask_name = f"flask_{fi + 1}"
                 flask_display = f"Flask {fi + 1}"
             state = GenerationState.load_or_init(flask_name, default_weights)
+            # v7.1: this flask's OWN embedder lineage + single shared model.
+            # Each flask gets a distinct seed (base + index) so the embedders
+            # diverge; the model is shared by every worm in the flask so the
+            # precomputed E-table is built once per generation, not per worm.
+            emb_seed = EMBEDDING_SEED + fi
+            emb_state = flask_emb.FlaskEmbedderState.load_or_init(
+                _embedder_path(flask_name), flask_name, seed=emb_seed)
+            emb_model = flask_emb.build_model(emb_state)
+            attach_flask_model(worms, emb_model)
             for w in worms:
                 _restore_or_reset_worm(w, state.generation)
             FLASKS.append(WormGroup(
@@ -926,6 +920,8 @@ async def lifespan(app: FastAPI):
                 display=flask_display,
                 worms=worms,
                 state=state,
+                embedder_state=emb_state,
+                embedding_model=emb_model,
             ))
             WORMS.extend(worms)
             for w in worms:

@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import IO, Iterable
 
 from sim.world import World
-from server.shared_evolution import SharedNetManager
 
 V6_ROOT = Path(__file__).resolve().parent.parent
 
@@ -31,16 +30,10 @@ V6_ROOT = Path(__file__).resolve().parent.parent
 # don't pollute prod. Default keeps existing v6/data layout intact.
 _DATA_ROOT = Path(os.environ.get("WORMLET_DATA_DIR", V6_ROOT / "data"))
 
-# v7: shared embedding-net directory. Poetry processes set WORMLET_POETRY_SHARED_DIR
-# so all 8 flasks co-evolve ONE genome; sanity/legacy fall back to a per-tree dir.
+# v7.1: base seed for each flask's independent embedder lineage. Each flask
+# derives its own seed (base + flask index) so the 8 embedders diverge.
 _EMBEDDING_SEED = int(os.environ.get("WORMLET_EMBEDDING_SEED", "0"))
 
-
-def shared_manager() -> SharedNetManager:
-    d = os.environ.get("WORMLET_POETRY_SHARED_DIR")
-    shared_dir = Path(d) if d else (_DATA_ROOT / "shared")
-    name = os.environ.get("WORMLET_EXPERIMENT_MODE") or "poetry_shared"
-    return SharedNetManager(shared_dir, name=name, seed=_EMBEDDING_SEED)
 DATA_DIR = _DATA_ROOT / "worms"
 # Config file lives next to the data dir so a dev instance can use its own
 # (smaller, different-seeded) worm lineup.
@@ -57,11 +50,8 @@ class Worm:
     poem_file: IO = field(repr=False)
     word_count: int = 0
     recent_words: list[str] = field(default_factory=list)  # tail of poem
-    # v7: this worm's eps vs the shared embedding parent (for the pooled NES
-    # gradient at rollover). None in legacy/no-shared-net paths.
-    embedding_eps: list | None = None
-    # v7: this worm's fitness from the most recent rollover (set by the rollover
-    # functions; read by the poetry coordinator to pool the shared-net gradient).
+    # v7.1: this worm's fitness from the most recent rollover (set by the
+    # rollover functions; read to score the flask's shared embedder candidate).
     last_fitness: float = 0.0
 
     def close(self) -> None:
@@ -173,9 +163,14 @@ def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[
 def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Worm]]:
     """Build N flasks of M worms each. Returns a list of lists — outer is
     flasks (in order flask_1, flask_2, ...), inner is the worms of that
-    flask. Caller wraps each inner list in a WormGroup. Seeds are unique
-    across all worms in all flasks (flask_idx * 1000 + worm_idx + 1)
-    so no two worms ever share trajectories."""
+    flask. Caller wraps each inner list in a WormGroup and attaches the flask's
+    shared embedder (v7.1). Seeds are unique across all worms in all flasks
+    (flask_idx * 1000 + worm_idx + 1) so no two worms ever share trajectories.
+
+    The worlds are built with the process-default embedding model; the caller
+    (app.lifespan) then attaches each flask's OWN shared EmbeddingModel via
+    `attach_flask_model`, so the precomputed E-table is shared across the flask
+    and independent of every other flask."""
     if n_worms_per_flask > len(FLASK_WORM_NAMES):
         raise ValueError(
             f"n_worms_per_flask={n_worms_per_flask} exceeds the {len(FLASK_WORM_NAMES)} "
@@ -183,7 +178,6 @@ def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Wor
             f"Add more names to FLASK_WORM_NAMES."
         )
     FLASKS_DIR.mkdir(parents=True, exist_ok=True)
-    mgr = shared_manager()   # v7: per-worm perturbation of the shared embedding
     flasks: list[list[Worm]] = []
     for fi in range(n_flasks):
         flask_name = f"flask_{fi + 1}"
@@ -192,8 +186,7 @@ def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Wor
             wname = FLASK_WORM_NAMES[wi % len(FLASK_WORM_NAMES)]
             seed = fi * 1000 + wi + 1
             wdir, weights = _ensure_flask_worm_dir(flask_name, wname, seed)
-            genome, eps = mgr.assign_worm(wdir, seed)
-            world = World(seed=seed, weights=weights, embedding_genome=genome)
+            world = World(seed=seed, weights=weights)
             poem_path = wdir / "poem.txt"
             if poem_path.exists():
                 with open(poem_path) as f:
@@ -206,10 +199,17 @@ def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Wor
                 name=wname, seed=seed, world=world,
                 poem_path=poem_path, poem_file=pf,
                 word_count=word_count, recent_words=recent_words,
-                embedding_eps=eps,
             ))
         flasks.append(worms)
     return flasks
+
+
+def attach_flask_model(worms: list[Worm], model) -> None:
+    """Point every worm in a flask at the flask's single shared EmbeddingModel.
+    Called once at startup and re-used across generations (the model's genome is
+    swapped in place at rollover via `EmbeddingModel.set_genome`)."""
+    for w in worms:
+        w.world.embedding_model = model
 
 
 def drain_and_persist(worm: Worm) -> Iterable[str]:

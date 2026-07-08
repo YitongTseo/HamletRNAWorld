@@ -22,6 +22,8 @@ from pathlib import Path
 
 from server.orchestrator import Worm
 from server.generations import GenerationState
+from server.flask_embedder import FlaskEmbedderState
+from server import embedding
 
 
 @dataclass
@@ -32,6 +34,10 @@ class WormGroup:
     display: str
     worms: list[Worm] = field(default_factory=list)
     state: GenerationState | None = None  # initialized lazily before first rollover
+    # v7.1: this flask's OWN embedder lineage (independent of every other flask)
+    # and the single shared EmbeddingModel all its worms sense through.
+    embedder_state: FlaskEmbedderState | None = None
+    embedding_model: "embedding.EmbeddingModel | None" = None
     # Wall-clock time the most recent corpus exhaustion was first detected;
     # used by sim_loop to enforce a brief grace period before firing rollover.
     corpus_exhausted_at: float | None = None

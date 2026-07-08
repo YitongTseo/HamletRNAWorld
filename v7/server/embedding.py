@@ -131,6 +131,13 @@ def _onehot_pos(tag: str | None) -> np.ndarray:
     return v
 
 
+def _norm(word: str) -> str:
+    """The canonical corpus/nomic lookup key: lowercased, apostrophes and
+    surrounding whitespace stripped. MUST match how `_load_nomic` keys the
+    table and how `_encode`/`vec512` look words up."""
+    return word.lower().strip("'").strip() if word else ""
+
+
 class EmbeddingModel:
     """Holds one set of params + the frozen nomic table, and runs the forward
     pass. Params are constant within a generation, so per-word encodings are
@@ -140,14 +147,42 @@ class EmbeddingModel:
         self.params = params
         self._nomic = nomic if nomic is not None else _load_nomic()
         self._enc_cache: dict[str, np.ndarray] = {}
+        # Precompute tables (shared across every worm in a flask; rebuilt when
+        # params change). Populated lazily by prime().
+        self._words: list[str] | None = None      # corpus keys (already _norm'd)
+        self._widx: dict[str, int] = {}           # word -> row in _E_table
+        self._vecs: np.ndarray | None = None      # (N, D_IN) frozen nomic matrix
+        self._E_table: np.ndarray | None = None   # (N, D_EMB) = ReLU(vecs @ W_E + b_E)
+        self.prime()
 
     # ---- params ----
     def set_params(self, params: EmbeddingParams) -> None:
         self.params = params
         self._enc_cache.clear()
+        self.prime()
 
     def set_genome(self, vec: np.ndarray) -> None:
         self.set_params(EmbeddingParams.from_flat(vec))
+
+    # ---- precompute (once per generation per flask) ----
+    def prime(self) -> None:
+        """Precompute the E: 512→11 projection over the WHOLE corpus under the
+        current W_E/b_E. Because the embedder is shared across a flask and fixed
+        within a generation, this runs once per generation per flask; every
+        worm's per-tick smell-pass then reads the table instead of re-running
+        the 512→11 matmul per word. The frozen nomic matrix + index are built
+        once and reused across primings."""
+        if not self._nomic:
+            self._words = []
+            self._widx = {}
+            self._vecs = np.zeros((0, D_IN), dtype=np.float64)
+            self._E_table = np.zeros((0, D_EMB), dtype=np.float64)
+            return
+        if self._words is None:
+            self._words = list(self._nomic.keys())
+            self._widx = {w: i for i, w in enumerate(self._words)}
+            self._vecs = np.stack([self._nomic[w] for w in self._words])
+        self._E_table = _relu(self._vecs @ self.params.W_E + self.params.b_E)
 
     # ---- lookups ----
     def vec512(self, word: str) -> np.ndarray | None:
@@ -201,6 +236,68 @@ class EmbeddingModel:
         pos_out = _sigmoid(pos_hid @ p.W_P2 + p.b_P2)                 # (1,)
 
         return np.concatenate([emb_out, pos_out])                     # (12,)
+
+    # ---- vectorized forward pass (the hot path) ----
+    def embed_batch(
+        self, current_words: list[str], history_words: list[str]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Embed MANY current words that share ONE eaten-word history, in a
+        couple of matmuls. This is the per-worm, per-brain-tick smell pass:
+        every in-range on-screen word is a `current_word`; they all see the
+        same worm history, so the history summary is computed exactly once.
+
+        Returns (out, valid):
+          out   : (K, 12) float64 — the chemosensory drive per current word.
+          valid : (K,) bool       — False where the word is OOV (out rows are
+                                     zeroed). Callers skip invalid rows, exactly
+                                     as `embed()` returns None for an OOV word.
+
+        Numerically identical to calling `embed()` per word (verified to 1e-9).
+        """
+        K = len(current_words)
+        if K == 0:
+            return np.zeros((0, D_EMB + 1), dtype=np.float64), np.zeros(0, dtype=bool)
+        p = self.params
+        E = self._E_table
+        if E is None:
+            self.prime()
+            E = self._E_table
+
+        ci = np.fromiter((self._widx.get(_norm(w), -1) for w in current_words),
+                         dtype=np.int64, count=K)
+        valid = ci >= 0
+        safe = np.where(valid, ci, 0)
+
+        # --- history (computed ONCE for all K words) ---
+        hist = (list(history_words) + [None] * HISTORY)[:HISTORY]
+        # History E-encodings: table row by _norm, zeros on OOV/pad — matches
+        # `_encode()` (which returns zeros for OOV / empty).
+        hidx = [self._widx.get(_norm(w), -1) if w else -1 for w in hist]
+        he = np.concatenate([E[h] if h >= 0 else np.zeros(D_EMB) for h in hidx])  # (55,)
+        hist_summary = _relu(he @ p.W_Hh + p.b_Hh)                                # (11,)
+        # History POS one-hots: tag the ACTUAL word (matches embed(); zeros only
+        # for empty pad slots). Cheap — HISTORY cached tag lookups.
+        hpos = np.concatenate([
+            _onehot_pos(pos_scorers.tag_word(w)) if w else np.zeros(N_TAGS)
+            for w in hist
+        ])                                                                        # (60,)
+
+        # --- embedding branch (batched) ---
+        cur_emb = np.where(valid[:, None], E[safe], 0.0)                          # (K,11)
+        fuse = np.concatenate(
+            [cur_emb, np.broadcast_to(hist_summary, (K, D_EMB))], axis=1)         # (K,22)
+        emb_out = _sigmoid(fuse @ p.W_Hf + p.b_Hf)                                # (K,11)
+
+        # --- POS branch (batched) ---
+        cur_pos = np.stack([_onehot_pos(pos_scorers.tag_word(w)) for w in current_words])  # (K,12)
+        pos_in = np.concatenate(
+            [cur_pos, np.broadcast_to(hpos, (K, hpos.shape[0]))], axis=1)         # (K,72)
+        pos_hid = _relu(pos_in @ p.W_P1 + p.b_P1)                                 # (K,16)
+        pos_out = _sigmoid(pos_hid @ p.W_P2 + p.b_P2)                             # (K,1)
+
+        out = np.concatenate([emb_out, pos_out], axis=1)                          # (K,12)
+        out[~valid] = 0.0
+        return out, valid
 
 
 # --- frozen nomic table -----------------------------------------------------

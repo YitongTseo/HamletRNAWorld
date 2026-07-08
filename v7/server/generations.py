@@ -38,7 +38,7 @@ from server.evolution import (
 )
 from server.gardener import maybe_write_log
 from server.judge import judge_poem, ScoredWindow
-from server.orchestrator import Worm, shared_manager
+from server.orchestrator import Worm
 from server.poem_clean import clean as clean_punctuation
 
 V6_ROOT = Path(__file__).resolve().parent.parent
@@ -506,6 +506,7 @@ def run_experiment_rollover(
         eaten = _read_eaten_tokens(w)
         eaten_by_worm[w.name] = eaten
         fitness_by_worm[w.name] = experiment.scorer(eaten) if experiment.scorer else 0.0
+        w.last_fitness = fitness_by_worm[w.name]  # v7.1: scores the flask embedder
         pos_by_worm[w.name] = pos_breakdown(eaten)
         longest_chain_by_worm[w.name] = longest_valid_chain(eaten)
         progress.worms_done += 1
@@ -654,22 +655,9 @@ def run_experiment_rollover(
         except Exception:
             print("[EXPERIMENT] gardener raised; continuing", flush=True)
 
-    # --- v7: co-evolve the SHARED embedding net from this flask's worms ---
-    # Single-flask pooled NES (no cross-process coordinator here — sanity
-    # experiments each own their embedding lineage). Writes each worm's new
-    # embedding.json so the subsequent _respawn_flask picks up the fresh genome.
-    try:
-        mgr = shared_manager()
-        eps_list = [w.embedding_eps for w in worms if w.embedding_eps is not None]
-        emb_scores = [fitness_by_worm[w.name] for w in worms if w.embedding_eps is not None]
-        if eps_list:
-            emb_state = mgr.update(eps_list, emb_scores)
-            for w in worms:
-                mgr.respawn_worm(w.poem_path.parent, w.seed, emb_state)
-            print(f"[EXPERIMENT] shared-embedding gen={emb_state.generation} "
-                  f"σ={emb_state.sigma:.3f} mean={emb_state.prev_fresh_mean}", flush=True)
-    except Exception as e:
-        print(f"[EXPERIMENT] shared-embedding update failed ({e}); continuing", flush=True)
+    # v7.1: the flask's shared embedder is stepped by the caller
+    # (app._run_experiment_rollover_sync) after this returns, using each worm's
+    # last_fitness set above — see server/flask_embedder.py.
 
     # --- Persist state (no git commit) ---
     state.generation = new_generation

@@ -76,6 +76,44 @@ def test_set_genome_clears_cache():
     assert not np.allclose(before, after)
 
 
+def test_prime_builds_table():
+    words = ["the", "king", "queen", "sword", "ghost"]
+    m = EmbeddingModel(EmbeddingParams.random_init(0), _fake_nomic(words))
+    assert m._E_table is not None
+    assert m._E_table.shape == (len(words), D_EMB)
+    # table row == ReLU(vec @ W_E + b_E), i.e. == _encode()
+    for w in words:
+        assert np.allclose(m._E_table[m._widx[w]], m._encode(w))
+
+
+def test_embed_batch_matches_per_word():
+    words = [f"w{i}" for i in range(30)]
+    m = EmbeddingModel(EmbeddingParams.random_init(2), _fake_nomic(words))
+    cur = words[:12] + ["OOV_not_a_word"]          # include an OOV current word
+    for hist in ([], ["w3"], ["w3", "w7", "OOVhist", "w1", "w9"]):
+        out, valid = m.embed_batch(cur, hist)
+        assert out.shape == (len(cur), D_EMB + 1)
+        for i, w in enumerate(cur):
+            single = m.embed(w, hist)
+            if single is None:
+                assert not valid[i]
+            else:
+                assert valid[i]
+                assert np.allclose(out[i], single, atol=1e-9)
+
+
+def test_embed_batch_empty_and_rebuild():
+    words = ["alpha", "beta", "gamma"]
+    m = EmbeddingModel(EmbeddingParams.random_init(5), _fake_nomic(words))
+    out, valid = m.embed_batch([], ["alpha"])
+    assert out.shape == (0, D_EMB + 1) and valid.shape == (0,)
+    # after a genome swap, the batched path reflects the new table
+    a, _ = m.embed_batch(["alpha"], [])
+    m.set_genome(EmbeddingParams.random_init(6).flatten())
+    b, _ = m.embed_batch(["alpha"], [])
+    assert not np.allclose(a, b)
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

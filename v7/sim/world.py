@@ -80,9 +80,11 @@ class World:
     stretch-feedback fix; not used by v6 by default)."""
     seed: int = 0
     weights: dict | None = None
-    # v7: this worm's own perturbation of the shared embedding genome. None →
-    # use the process-wide default model (used by tests / legacy paths).
-    embedding_genome: list | None = None
+    # v7.1: the SHARED, per-flask embedding model. All worms in a flask pass the
+    # SAME EmbeddingModel instance here, so its precomputed E-table is built once
+    # per generation and reused across the whole flask. None → the process-wide
+    # default model (used by tests / legacy / single-worm paths).
+    embedding_model: "embedding.EmbeddingModel | None" = None
     body_kind: str = "ik"
     brain: Connectome = field(init=False)
     worm: WormBody | MuscleBody = field(init=False)
@@ -110,14 +112,10 @@ class World:
     def __post_init__(self):
         self.rng = random.Random(self.seed)
         self.brain = Connectome(weights=self.weights, rng=self.rng)
-        # v7 chemosensory embedding model: this worm's own perturbation of the
-        # shared genome if given, else the process-wide default (random-init).
-        if self.embedding_genome is not None:
-            import numpy as _np
-            self.embedding_model = embedding.EmbeddingModel(
-                embedding.EmbeddingParams.from_flat(_np.asarray(self.embedding_genome, dtype=float))
-            )
-        else:
+        # v7.1 chemosensory embedding: the flask's SHARED model if given, else
+        # the process-wide default (random-init). Shared across the flask so the
+        # precomputed E-table is built once per generation, not per worm.
+        if self.embedding_model is None:
             self.embedding_model = embedding.get_model()
         if self.body_kind == "muscle":
             self.worm = MuscleBody(
@@ -150,25 +148,42 @@ class World:
     def _compute_smells(self) -> None:
         """For each in-range word, compute the 12-d PCA-driven chemosensory
         signal it produces in the worm's nose. Distance fades intensity;
-        direction biases L vs R within each PC's neuron pair."""
+        direction biases L vs R within each PC's neuron pair.
+
+        v7.1: distance-filter FIRST (cheap), then embed every in-range word in
+        ONE batched forward pass sharing this worm's eaten history — instead of
+        an embed() call per word that re-derived the history summary each time.
+        Order-preserving (iterates self.food), so identical to the per-word path
+        (verified to 1e-9) and bit-for-bit deterministic."""
         wx = self.worm.target_x
         wy = self.worm.target_y
         self.sensed_smells.clear()
 
+        # 1) collect in-range edible words (order = self.food order).
+        in_range = []  # (Food, dx, dy, d)
         for f in self.food:
             if not f.word or not f.edible:
                 continue
-            chemo = self.embedding_model.embed(f.word, self._recent_eaten)
-            if chemo is None:
-                # Word isn't in the embedded corpus (e.g. punctuation, OOV).
-                # Skip — no chemosensory signal.
-                continue
-            pca = [float(v) for v in chemo]  # 12-dim in [0,1] (11 emb + 1 POS)
             dx = f.x - wx
             dy = f.y - wy
             d = math.hypot(dx, dy)
             if d > FOOD_SENSE_RADIUS:
                 continue
+            in_range.append((f, dx, dy, d))
+        if not in_range:
+            return
+
+        # 2) ONE batched embedding pass for the whole in-range set.
+        words = [t[0].word for t in in_range]
+        chemo_batch, valid = self.embedding_model.embed_batch(words, self._recent_eaten)
+
+        # 3) per-word geometry → neuron activation.
+        for row, ok, (f, dx, dy, d) in zip(chemo_batch, valid, in_range):
+            if not ok:
+                # Word isn't in the embedded corpus (e.g. punctuation, OOV).
+                # Skip — no chemosensory signal (matches embed() -> None).
+                continue
+            pca = [float(v) for v in row]  # 12-dim in [0,1] (11 emb + 1 POS)
 
             key = f"{f.line_id}_{f.word_idx}"
             distance_factor = 1.0 - (d / FOOD_SENSE_RADIUS)
