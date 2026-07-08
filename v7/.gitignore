@@ -1,0 +1,14 @@
+# data/generations/ is the archival record and IS tracked.
+# data/flasks/ and data/worms/ are running state (live poems + current
+# weights) and stay ignored — see also the repo-root .gitignore.
+data/flasks/
+data/worms/
+# v7 running state: per-process poetry data trees, per-experiment sanity trees,
+# and the shared embedding-net dirs (all live state / GIT_COMMIT=0).
+data/poetry-*/
+data/experiments/
+data/poetry_shared/
+data/shared/
+__pycache__/
+*.pyc
+.cloudflared/

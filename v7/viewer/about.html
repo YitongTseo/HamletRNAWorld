@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=2"></script>
+    <title>wormlet · about</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: var(--bg, #000); color: var(--fg, #cfc); }
+      body { font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+             max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
+      header { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 6px; border-bottom: 1px solid var(--line, rgba(150, 230, 180, 0.15)); margin-bottom: 18px; }
+      header h1 { margin: 0; font-size: 18px; color: var(--accent, #6f9); font-family: ui-monospace, monospace; font-weight: 600; }
+      header nav a { color: var(--accent, #6f9); text-decoration: none; padding: 4px 8px; margin-left: 4px; font-family: ui-monospace, monospace; font-size: 13px; }
+      header nav a:hover { background: rgba(100, 200, 255, 0.15); }
+      h2 { color: var(--fg, #afa); font-family: ui-monospace, monospace; font-size: 15px; margin: 28px 0 6px; border-left: 3px solid var(--accent, #6f9); padding-left: 8px; }
+      h3 { color: var(--accent, #9ec); font-family: ui-monospace, monospace; font-size: 13px; margin: 18px 0 4px; }
+      p { margin: 6px 0 12px; opacity: 0.88; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel, rgba(20, 40, 30, 0.5)); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+      pre { padding: 8px 10px; line-height: 1.4; overflow-x: auto; }
+      a { color: var(--accent, #6cf); }
+      ul { padding-left: 22px; }
+      li { margin: 4px 0; opacity: 0.9; }
+      .lead { color: var(--fg, #cfc); opacity: 0.95; font-size: 15px; border-left: 3px solid var(--accent, rgba(100,200,255,0.4)); padding-left: 12px; margin: 14px 0 20px; }
+      .credit { opacity: 0.55; font-size: 11px; font-family: ui-monospace, monospace; margin-top: 40px; padding-top: 10px; border-top: 1px solid rgba(150, 230, 180, 0.15); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>wormlet · about</h1>
+      <nav>
+        <a href="/">worms</a>
+        <a href="/poems">poems</a>
+      </nav>
+      <div id="experiment-switcher"></div>
+    </header>
+    <script src="/static/experiment_dropdown.js?v=1"></script>
+
+    <div class="lead">
+      Six independent <em>C. elegans</em> brains, each one a faithful port of
+      the worm's actual 302-neuron connectome, each in its own private world,
+      each eating Shakespeare. What they eat becomes what they write.
+    </div>
+
+    <h2>What you are looking at</h2>
+    <p>
+      Every worm is a separate simulation of <a href="https://en.wikipedia.org/wiki/Caenorhabditis_elegans" target="_blank" rel="noopener"><em>C. elegans</em></a>,
+      one of the few animals whose entire nervous system has been mapped, neuron by neuron, synapse by synapse.
+      We use that real connectome — every cell, every connection — and we drop
+      each worm into its own private copy of <em>Hamlet</em>. Words drift across
+      the worm's world; the worm smells them, steers toward them, eats them.
+      The sequence of words a worm eats is its <em>poem</em>.
+    </p>
+    <p>
+      Each worm runs continuously, independently. Nobody has to watch — they
+      keep writing whether you're here or not.
+    </p>
+
+    <h2>How a worm reads a word</h2>
+    <p>
+      Real <em>C. elegans</em> sense their chemical environment through 12
+      pairs of amphid sensilla in the nose — <code>ASE</code>, <code>AWA</code>,
+      <code>AWB</code>, <code>AWC</code>, <code>ASH</code>, <code>ASI</code>,
+      <code>ASJ</code>, <code>ASK</code>, <code>ASG</code>, <code>ADL</code>,
+      <code>ADF</code>, <code>AFD</code> — left and right halves of each pair
+      allow the worm to tell <em>which side</em> a smell is coming from. That
+      bilateral asymmetry is the basis of all its navigation.
+    </p>
+    <p>
+      To translate Hamlet's vocabulary into something a worm's neurons can
+      taste, we:
+    </p>
+    <ol>
+      <li>Pull every unique word in the play (~4,500 tokens).</li>
+      <li>Embed each one with <code>nomic-ai/nomic-embed-text-v1.5</code>
+        using its trained <code>clustering:</code> prefix.</li>
+      <li>Run PCA on the resulting (4,500 × 768) matrix, keeping <strong>12
+        principal components</strong> — one per amphid neuron pair.</li>
+      <li>Min-max shift each component to <code>[0, 1]</code> so it can drive
+        excitatory firing.</li>
+    </ol>
+    <p>
+      A word's PC<sub>i</sub> value becomes the firing strength of the worm's
+      i-th amphid pair. The <em>direction</em> the word is in (left of the
+      worm, right of it, dead ahead) scales the L vs R member of each pair
+      asymmetrically. Same word, different position, different steering
+      signal.
+    </p>
+
+    <h2>Memory: an unbounded decaying afterglow</h2>
+    <p>
+      Once a worm eats a word, that word's chemosensory pattern doesn't just
+      vanish — it persists, decaying, the way a smell lingers in a real
+      animal's olfactory system. Every eaten word stays in a queue and
+      contributes to the worm's chemosensory neurons with weight
+      <code>exp(−Δt / τ)</code>, where Δt is brain-ticks-since-eating and
+      τ = 12 brain ticks (~6 seconds). Entries below 1% contribution evict
+      themselves. The afterglow contributes equally to L and R (no spatial
+      direction once you've already swallowed something).
+    </p>
+    <p>
+      That's deliberately within the range of biological short-term
+      chemosensory memory for <em>C. elegans</em> (seconds to ~30 seconds,
+      not minutes or hours). The result: a worm's current behavior is
+      shaped not just by what it's smelling now, but by what it has eaten
+      recently. Trail-of-thought, in chemistry.
+    </p>
+
+    <h2>The connectome itself</h2>
+    <p>
+      The connectome graph is a faithful port of the GoPiGo / Busbice
+      <em>C. elegans</em> network — the 302 neurons of the real animal, with
+      their actual synaptic weights. Integrate-and-fire dynamics: each neuron
+      accumulates incoming signal, fires when it crosses a threshold, sends
+      its outgoing weights forward.
+    </p>
+    <p>
+      The motor neurons drive 34 muscles (17 dorsal, 17 ventral) which steer
+      an IK chain head. The brain ticks at 2 Hz, the body at 60 Hz, both off
+      a deterministic tick counter so the trajectory is exactly reproducible
+      given <code>(weights, seed)</code>.
+    </p>
+
+    <h2>Determinism, persistence, save points</h2>
+    <p>
+      Each worm has:
+    </p>
+    <ul>
+      <li>A unique random seed that initializes its connectome activity.</li>
+      <li>Its own copy of the connectome weights file (frozen in this
+        version; the data layout already supports per-worm mutation in
+        future versions).</li>
+      <li>A poem file (<code>poem.txt</code>) that appends every eaten word
+        as it eats it.</li>
+    </ul>
+    <p>
+      Given the same seed + weights, two runs produce <em>identical</em>
+      eaten-word sequences. The sim has no wallclock dependencies internally;
+      it advances by integer body-tick counts. A determinism test in the
+      repo enforces this.
+    </p>
+
+    <h2>Why parallel worms?</h2>
+    <p>
+      A single worm running alone produces a single poem. Six worms produce
+      six divergent readings of the same play — same connectome graph, same
+      Hamlet, but different random initial states. The variation between
+      poems is the variation in how identical brains, fed identical text,
+      attend differently. (Think of it as a very small population of
+      readers.)
+    </p>
+
+    <h2>Hosting</h2>
+    <p>
+      The server is a single <code>uvicorn</code> + FastAPI process running
+      six worms on one shared loop at 60 Hz. Each WebSocket subscriber gets
+      one of three feeds: a 10 Hz <em>overview</em> stream (for the gallery
+      grid), a 60 Hz <em>focus</em> stream (only when you've zoomed into a
+      worm), and an <em>event</em> stream that fires once per eaten word
+      (for the poems page). A given worm's full state is only serialized
+      when at least one viewer has clicked into it.
+    </p>
+    <p>
+      The public domain (<a href="https://wordswordsworms.org">wordswordsworms.org</a>)
+      is served through a Cloudflare Tunnel. No incoming firewall ports, no
+      public IP, free TLS. Both <code>uvicorn</code> and <code>cloudflared</code>
+      run as systemd services and survive reboots.
+    </p>
+
+    <h2>What this is not</h2>
+    <ul>
+      <li>Not a research tool. It's an art piece that happens to use real
+        neuroscience as its substrate.</li>
+      <li>Not learning. The connectome weights don't change. Worms drift
+        only via their different initial neural-firing states.</li>
+      <li>Not a chatbot, an LLM, or a generative model in the usual sense.
+        The "writing" is the worm's wandering trajectory through a field of
+        Shakespeare, intersected with whatever its brain happens to do.</li>
+    </ul>
+
+    <h2>Source</h2>
+    <p>
+      Built on a private fork of an existing C. elegans visualization. If
+      you'd like to peek under the hood, get in touch via
+      <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">ternalbiota.com</a>.
+    </p>
+
+    <div class="credit">
+      Created by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong Tseo</a>.
+      Hamlet text via <a href="https://www.gutenberg.org/cache/epub/1524/pg1524.txt" target="_blank" rel="noopener">Project Gutenberg</a> (public domain).
+      Embedding model: <a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener">nomic-ai/nomic-embed-text-v1.5</a>.
+      Connectome data via the GoPiGo / Busbice / Garrett / Churchill <em>C. elegans</em> port.
+    </div>
+  </body>
+</html>

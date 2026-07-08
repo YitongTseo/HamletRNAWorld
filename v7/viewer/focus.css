@@ -1,0 +1,180 @@
+      html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+      #c { display: block; width: 100vw; height: 100vh; }
+      #hud {
+        position: fixed; top: 8px; left: 10px;
+        max-width: calc(100vw - 240px);
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #6f6; opacity: 0.7; pointer-events: none;
+        text-shadow: 0 0 4px #0f0a;
+        z-index: 12;
+      }
+      #netpanel {
+        position: fixed; bottom: 56px; right: 10px;
+        width: 500px; height: 360px;
+        background: rgba(0, 10, 0, 0.75);
+        border: 1px solid rgba(68, 255, 119, 0.3);
+        z-index: 10;
+      }
+      #netpanel canvas { display: block; width: 100%; height: 100%; }
+      #chemosensoryPanel {
+        position: fixed; bottom: 8px; left: 10px;
+        width: 320px; max-height: 600px;
+        background: rgba(0, 10, 10, 0.85);
+        border: 1px solid rgba(100, 200, 255, 0.4);
+        color: #6f9; font: 11px ui-monospace, monospace;
+        padding: 8px; overflow-y: auto;
+        pointer-events: none; z-index: 10;
+        line-height: 1.4;
+      }
+      #chemosensoryPanel .neuron { margin: 4px 0; padding: 3px 4px; border-radius: 2px; font-weight: bold; }
+      #chemosensoryPanel .word { margin: 2px 0; padding: 2px 4px; font-size: 10px; }
+      #textcanvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 5; }
+      #radarpanel {
+        position: fixed;
+        top: 60px;
+        right: 10px;
+        width: 460px;
+        height: 280px;
+        background: rgba(8, 12, 18, 0.9);
+        border: 1px solid rgba(100, 200, 255, 0.3);
+        z-index: 11;
+        display: none;
+      }
+      #radarpanel canvas { display: block; width: 100%; height: 100%; }
+      /* Wrapper for #wormtitle + #nav so a single panelEl toggles both via
+         panel-chrome. The wrap itself ignores pointer events (pointer-events:
+         none) — children opt back in with pointer-events: auto so links and
+         hovers still work even when the wrap covers the top strip. */
+      #title-nav-wrap {
+        position: fixed; top: 0; left: 0; right: 0;
+        pointer-events: none;
+        z-index: 20;
+      }
+      #nav {
+        position: fixed; top: 8px; right: 12px;
+        font: 12px ui-monospace, monospace; color: #6f9; opacity: 0.85;
+        z-index: 20;
+        pointer-events: auto;
+      }
+      #nav a { color: #6f9; text-decoration: none; padding: 4px 8px; }
+      #nav a:hover { background: rgba(100, 200, 255, 0.15); }
+      #wormtitle {
+        position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+        font: 14px ui-monospace, monospace; color: #afa; opacity: 0.8;
+        text-shadow: 0 0 4px #0f0a; z-index: 20;
+        pointer-events: auto;
+      }
+      /* Labelled toggle bar (bottom-center): one word-button per popup. */
+      #toggle-bar {
+        position: fixed;
+        bottom: 8px; left: 50%; transform: translateX(-50%);
+        display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+        max-width: calc(100vw - 20px);
+        z-index: 40;
+      }
+      .toggle-btn {
+        background: rgba(0, 0, 0, 0.55);
+        border: 1px solid rgba(102, 255, 153, 0.4);
+        color: #6f9;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        text-shadow: 0 0 4px #0f0a;
+        padding: 7px 13px;
+        border-radius: 4px;
+        cursor: pointer;
+        opacity: 0.8;
+        transition: opacity 0.15s, background 0.15s, color 0.15s, border-color 0.15s;
+      }
+      .toggle-btn:hover { opacity: 1.0; color: #afa; }
+      .toggle-btn.active {
+        background: rgba(102, 255, 153, 0.22);
+        color: #cfc;
+        border-color: rgba(102, 255, 153, 0.85);
+        opacity: 1.0;
+      }
+.panel-close-btn {
+  position: absolute; top: 3px; right: 4px;
+  width: 22px; height: 22px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(200, 220, 255, 0.25);
+  border-radius: 4px;
+  color: #cde;
+  font: 14px ui-monospace, monospace;
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 0;
+  line-height: 20px;
+  z-index: 6;
+  pointer-events: auto;
+}
+.panel-close-btn:hover { opacity: 1.0; color: #fff; }
+
+/* Bottom-right corner grip for resizing draggable panels. */
+.panel-resize-handle {
+  position: absolute; right: 0; bottom: 0;
+  width: 20px; height: 20px;
+  cursor: nwse-resize;
+  z-index: 6;
+  pointer-events: auto;
+  touch-action: none;
+  background: linear-gradient(135deg,
+    transparent 0 55%, rgba(160, 200, 255, 0.55) 55% 63%,
+    transparent 63% 72%, rgba(160, 200, 255, 0.55) 72% 80%, transparent 80%);
+}
+/* The magnifier ships its own circular .magnifier-close button outside the
+   border; suppress the generic chrome close inside the lens to avoid two
+   stacked ✕ buttons in the top-right corner. */
+.magnifier .panel-close-btn { display: none; }
+
+/* On mobile the panels stay free-floating + draggable + resizable; we just
+   shrink them to fit the viewport. aspect-ratio keeps the canvas panels
+   undistorted. No !important, so a user drag/resize (inline styles) wins. */
+#netpanel.panel--mobile { width: 92vw; height: auto; aspect-ratio: 500 / 360; }
+#radarpanel.panel--mobile { width: 92vw; height: auto; aspect-ratio: 460 / 280; }
+#chemosensoryPanel.panel--mobile { width: 90vw; max-height: 58vh; }
+
+@media (max-width: 768px) {
+  /* #9: stack the top-right nav vertically instead of one long overlapping
+     row, and shrink the worm title so it doesn't collide. */
+  #nav {
+    display: flex; flex-direction: column; align-items: flex-end;
+    top: 6px; right: 8px; gap: 1px; font-size: 11px;
+  }
+  #nav a { padding: 2px 6px; }
+  #wormtitle { font-size: 12px; }
+  .toggle-btn { font-size: 11px; padding: 6px 10px; }
+}
+
+.magnifier {
+  position: fixed;
+  border: 2px solid rgba(100, 200, 255, 0.6);
+  border-radius: 50%;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+  /* Translucent dark fill sits between the lens canvas (x-ray + neurons,
+     drawn opaque on top) and the bright green worm body showing through
+     from #c below — so the body reads fainter and the neurons stand out. */
+  background: rgba(0, 13, 7, 0.42);
+  cursor: grab;
+  z-index: 35;
+  touch-action: none;
+}
+.magnifier.dragging { cursor: grabbing; }
+.magnifier canvas {
+  display: block;
+  width: 100%; height: 100%;
+  border-radius: 50%;
+}
+.magnifier-close {
+  position: absolute; top: -8px; right: -8px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: #000;
+  color: #fff;
+  border: 1px solid rgba(100, 200, 255, 0.6);
+  font-size: 14px;
+  line-height: 22px;
+  padding: 0;
+  cursor: pointer;
+  z-index: 36;
+  font-family: ui-monospace, monospace;
+  pointer-events: auto;
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=Wormlet v7 sanity experiment — words (port 8001)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=web
+Group=web
+WorkingDirectory=/home/web/HamletRNAWorld/v7
+EnvironmentFile=-/home/web/.wormlet.env
+Environment=PYTHONUNBUFFERED=1
+Environment=WORMLET_EXPERIMENT_MODE=words
+Environment=WORMLET_DATA_DIR=/home/web/HamletRNAWorld/v7/data/experiments/words
+Environment=WORMLET_N_FLASKS=1
+Environment=WORMLET_N_WORMS_PER_FLASK=16
+ExecStart=/home/web/.venv/bin/python /home/web/HamletRNAWorld/v7/main.py --host 127.0.0.1 --port 8001
+Restart=always
+RestartSec=5
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

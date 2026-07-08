@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Alice",
+    "seed": 1
+  },
+  {
+    "name": "Bob",
+    "seed": 2
+  },
+  {
+    "name": "Carol",
+    "seed": 3
+  },
+  {
+    "name": "Dave",
+    "seed": 4
+  },
+  {
+    "name": "Eve",
+    "seed": 5
+  },
+  {
+    "name": "Frank",
+    "seed": 6
+  }
+]

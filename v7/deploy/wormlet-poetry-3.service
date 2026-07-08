@@ -1,0 +1,30 @@
+[Unit]
+Description=Wormlet v7 poetry — process 3 (flasks 5-6, port 8020)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=web
+Group=web
+WorkingDirectory=/home/web/HamletRNAWorld/v7
+EnvironmentFile=-/home/web/.wormlet.env
+Environment=PYTHONUNBUFFERED=1
+Environment=WORMLET_GENERATIONS_ENABLED=1
+Environment=WORMLET_PASSAGE=full
+Environment=WORMLET_N_FLASKS=2
+Environment=WORMLET_N_WORMS_PER_FLASK=16
+Environment=WORMLET_DATA_DIR=/home/web/HamletRNAWorld/v7/data/poetry-3
+Environment=WORMLET_POETRY_SHARED_DIR=/home/web/HamletRNAWorld/v7/data/poetry_shared
+Environment=WORMLET_POETRY_FLASK_OFFSET=4
+Environment=WORMLET_POETRY_ALL_FLASKS=flask_1,flask_2,flask_3,flask_4,flask_5,flask_6,flask_7,flask_8
+Environment=WORMLET_POETRY_BARRIER_TIMEOUT=1800
+Environment=WORMLET_GIT_COMMIT=0
+ExecStart=/home/web/.venv/bin/python /home/web/HamletRNAWorld/v7/main.py --host 127.0.0.1 --port 8020
+Restart=always
+RestartSec=5
+CPUAffinity=2
+MemoryMax=1700M
+
+[Install]
+WantedBy=multi-user.target
