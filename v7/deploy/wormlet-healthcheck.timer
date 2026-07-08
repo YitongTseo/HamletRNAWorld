@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the wormlet v7 health check every 60s
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=60s
+Unit=wormlet-healthcheck.service
+
+[Install]
+WantedBy=timers.target

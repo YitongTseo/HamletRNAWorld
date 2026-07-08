@@ -1,0 +1,56 @@
+#!/bin/bash
+# Per-process health check for every wormlet v7 service (poetry + sanity).
+# Probes each active service's /healthz and restarts ONLY the one that has been
+# unresponsive for THRESHOLD consecutive checks. Services that aren't active on
+# this host are skipped, so the same script works on wormfarm1 (poetry) and
+# wormfarm2 (sanity experiments).
+#
+# Why /healthz and not / : during an end-of-generation rollover the sim pauses
+# and (for poetry) may block on the cross-process shared-embedding barrier, but
+# the rollover runs in a worker thread so the event loop keeps serving /healthz.
+# So /healthz responsiveness is a true liveness signal that does NOT false-
+# positive during a rollover — no rollover-lock dance needed. THRESHOLD gives a
+# wide margin on top of that.
+set -u
+
+# service:port for every wormlet process. Add rows here if you add processes.
+CHECKS="
+wormlet-poetry-1:8000
+wormlet-poetry-2:8010
+wormlet-poetry-3:8020
+wormlet-poetry-4:8030
+wormlet-words:8001
+wormlet-nouns:8002
+wormlet-semantic:8003
+wormlet-pos-chain:8004
+"
+
+THRESHOLD=15      # consecutive failures (× 60s interval ≈ 15 min sustained) before restart
+TIMEOUT=10        # per-probe curl timeout; brief blips don't count as a failure
+STATEDIR=/run/wormlet-healthcheck
+mkdir -p "$STATEDIR"
+
+for row in $CHECKS; do
+    svc="${row%%:*}"
+    port="${row##*:}"
+    # Only check services that are actually running on this host.
+    systemctl is-active --quiet "$svc" || continue
+    state="$STATEDIR/$svc"
+    if curl -sf --max-time "$TIMEOUT" -o /dev/null "http://127.0.0.1:$port/healthz"; then
+        if [ -f "$state" ]; then
+            echo "$svc: ok (recovered after $(cat "$state" 2>/dev/null || echo 0) failure(s))"
+            rm -f "$state"
+        else
+            echo "$svc: ok"
+        fi
+    else
+        fails=$(( $(cat "$state" 2>/dev/null || echo 0) + 1 ))
+        echo "$fails" > "$state"
+        echo "$svc: healthz FAIL ${fails}/${THRESHOLD} on :${port}"
+        if [ "$fails" -ge "$THRESHOLD" ]; then
+            echo "$svc: threshold reached — restarting"
+            /bin/systemctl restart "$svc"
+            rm -f "$state"
+        fi
+    fi
+done

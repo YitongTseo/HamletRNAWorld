@@ -255,14 +255,17 @@ class World:
 
         # Brain at 2 Hz (every BRAIN_TICK_PERIOD body ticks).
         if self.tick_count % BRAIN_TICK_PERIOD == 0:
+            # v7: chemosensation is expensive now (a learned embedding forward
+            # pass per in-range word), and the brain only reads it here at 2 Hz.
+            # So compute smells ONLY on brain ticks instead of every body tick —
+            # 30× fewer embedding passes, which is the dominant per-tick cost.
+            self._compute_smells()
             self.brain.tick(
                 hunger=self.stim_hunger,
                 nose_touch=self.stim_nose_touch,
                 food_sense=self.stim_food_sense,
             )
-            # Weighted chemosensory pulse: combine in-range smells with the
-            # decaying residual from previously eaten words, then push the
-            # rich PC-driven signal into the chemosensory neurons.
+            # Push the rich per-neuron chemosensory signal into the brain.
             chemo = self._chemo_pulse()
             if chemo:
                 self.brain.stimulate_weighted(chemo)
@@ -276,7 +279,6 @@ class World:
         if isinstance(self.worm, MuscleBody):
             self.worm.consume(self.brain)
         self.worm.step()
-        self._compute_smells()
         self._check_food()
         self._check_walls()
 

@@ -1052,6 +1052,11 @@ async def api_experiment():
     None when the legacy / prod path is active (the shared JS still
     renders the switcher; prod just appears highlighted)."""
     cur = EXPERIMENT
+    if cur is None:
+        # Legacy poetry process: which of the 4 poetry viewers am I? Set via
+        # WORMLET_VIEW_MODE in the unit (poetry / poetry_2 / poetry_3 / poetry_4).
+        view_mode = os.environ.get("WORMLET_VIEW_MODE", "poetry")
+        cur = experiments.by_mode(view_mode)
     return JSONResponse({
         "current": cur.mode if cur else "poetry",
         "current_label": cur.label if cur else "Coherent poetry (prod)",

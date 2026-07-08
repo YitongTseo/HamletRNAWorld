@@ -1,0 +1,9 @@
+[Unit]
+Description=Wormlet v7 per-process health check (poetry + sanity)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wormlet-healthcheck
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wormlet-healthcheck

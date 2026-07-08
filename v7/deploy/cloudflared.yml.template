@@ -1,33 +1,47 @@
-# Cloudflared tunnel config for the 4 sanity-check wormlet experiments.
+# Cloudflared tunnel config for the wormlet v7 processes.
 #
 # Place at: /etc/cloudflared/config.yml (or ~/.cloudflared/config.yml)
 #
 # Before this works you need a tunnel:
 #   bin/setup_cloudflared.sh
-# which interactively walks you through:
+# which walks you through:
 #   1. cloudflared tunnel login            (browser auth, one-time)
 #   2. cloudflared tunnel create wormlet   (creates the tunnel UUID)
-#   3. cloudflared tunnel route dns wormlet words.wordswordsworms.org
-#      (and the other three subdomains)
-# Then it fills in <TUNNEL_UUID> below and copies this file into place.
+#   3. cloudflared tunnel route dns wormlet <hostname>   for each hostname below
+# Then install as a systemd service: sudo cloudflared service install
 #
-# Once installed, run as a systemd service:
-#   sudo cloudflared service install
+# Each ingress rule maps a hostname to a local port. Cloudflared sits in front;
+# the wormlet processes only listen on 127.0.0.1.
 #
-# Each ingress rule maps a hostname to a local port. Cloudflared sits in
-# front; the 4 wormlet processes never need to be reachable from the
-# public internet — they only listen on 127.0.0.1.
+# TOPOLOGY (2 servers, same repo):
+#   wormfarm1 — the 8-flask poetry run: 4 processes, 2 flasks each, ports
+#               8000/8010/8020/8030 → www + poetry-2/3/4. (routes below)
+#   wormfarm2 — the 4 sanity experiments: ports 8001-8004 →
+#               words / nouns / pos-chain / semantic. (routes below)
+# Put the relevant subset on each server's tunnel.
 
 tunnel: <TUNNEL_UUID>
 credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
 
 ingress:
+  # --- poetry (wormfarm1): 8 flasks across 4 processes ---
+  - hostname: wordswordsworms.org
+    service: http://127.0.0.1:8000        # poetry flasks 1-2
+  - hostname: www.wordswordsworms.org
+    service: http://127.0.0.1:8000
+  - hostname: poetry-2.wordswordsworms.org
+    service: http://127.0.0.1:8010        # poetry flasks 3-4
+  - hostname: poetry-3.wordswordsworms.org
+    service: http://127.0.0.1:8020        # poetry flasks 5-6
+  - hostname: poetry-4.wordswordsworms.org
+    service: http://127.0.0.1:8030        # poetry flasks 7-8
+  # --- sanity experiments (wormfarm2) ---
   - hostname: words.wordswordsworms.org
     service: http://127.0.0.1:8001
   - hostname: nouns.wordswordsworms.org
     service: http://127.0.0.1:8002
-  - hostname: adj-noun.wordswordsworms.org
-    service: http://127.0.0.1:8003
+  - hostname: semantic.wordswordsworms.org
+    service: http://127.0.0.1:8003        # replaced adj-noun
   - hostname: pos-chain.wordswordsworms.org
     service: http://127.0.0.1:8004
   # Required final rule: anything unmatched gets a 404.

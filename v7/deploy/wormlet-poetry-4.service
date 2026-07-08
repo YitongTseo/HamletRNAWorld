@@ -11,9 +11,10 @@ WorkingDirectory=/home/web/HamletRNAWorld/v7
 EnvironmentFile=-/home/web/.wormlet.env
 Environment=PYTHONUNBUFFERED=1
 Environment=WORMLET_GENERATIONS_ENABLED=1
+Environment=WORMLET_VIEW_MODE=poetry_4
 Environment=WORMLET_PASSAGE=full
 Environment=WORMLET_N_FLASKS=2
-Environment=WORMLET_N_WORMS_PER_FLASK=16
+Environment=WORMLET_N_WORMS_PER_FLASK=12
 Environment=WORMLET_DATA_DIR=/home/web/HamletRNAWorld/v7/data/poetry-4
 Environment=WORMLET_POETRY_SHARED_DIR=/home/web/HamletRNAWorld/v7/data/poetry_shared
 Environment=WORMLET_POETRY_FLASK_OFFSET=6
