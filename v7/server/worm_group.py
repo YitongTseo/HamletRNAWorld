@@ -38,6 +38,9 @@ class WormGroup:
     # and the single shared EmbeddingModel all its worms sense through.
     embedder_state: FlaskEmbedderState | None = None
     embedding_model: "embedding.EmbeddingModel | None" = None
+    # v7.1: batched IK body — relaxes all this flask's chains in one numpy pass.
+    # None => worms relax their own chains (correct, just unbatched).
+    body: object | None = None
     # Wall-clock time the most recent corpus exhaustion was first detected;
     # used by sim_loop to enforce a brief grace period before firing rollover.
     corpus_exhausted_at: float | None = None

@@ -52,6 +52,7 @@ from server.orchestrator import (
 )
 from server.worm_group import WormGroup
 from server import flask_embedder as flask_emb
+from sim.flask_body import build_flask_body
 from server import generations as gens_mod
 from server.generations import (
     GenerationProgress, GenerationState, run_generation_rollover,
@@ -444,6 +445,9 @@ def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
         # its generation number is stale); drop it so the new generation can't
         # accidentally resume from it.
         _delete_checkpoint(w)
+    # v7.1: the Worlds (and their IK chains) were just rebuilt, so re-adopt them
+    # into a fresh batched body for the new generation.
+    flask.body = build_flask_body(flask.worms)
     flask.corpus_exhausted_at = None
 
 
@@ -747,6 +751,14 @@ async def sim_loop():
                 except Exception:
                     LOG.exception("worm %s/%s tick failed; continuing", flask_name, worm.name)
 
+            # v7.1: batched IK relaxation — one numpy pass per flask, after all
+            # its worms have snapped their heads this tick. Cosmetic-only (the
+            # dynamics use the head point, not the chain), so this cannot change
+            # the eaten sequence; it just builds the viewer midlines fast.
+            for flask in FLASKS:
+                if flask.body is not None:
+                    flask.body.relax()
+
             _LAST_TICK_AT = time.monotonic()
 
             # Focus broadcasts every tick for any (flask, worm) with subscribers.
@@ -922,6 +934,7 @@ async def lifespan(app: FastAPI):
                 state=state,
                 embedder_state=emb_state,
                 embedding_model=emb_model,
+                body=build_flask_body(worms),   # v7.1: batched IK body
             ))
             WORMS.extend(worms)
             for w in worms:

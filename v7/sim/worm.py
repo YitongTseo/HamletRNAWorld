@@ -73,6 +73,19 @@ class IKChain:
         self.tx = np.array(tx, dtype=np.float64)
         self.ty = np.array(ty, dtype=np.float64)
 
+    def set_head(self, target_x: float, target_y: float) -> None:
+        """Snap only the head to the target, deferring the relaxation. Used by
+        the batched (per-flask) body path, where FlaskBody.relax() propagates +
+        relaxes every worm's chain together in one numpy pass."""
+        self.hx[0] = target_x
+        self.hy[0] = target_y
+
+    def _attach_row(self, hx, hy, tx, ty) -> None:
+        """Repoint this chain at externally-owned row VIEWS (a FlaskBody's
+        (W,N) arrays). In-place writes here and the batched relax then share
+        memory — zero copy."""
+        self.hx, self.hy, self.tx, self.ty = hx, hy, tx, ty
+
     def update(self, target_x: float, target_y: float) -> None:
         hx, hy, tx, ty = self.hx, self.hy, self.tx, self.ty
         # Snap the head to the target, then propagate: each segment's head
@@ -116,6 +129,9 @@ class WormBody:
     target_x: float = 0.0
     target_y: float = 0.0
     rng: random.Random | None = None
+    # v7.1: when True, step() only snaps the head; a FlaskBody relaxes the whole
+    # flask's chains together each tick. Set by FlaskBody.attach().
+    batched: bool = False
     chain: IKChain = field(init=False)
 
     def __post_init__(self):
@@ -146,7 +162,12 @@ class WormBody:
         # coords). We keep that sign and just let the viewer interpret y.
         self.target_x += math.cos(self.facing_dir) * self.speed
         self.target_y -= math.sin(self.facing_dir) * self.speed
-        self.chain.update(self.target_x, self.target_y)
+        # Batched worms defer chain relaxation to their FlaskBody (one numpy
+        # pass for the whole flask); standalone worms relax immediately.
+        if self.batched:
+            self.chain.set_head(self.target_x, self.target_y)
+        else:
+            self.chain.update(self.target_x, self.target_y)
 
     def midline(self) -> list[tuple[float, float]]:
         return self.chain.midline()

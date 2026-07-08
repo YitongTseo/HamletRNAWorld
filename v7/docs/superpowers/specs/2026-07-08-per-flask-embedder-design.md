@@ -103,7 +103,45 @@ flask, `θ±σ·eps`, gradient ∝ `(f₊−f₋)·eps`) — two tables, still c
 - `test_determinism.py`, `test_generations.py`: still green (shared-model path).
 - `test_coordinator.py`: removed (coordinator deleted).
 
+## Performance work (2026-07-08, same day) — read this if you're optimizing
+
+Three stacked optimizations landed after the per-flask embedder. Measured on
+one core, `full` passage. **Every one is bit-identical / determinism-preserving**
+— verified against a captured reference (sha256 of head-trace + midline + eaten
+over multiple seeds), not just "looks fine".
+
+1. **Embedding batch** (`server/embedding.py`, `sim/world.py`). `EmbeddingModel`
+   precomputes the 512→11 `E`-table once per generation per flask (`prime()`);
+   `embed_batch()` does every in-range word for a worm in ~2 matmuls with the
+   history summary computed **once** (it had been recomputed per word).
+   `World._compute_smells` distance-filters first, then one batched call.
+   ~19× on the smell-pass; it's now a tiny slice of the tick.
+
+2. **IK chain vectorized** (`sim/worm.py`). `IKChain` stores per-segment head/
+   tail as parallel numpy arrays; the spring relaxation is ONE vectorized pass
+   (each segment reads/writes only its own head/tail — no neighbour coupling).
+   ~4× on the chain. The exact scalar op order is preserved (incl. the
+   `sqrt(...) or 1e-9` exact-zero replacement and the seeded init draw order),
+   so it's bit-identical.
+
+3. **Batched per-flask body** (`sim/flask_body.py`). **Key insight: the IK chain
+   is COSMETIC** — `_check_food`/`_check_walls`/`_compute_smells` all use the
+   head point (`target_x/y`); only the viewer's `midline()` reads the chain. So
+   a whole flask's chains relax together in ONE numpy pass over `(W, N)` arrays.
+   `FlaskBody` owns those arrays and repoints each `IKChain` at a row VIEW
+   (zero-copy); `WormBody.step()` only snaps the head when `batched` (defers the
+   relax), and `sim_loop` calls `flask.body.relax()` once per flask per tick.
+   Built at startup and rebuilt in `_respawn_flask`. ~4.5× on the chain →
+   ~1.15–1.5× on flask wall-time depending on scene density. Fails safe: no
+   `FlaskBody` ⇒ worms relax their own chains (correct, just unbatched).
+
+Cumulative: per-body-tick ~0.324 → ~0.20 ms standalone; a 16-worm flask runs
+generations meaningfully faster than the old 12-worm setup. **Next lever if ever
+needed:** the per-tick `Food` rebuild in `World.tick` (allocates dataclasses
+every tick) and the connectome brain (`sim/connectome.py`). Lowering the body
+tick-rate would work too but is LOSSY (changes trajectories + viewer smoothness)
+— prefer vectorization.
+
 ## Non-goals
-- The IK body physics (~37 % of per-tick cost) is the next lever but is **out of
-  scope** here.
 - Judge model and connectome topology unchanged.
+- Body tick-rate reduction (lossy) deliberately not used.
