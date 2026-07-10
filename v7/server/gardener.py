@@ -171,8 +171,7 @@ ROUND1_SCHEMA = {
     "properties": {
         "logs_to_read": {
             "type": "array",
-            "items": {"type": "integer", "minimum": 1},
-            "maxItems": MAX_LOGS_PER_ROUND,
+            "items": {"type": "integer"},
             "description": "Generation numbers whose full gardener's log you want to read.",
         },
     },
@@ -212,16 +211,14 @@ ROUND2_SCHEMA = {
     "properties": {
         "logs_to_read": {
             "type": "array",
-            "items": {"type": "integer", "minimum": 1},
-            "maxItems": MAX_LOGS_PER_ROUND,
+            "items": {"type": "integer"},
         },
         "poems_to_read": {
             "type": "array",
-            "maxItems": MAX_POEMS_TO_SAMPLE,
             "items": {
                 "type": "object",
                 "properties": {
-                    "gen": {"type": "integer", "minimum": 1},
+                    "gen": {"type": "integer"},
                     "worm": {"type": "string"},
                 },
                 "required": ["gen", "worm"],
@@ -512,12 +509,11 @@ META_POEM_PICKS_SCHEMA = {
     "properties": {
         "poems_to_read": {
             "type": "array",
-            "maxItems": META_POEMS_PER_ROUND,
             "items": {
                 "type": "object",
                 "properties": {
                     "flask": {"type": "string"},
-                    "gen": {"type": "integer", "minimum": 1},
+                    "gen": {"type": "integer"},
                     "worm": {"type": "string"},
                 },
                 "required": ["flask", "gen", "worm"],

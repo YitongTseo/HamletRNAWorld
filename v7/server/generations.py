@@ -21,6 +21,8 @@ weights.json as the initial parent (cold-start path).
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import subprocess
@@ -162,28 +164,88 @@ def _write_worm_artifacts(
     }))
 
 
-def _git_commit(msg: str, paths: list[Path], keepalive: KEEPALIVE_FN | None) -> bool:
-    """Add + commit + push the listed paths. Returns True on success.
-    Failure is logged but non-fatal — the simulation continues even if
-    the remote is unreachable."""
+# Repo-wide lock so the 4 parallel poetry processes (which share one git repo)
+# serialize their add/commit/rebase/push instead of racing on index.lock and
+# clobbering each other's pushes. Each process only stages its own gen_dir, so
+# there's no file overlap — the lock only guards the git operations.
+_COMMIT_LOCK = V6_ROOT.parent / ".git" / "wormlet-commit.lock"
+_LOCK_ACQUIRE_TIMEOUT = 120.0  # seconds to wait for the lock before giving up
+
+
+@contextlib.contextmanager
+def _repo_commit_lock(keepalive: KEEPALIVE_FN | None):
+    """Bounded, keepalive-friendly exclusive lock over the shared repo.
+    Yields True if the lock was acquired, False if it timed out."""
+    fh = open(_COMMIT_LOCK, "w")
+    deadline = time.monotonic() + _LOCK_ACQUIRE_TIMEOUT
+    acquired = False
     try:
-        rel = [str(p.relative_to(V6_ROOT.parent)) for p in paths]
-        subprocess.run(["git", "-C", str(V6_ROOT.parent), "add", *rel],
-                       check=True, capture_output=True, timeout=30)
-        if keepalive: keepalive()
-        subprocess.run(["git", "-C", str(V6_ROOT.parent), "commit", "-m", msg],
-                       check=True, capture_output=True, timeout=30)
-        if keepalive: keepalive()
-        subprocess.run(["git", "-C", str(V6_ROOT.parent), "push"],
-                       check=True, capture_output=True, timeout=60)
-        return True
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                if keepalive: keepalive()
+                time.sleep(0.5)
+        yield acquired
+    finally:
+        if acquired:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+def _git_commit(msg: str, paths: list[Path], keepalive: KEEPALIVE_FN | None) -> bool:
+    """Add + commit + rebase + push the listed paths. Returns True on success.
+    Failure is logged but non-fatal — the simulation continues even if the
+    remote is unreachable. Serialized across processes via _repo_commit_lock."""
+    repo = str(V6_ROOT.parent)
+
+    def _git(args, timeout):
+        return subprocess.run(["git", "-C", repo, *args],
+                              check=True, capture_output=True, timeout=timeout)
+
+    try:
+        with _repo_commit_lock(keepalive) as got_lock:
+            if not got_lock:
+                print("[GENERATIONS] git commit skipped: could not acquire repo lock "
+                      f"within {_LOCK_ACQUIRE_TIMEOUT:.0f}s", flush=True)
+                return False
+
+            rel = [str(p.relative_to(V6_ROOT.parent)) for p in paths]
+            _git(["add", *rel], 30)
+            if keepalive: keepalive()
+
+            # Nothing staged → nothing to do (idempotent rollover). git diff
+            # --cached exits 1 when there ARE staged changes.
+            if subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"],
+                              capture_output=True, timeout=30).returncode == 0:
+                print("[GENERATIONS] git commit: nothing to commit", flush=True)
+                return False
+
+            _git(["commit", "-m", msg], 30)
+            if keepalive: keepalive()
+            # Land the other processes' (and the 2nd server's) commits under us
+            # before pushing, so the push fast-forwards instead of racing.
+            _git(["pull", "--rebase"], 60)
+            if keepalive: keepalive()
+            _git(["push"], 60)
+            return True
     except subprocess.CalledProcessError as e:
-        # Most likely: nothing to commit (idempotent rollover), or no remote
-        # configured. Either way, don't crash the sim.
+        # Most likely: no remote configured, or a rebase conflict (the 2nd
+        # server co-publishes). Abort any half-finished rebase so the working
+        # tree isn't left wedged for the next rollover. The commit itself, if
+        # it landed, stays in local history — artifacts are safe on disk.
+        subprocess.run(["git", "-C", repo, "rebase", "--abort"],
+                       capture_output=True, timeout=30)
         print(f"[GENERATIONS] git commit failed: {e.stderr.decode(errors='replace')[:500]}",
               flush=True)
         return False
     except subprocess.TimeoutExpired:
+        subprocess.run(["git", "-C", repo, "rebase", "--abort"],
+                       capture_output=True, timeout=30)
         print("[GENERATIONS] git commit timed out", flush=True)
         return False
 
@@ -424,7 +486,10 @@ def run_generation_rollover(
     committed = False
     if os.environ.get("WORMLET_GIT_COMMIT", "1") != "0":
         msg = f"gen {state.generation + 1:04d} [{group}]: best={best_score:.3f} σ={state.sigma:.3f}→{new_sigma:.3f}"
-        committed = _git_commit(msg, [gen_dir], keepalive=keepalive)
+        # Stage the whole flask group, not just gen_dir, so the group-level
+        # embedder.json (embedder weights) and state.json (NES/connectome state)
+        # are pushed alongside this generation's per-worm weights.json snapshots.
+        committed = _git_commit(msg, [GENERATIONS_ROOT / group], keepalive=keepalive)
     else:
         # Local-only mode: artifacts already written to disk, just skip git.
         print(f"[GENERATIONS] WORMLET_GIT_COMMIT=0: skipping commit for gen-{state.generation + 1:04d}",

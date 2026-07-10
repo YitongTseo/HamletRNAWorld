@@ -3,9 +3,13 @@
 # weights) and stay ignored — see also the repo-root .gitignore.
 data/flasks/
 data/worms/
-# v7 running state: per-process poetry data trees, per-experiment sanity trees,
-# and the shared embedding-net dirs (all live state / GIT_COMMIT=0).
-data/poetry-*/
+# v7 per-process poetry trees: everything under each poetry-N/ is live running
+# state EXCEPT generations/, which holds the per-generation snapshots, evolved
+# embedder.json, and NES state.json — that IS the archival record and IS pushed
+# every generation. Ignore all children of poetry-*/, then re-include generations/.
+data/poetry-*/*
+!data/poetry-*/generations/
+# per-experiment sanity trees + shared embedding-net dirs stay ignored.
 data/experiments/
 data/poetry_shared/
 data/shared/
