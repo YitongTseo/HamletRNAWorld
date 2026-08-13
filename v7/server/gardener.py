@@ -27,6 +27,17 @@ from server.judge import ScoredWindow
 V6_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _generations_root() -> Path:
+    """WORMLET_DATA_DIR-aware generations root, identical to
+    server.generations.GENERATIONS_ROOT. Each poetry process sets its own
+    WORMLET_DATA_DIR (data/poetry-N), and the website API reads meta logs from
+    that per-process root — so the gardener MUST write/read there too, not the
+    hardcoded shared data/generations. Lazy import avoids the
+    gardener<->generations circular import at module load."""
+    from server.generations import GENERATIONS_ROOT
+    return GENERATIONS_ROOT
+
+
 def _window_q(emotional: float, coherence: float) -> float:
     """Per-window quality, matching the engine's fitness shape (evolution.py)
     so the gardener surfaces the same 'best window' selection actually rewards.
@@ -460,7 +471,7 @@ def _format_all_flasks_fragments(flasks) -> str:
         if cur_gen < 1:
             out.append(f"### {flask.display}: (no completed generation yet)")
             continue
-        gen_dir = Path(__file__).resolve().parent.parent / "data" / "generations" / flask.name / f"gen-{cur_gen:04d}"
+        gen_dir = _generations_root() / flask.name / f"gen-{cur_gen:04d}"
         out.append(f"### {flask.display} — gen {cur_gen}")
         # Read each worm's fitness from fitness.json, find top fitness, then
         # pick its top window from scores.jsonl.
@@ -531,7 +542,7 @@ def _format_all_flasks_full_metrics(flasks) -> str:
     flasks. Includes every worm's fitness, rank, word count, and best
     scored window (if any). Used in every round of the meta-gardener so
     they always see the full state, not just top worms."""
-    generations_root = V6_ROOT / "data" / "generations"
+    generations_root = _generations_root()
     out: list[str] = []
     for flask in flasks:
         cur_gen = flask.state.generation if flask.state else 0
@@ -664,7 +675,7 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
     if not flasks:
         return None
 
-    generations_root = V6_ROOT / "data" / "generations"
+    generations_root = _generations_root()
     meta_root = _meta_log_root(generations_root)
     briefing = _briefing()
 

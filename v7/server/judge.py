@@ -28,11 +28,19 @@ import anthropic
 
 WINDOW_SIZE = 15
 STRIDE = 15  # non-overlapping; matches the spec
-# Change 3: bumped 0.1 → 0.25 (the comment always claimed "1 in 4" while the
-# code sampled 1 in 10). More windows judged = a less noisy fitness estimate,
-# which matters now that selection can actually accumulate. ~2.5× the judge
-# cost per generation; still pennies at Haiku pricing.
-SAMPLE_FRACTION = 0.25  # 1 in 4 windows
+# Judge-noise experiment (2026-07-17, docs/superpowers/specs/2026-07-17-judge-
+# noise-and-sigma-control-experiments.md). TWO findings, one solid, one corrected:
+#   * SOLID: temperature was unset (API default 1.0) — the single biggest noise
+#     source. Pinning JUDGE_TEMPERATURE=0 roughly doubles rank reproducibility
+#     (mean Kendall τ 0.31 → 0.60 at 25% windows, p=0.004). KEEP.
+#   * CORRECTED: an earlier cut suggested "5 windows beats 25%", but that was a
+#     fixed-window artifact — the reproducibility check reused the SAME 5 windows
+#     every repeat, hiding the variance of WHICH windows get drawn. Resampling
+#     windows each rep (production-faithful) flips it: more windows = MORE
+#     reproducible (m=5 τ 0.37 vs 25% τ 0.60). So we KEEP the 25% sample.
+SAMPLE_FRACTION = 0.25  # judge ~25% of windows (~40 for a full poem)
+SAMPLE_N = None         # (was 5, reverted) fixed-count path unused; fraction wins
+JUDGE_TEMPERATURE = 0.0
 MODEL = "claude-haiku-4-5"
 MAX_OUTPUT_TOKENS = 8192  # 210 sampled windows × ~8 tokens output + buffer
 
@@ -81,15 +89,22 @@ def make_windows(tokens: list[str], window_size: int = WINDOW_SIZE,
 
 def sample_windows(windows: list[tuple[int, list[str]]],
                    fraction: float = SAMPLE_FRACTION,
-                   seed: int | None = None) -> list[tuple[int, list[str]]]:
-    """Deterministically sample a fraction of windows. Seed controls
-    which windows get picked so the same poem reproduces the same
-    sampling across re-runs."""
-    if fraction >= 1.0:
-        return windows
+                   seed: int | None = None,
+                   n: int | None = SAMPLE_N) -> list[tuple[int, list[str]]]:
+    """Deterministically sample windows. If `n` is set, pick exactly that many
+    (Exp-1 result: 5 random windows rank worms more reproducibly than 25%);
+    otherwise fall back to `fraction`. Seed controls which windows get picked so
+    the same poem reproduces the same sampling across re-runs."""
     rng = random.Random(seed)
-    k = max(1, int(round(len(windows) * fraction)))
-    indices = sorted(rng.sample(range(len(windows)), min(k, len(windows))))
+    if n is not None:
+        k = min(n, len(windows))
+    else:
+        if fraction >= 1.0:
+            return windows
+        k = max(1, int(round(len(windows) * fraction)))
+    if k >= len(windows):
+        return windows
+    indices = sorted(rng.sample(range(len(windows)), k))
     return [windows[i] for i in indices]
 
 
@@ -150,6 +165,7 @@ def judge_poem(tokens: list[str], worm_name: str,
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_OUTPUT_TOKENS,
+        temperature=JUDGE_TEMPERATURE,
         system=[
             {
                 "type": "text",

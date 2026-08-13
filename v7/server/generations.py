@@ -51,6 +51,11 @@ V6_ROOT = Path(__file__).resolve().parent.parent
 _DATA_ROOT = Path(os.environ.get("WORMLET_DATA_DIR", V6_ROOT / "data"))
 GENERATIONS_ROOT = _DATA_ROOT / "generations"
 
+# Experiment 2 (2026-07-17): the σ-control scheme is chosen per process via
+# WORMLET_SIGMA_SCHEME for the live A/B — vs_mean (control) · vs_elite · xnes ·
+# sigma_anneal. Default vs_mean = the prior behaviour, so an unset env is a no-op.
+SIGMA_SCHEME = os.environ.get("WORMLET_SIGMA_SCHEME", "vs_mean")
+
 
 # Phase strings exposed via /api/generation_status so the frontend can show
 # what's happening during the freeze.
@@ -392,6 +397,7 @@ def run_generation_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
+        scheme=SIGMA_SCHEME,
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma
@@ -433,6 +439,9 @@ def run_generation_rollover(
         "judge_model": "claude-haiku-4-5",
         "sigma_used": state.sigma,
         "sigma_next": new_sigma,
+        "sigma_scheme": ng.scheme,
+        "success_rate": ng.success_rate,
+        "sigma_baseline": ng.sigma_baseline,
         "best_score": best_score,
         "started_at": progress.started_at,
         "ended_at": time.time(),
@@ -610,6 +619,7 @@ def run_experiment_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
+        scheme=SIGMA_SCHEME,
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma
@@ -677,6 +687,8 @@ def run_experiment_rollover(
         "best_score": best_score,
         "avg_score": float(np.mean(scores_list)) if scores_list else 0.0,
         "success_rate": ng.success_rate,
+        "sigma_scheme": ng.scheme,
+        "sigma_baseline": ng.sigma_baseline,
         "delta_parent_norm": float(np.linalg.norm(new_parent_vec - parent_vec)),
         "new_parent_norm": float(np.linalg.norm(new_parent_vec)),
         "started_at": progress.started_at,

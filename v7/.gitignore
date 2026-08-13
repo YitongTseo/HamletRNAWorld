@@ -1,18 +1,14 @@
-# data/generations/ is the archival record and IS tracked.
-# data/flasks/ and data/worms/ are running state (live poems + current
-# weights) and stay ignored — see also the repo-root .gitignore.
-data/flasks/
-data/worms/
-# v7 per-process poetry trees: everything under each poetry-N/ is live running
-# state EXCEPT generations/, which holds the per-generation snapshots, evolved
-# embedder.json, and NES state.json — that IS the archival record and IS pushed
-# every generation. Ignore all children of poetry-*/, then re-include generations/.
-data/poetry-*/*
-!data/poetry-*/generations/
-# per-experiment sanity trees + shared embedding-net dirs stay ignored.
-data/experiments/
-data/poetry_shared/
-data/shared/
+# Git is now CODE-ONLY. Per-generation artifacts (embedder.json, per-worm
+# weights.json, winner.json) are no longer committed here — multiple servers
+# racing to push them to one shared branch failed non-fast-forward and bloated
+# history with ~19M lines of JSON. The winning worm of each generation is now
+# published to board_publish/ (outside the repo) and served at /board over the
+# tunnel; see server/board_publish.py and
+# docs/superpowers/specs/2026-07-30-board-publish-pipeline-design.md.
+# So the whole data/ tree is ignored. (Any data/ files still TRACKED from before
+# this change are intentionally left alone until an off-disk backup exists — do
+# NOT `git rm`/reset them, since those files live only on this disk.)
+data/
 __pycache__/
 *.pyc
 .cloudflared/
