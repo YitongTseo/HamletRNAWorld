@@ -20,17 +20,16 @@ adds capability. **Never modify an older version.** v7 is active.
 ## The pipeline (v7)
 
 ```
-Hamlet corpus ──► nomic-embed-text-v1.5 (512-dim, FROZEN, cached offline)
+Hamlet corpus ──► UMAP-12 over the vocabulary (FROZEN, cache/corpus_umap.json)
                         │
-   on-screen word ──────┤        worm's last-5 EATEN words ──────┐
+   on-screen word ──────┤        worm's last-2 EATEN words ──────┐
                         ▼                                        ▼
-              ┌───────────────────────────────────────────────────────┐
-              │  LEARNED, SHARED embedding net (co-evolved by NES)      │
-              │  E:512→11 (per word) → Hh:55→11 (history) →             │
-              │  Hf:22→11→sigmoid  ⇒ 11-dim chemo drive (PC0–PC10)      │
-              │  POS net: one-hot(cur⊕last5) 72→16→1→sigmoid ⇒ PC11     │
-              └───────────────────────────────────────────────────────┘
-                        │ 12-dim vector, per in-range word
+        ┌───────────────────────────┐        ┌──────────────────────────────┐
+        │ PC0–PC10: frozen UMAP     │        │ PC11: POS grammar            │
+        │ coordinates, dims 0..10   │        │ P(tag_cur | tag_prev1,prev2) │
+        │ (no learning, no context) │        │ from Hamlet, max-normalised  │
+        └───────────────────────────┘        └──────────────────────────────┘
+                        │ 12-dim vector in [0,1], per in-range word
                         ▼
       compute_pca_activation → per-neuron L/R firing (spatial + direction)
                         ▼
@@ -39,9 +38,38 @@ Hamlet corpus ──► nomic-embed-text-v1.5 (512-dim, FROZEN, cached offline)
       eats words → poem → (per generation) Claude judge → fitness → NES update
 ```
 
-Key v7 differences from v6: the embedding is **learned & shared** (not frozen
-UMAP); the eaten-word **residual afterglow is gone** — memory is the last-5-eaten
-input to the embedding; PC11 is a learned **POS syntax** signal.
+**Only the connectome evolves.** The chemosensory encoder is entirely frozen:
+UMAP coordinates for meaning, a corpus-derived POS trigram for syntax. Neither
+is learned.
+
+Key differences from v6: the eaten-word **residual afterglow is gone** — the
+worm's memory now lives in the POS channel's dependence on the last two eaten
+words; **PC11 is a grammatical-fit signal** rather than v6's 12th UMAP
+dimension; and there is **no repetition penalty** in fitness.
+
+### The learned encoder (v7.0–v7.1), and why it's off
+
+v7 originally replaced UMAP with a small net co-evolved by the same NES:
+`E:512→11` per word, `Hh:55→11` history summary, `Hf:22→11→sigmoid`, over
+frozen 512-dim nomic vectors. It is still in the tree and still tested, behind
+`WORMLET_ENCODER=learned`. It is **off by default** because measurement showed
+it had gone nearly blind:
+
+- per-channel std across 4000 words was **0.027 over the range 0.40–0.55**,
+  against UMAP's **0.131 over the full 0–1**;
+- `compute_pca_activation` feeds the channel value straight to neuron firing
+  with no renormalisation, so word identity was ~4% of the drive and the rest a
+  constant offset — the worms could barely smell one word from another;
+- two causes: He init assumes unit-variance inputs but nomic-512 is
+  L2-normalised (per-component std 0.044, a 23× deficit), and different nomic
+  word vectors have mean pairwise cosine **0.700** with the shared mean vector
+  at 84% of a typical norm, so a random linear projection preserves exactly the
+  common component that UMAP exists to strip;
+- the per-flask (1+1)-ES that was supposed to learn out of this accepted **2–7
+  mutations in 101 generations**, and zero in the last 30 for six of eight
+  flasks.
+
+See `server/embedding.py` for the full write-up.
 
 ## Layout (`v7/`)
 
@@ -56,20 +84,33 @@ input to the embedding; PC11 is a learned **POS syntax** signal.
   - `generations.py` — per-generation rollover: score → NES → write artifacts →
     git commit. Holds `GenerationState` (parent vector, sigma, children eps).
   - `evolution.py` — NES math: `flatten/unflatten_weights`, `fitness`,
-    `nes_update`, `adapt_sigma` (Rechenberg 1/5), `evolve_generation`.
-  - `embedding.py` *(v7 new)* — the shared learned embedding + POS nets:
-    numpy forward pass, param flatten/unflatten, genome (de)serialize.
-  - `shared_evolution.py` *(v7 new)* — pooled NES + cross-process coordinator
-    for the global nets (`data/poetry_shared/`).
+    `nes_update` (natural gradient + trust region), `adapt_sigma`
+    (Rechenberg 1/5), `evolve_generation`.
+  - `sigma_controllers.py` — pluggable σ schemes (`vs_mean`, `vs_elite`,
+    `xnes`, `sigma_anneal`) selected by `WORMLET_SIGMA_SCHEME`.
+  - `embedding.py` — the chemosensory encoder. Dispatches on
+    `WORMLET_ENCODER`: frozen UMAP (default) or the v7 learned net.
+  - `pos_grammar.py` — the PC11 grammar channel: interpolated POS trigram over
+    Hamlet's dialogue plus an in-context lexicon, cached in
+    `cache/pos_transitions.json`.
+  - `flask_embedder.py` — per-flask (1+1)-ES for the learned encoder. Inert
+    unless `WORMLET_ENCODER=learned`.
+  - `board_publish.py` — publishes each generation's winner outside the repo,
+    served at `/board` (ESP32 boards read it).
   - `judge.py` — Claude judge (`ScoredWindow` E/C per window). Needs
-    `ANTHROPIC_API_KEY`.
+    `ANTHROPIC_API_KEY`. `JUDGE_TEMPERATURE=0` — leaving it at the API default
+    of 1.0 was the single biggest noise source (Kendall τ 0.31 → 0.60).
   - `gardener.py` — every N gens, a Claude "gardener" writes prose commentary to
     `data/generations/meta/gen-NNNN/gardeners_log.md`. Read these to see what the
     run is actually doing.
   - `experiments.py` — the `EXPERIMENTS` registry powering the viewer dropdown
     (8 poetry flasks + 4 POS sanity checks); per-mode ports/subdomains/scorers.
-  - `pos_scorers.py` — deterministic NLTK POS fitness for the sanity experiments
-    (and the POS-tag source for the v7 POS net). Uses `.venv/nltk_data`.
+  - `pos_scorers.py` — deterministic NLTK POS fitness for the sanity
+    experiments, and the OOV fallback tagger for `pos_grammar`. Uses
+    `.venv/nltk_data`. Tags the **lowercased** word: it used to cache on
+    `word.lower()` while tagging the original casing, and NLTK gives
+    `king`→NOUN but `King`→VERB, so tags depended on which capitalisation was
+    seen first.
 - `sim/`
   - `world.py` — the world: word field (`TextScroller`), in-range detection,
     chemosensory assembly (v7: calls `server/embedding.py`, no residual).
@@ -78,34 +119,47 @@ input to the embedding; PC11 is a learned **POS syntax** signal.
   - `chemosensory_mapping.py` — `PC_NEURON_PAIRS` (canonical PC→neuron order) +
     `compute_pca_activation`.
   - `weights.json` — default connectome (≈3,689 edges = the per-worm brain genome).
-- `cache/`
-  - `corpus_nomic512.json` *(v7 new)* — frozen 512-dim nomic vectors per word.
-  - `corpus_umap.json` / `corpus_pca.json` — legacy 12-dim reductions (kept for
-    reference / the `WORMLET_EMBEDDING` fallback).
-- `data/`
-  - `flasks/<flask>/<worm>/` — live per-worm state (seed, weights, poem). Ignored by git.
-  - `generations/<flask>/gen-NNNN/<worm>/` + `generations/meta/gen-NNNN/` —
-    tracked archival record (poems, weights, scores, gardener logs).
-  - `poetry_shared/` *(v7 new)* — global shared-net parent + per-gen contributions.
-  - `experiments/<mode>/` — per-sanity-experiment data roots.
+- `cache/` — all committed, nothing to precompute. `corpus_umap.json` is the
+  **live encoder**; `corpus_nomic512.json` (25 MB) is used only by the learned
+  encoder; `pos_transitions.json` is the POS grammar table + lexicon;
+  `corpus_pca.json` is the legacy v6.1 encoder.
+- `data/` — **entirely gitignored** (see Gotchas). `<datadir>/flasks/<flask>/<worm>/`
+  is live per-worm state; `<datadir>/generations/<flask>/gen-NNNN/<worm>/` and
+  `generations/meta/gen-NNNN/` are the on-disk archival record. Each process
+  points `WORMLET_DATA_DIR` at its own subtree (`data/poetry-N`).
 - `deploy/` — systemd units + cloudflared template. `bin/` — setup scripts.
-- `tests/` — `test_determinism.py` (same-seed⇒same-trajectory — sacred),
-  `test_generations.py`, `test_embedding_net.py`, `test_evolution.py`,
-  `test_coordinator.py`, `test_smoke_multi.py`.
+- `tests/` — **run via `python tests/run_all.py`**, not pytest (not a
+  dependency; several modules have no `__main__` and silently do nothing when
+  run directly). `test_determinism.py` (same-seed ⇒ same-trajectory — sacred),
+  `test_evolution.py`, `test_embedding_net.py` (both encoder modes),
+  `test_pos_grammar.py`, `test_generations_viewer.py`, `test_smoke_multi.py`.
 
-## Evolution model (v7)
+## Evolution model
 
-Two genomes evolve together:
-1. **Per-worm brain** (~3,689 connectome weights) — NES per flask, independent.
-2. **Global shared nets** (~7,697 embedding+POS params) — ONE instance across all
-   8 poetry flasks, pooled NES over all 128 worms/gen via the coordinator. Each
-   sanity experiment has its own copy.
+**One genome evolves: the per-worm brain** (~3,689 connectome weights), by NES
+per flask, independently. The encoder is frozen. (Under
+`WORMLET_ENCODER=learned` a second per-flask genome evolves by a (1+1)-ES —
+that is the only case where anything else learns.)
 
-Each generation: worms crawl a corpus pass → judge scores windows (poetry) or a
-deterministic scorer runs (sanity) → **repetition penalty** applied → NES updates
-both genomes. σ adapts by Rechenberg's 1/5 rule using a **parent probe** (fraction
-of fresh children beating the unperturbed parent — NOT the champion; that bug
-floored σ in v6).
+Each generation: worms crawl a corpus pass → the judge scores a 25% sample of
+15-token windows (poetry) or a deterministic POS scorer runs (sanity) → fitness
+→ NES update, top-5 genomes carried verbatim as elites.
+
+**Fitness is a SUM over judged windows, so it rewards eating volume.** Normalise
+by `windows_scored` before drawing conclusions about poem quality.
+
+The NES step is `θ' = θ + clip(lr·σ/n · Σ rw_i·eps_i)` with the step bounded to
+`|Δθ| ≤ 0.5·σ·√d`. That σ factor is load-bearing: the step used to carry `1/σ`
+(the plain gradient, not the natural one), so the step size and the sampling
+radius moved in **opposite** directions — at σ=0.02 the parent stepped 43×
+further than it had sampled, and at σ=3.0 it barely moved at all. No σ was ever
+sane, and no σ controller could compensate. Now step/sampling-radius is a
+constant 0.170 at every σ.
+
+σ adapts by Rechenberg's 1/5 rule via `sigma_controllers.py`. Note that both
+prior baselines were structurally wrong: v6 compared children to the champion
+**max** (success ≈ 0 → σ floors), v7.0 to the population **mean** (success ≈ 0.5
+→ σ ceilings). `vs_elite` compares to the current-gen incumbent.
 
 ## Runtime / ops
 
@@ -118,15 +172,45 @@ floored σ in v6).
   `/home/web/.wormlet.env` (secrets ONLY — operational `WORMLET_*` vars go in the
   unit files, or `EnvironmentFile` shadows them). `ANTHROPIC_API_KEY` is required
   or the judge/gardener bail silently.
-- Env flags: `WORMLET_GENERATIONS_ENABLED`, `WORMLET_N_FLASKS`,
-  `WORMLET_N_WORMS_PER_FLASK`, `WORMLET_EXPERIMENT_MODE`, `WORMLET_EMBEDDING`
-  (v7 default `learned`; `umap`/`pca` for the legacy fallback), `WORMLET_DATA_DIR`.
+- Env flags: full table in `docs/SETUP.md` §8. The encoder switch is
+  **`WORMLET_ENCODER`** (`umap` default / `learned`) — an earlier draft of this
+  doc called it `WORMLET_EMBEDDING`, which does not exist.
 - Useful: `journalctl -u wormlet-poetry-1 -f`, `curl 127.0.0.1:8000/healthz`.
+  `/healthz` reports the **live** encoder mode — trust it over assumptions
+  about which code a running process has loaded. (It was a hardcoded string
+  until 2026-08-13 and would happily report `learned` on a UMAP process.)
 
 ## Gotchas
 
 - Truncated `.wormlet.env` silently drops the app into legacy single-group mode
   (no evolution) while still returning HTTP 200.
+- `EnvironmentFile=` **shadows** `Environment=`, so any operational var in
+  `.wormlet.env` overrides every unit file. Keep it secrets-only.
 - CPU: 128 worms across 4 processes on a 4-core box is near the edge; freezes
   have wiped in-progress generations. Watch with `py-spy`.
-- The coordinator must never hard-block on a stalled flask (timeout/quorum).
+- **Git is code-only.** `data/` is gitignored — four processes racing to push
+  per-generation JSON to one branch failed non-fast-forward and bloated history
+  with ~19M lines. `WORMLET_GIT_COMMIT` still defaults to `1`; the units set it
+  to `0`.
+- Some `data/` files are **still tracked** from before that change and exist
+  only on this disk. Do **not** `git rm`/reset them, and leave purge-driven
+  deletions unstaged, until an off-disk backup exists.
+- Anthropic structured-output schemas reject `maxItems` / `minItems` /
+  `minimum` / `maximum` / `minLength` — enforce bounds in the prompt and
+  client-side, or the call 400s.
+- The four processes have separate data dirs, so the `/generations` viewer
+  reads its siblings' dirs read-only to show all 8 flasks. Flask ids are
+  `poetry-N:flask_M`; the separator must **not** be `/` or the
+  `/{flask}/{gen}` route swallows it.
+
+## Where the science currently stands
+
+Neither v6 nor v7 has demonstrably learned to write better poetry once fitness
+is normalised by eating volume. v6's apparent climb was a `GAMMA` change
+(2.5 → 1.5) at generation 13 plus increased eating; one v6 flask's spectacular
+run was a repetition exploit. The 2026-08-13 changes — restoring a
+high-contrast encoder, giving PC11 real grammatical content, and decoupling the
+NES step from σ — remove the known mechanical reasons it *couldn't* learn.
+Whether it now does is an open question, and the live populations carry 101
+generations of connectome adapted to the old near-blind input, so expect a
+transient before the answer means anything.
