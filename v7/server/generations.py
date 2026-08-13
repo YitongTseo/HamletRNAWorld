@@ -695,7 +695,9 @@ def run_experiment_rollover(
         "ended_at": time.time(),
         "per_worm": per_worm,
         "next_gen_lineage": next_gen_lineage,
-        "passage": os.environ.get("WORMLET_PASSAGE", "act1"),
+        # Default must match sim/world.py's WORMLET_PASSAGE default ("opening")
+        # or the archival record misreports which passage was actually run.
+        "passage": os.environ.get("WORMLET_PASSAGE", "opening"),
     }
     (gen_dir / "metrics.json").write_text(json.dumps(metrics))
 

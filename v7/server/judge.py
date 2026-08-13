@@ -1,7 +1,7 @@
 """Claude-based poetry judge for generational evolution.
 
 Reads a worm's eaten-token stream, slices into 15-token non-overlapping
-windows, randomly samples ~10% of those windows, and asks Claude Haiku 4.5
+windows, randomly samples ~25% of those windows, and asks Claude Haiku 4.5
 to rate each sampled window on emotional impact and coherence.
 
 The rubric is identical across calls and lives in the cached system prompt,
@@ -12,7 +12,7 @@ generation. Output is compact CSV — `idx,emotional,coherence` one per line.
 Why Haiku 4.5: the user explicitly chose it in the design spec for cost
 reasons; Sonnet/Opus are overkill for "rate this fragment 1-100 on two
 axes" and 3-5× the cost. Per-generation cost lands around $0.05 at full
-40-worm × 10% sampling — see the spec for the breakdown.
+40-worm × 25% sampling — see the spec for the breakdown.
 
 Public API:
     judge_poem(tokens, worm_name, seed=None) -> list[ScoredWindow]
@@ -92,9 +92,10 @@ def sample_windows(windows: list[tuple[int, list[str]]],
                    seed: int | None = None,
                    n: int | None = SAMPLE_N) -> list[tuple[int, list[str]]]:
     """Deterministically sample windows. If `n` is set, pick exactly that many
-    (Exp-1 result: 5 random windows rank worms more reproducibly than 25%);
-    otherwise fall back to `fraction`. Seed controls which windows get picked so
-    the same poem reproduces the same sampling across re-runs."""
+    (unused: the Exp-1 "5 fixed windows" result was retracted — see the
+    SAMPLE_FRACTION comment above); otherwise fall back to `fraction`. Seed
+    controls which windows get picked so the same poem reproduces the same
+    sampling across re-runs."""
     rng = random.Random(seed)
     if n is not None:
         k = min(n, len(windows))
@@ -145,7 +146,7 @@ def _client() -> anthropic.Anthropic:
 
 def judge_poem(tokens: list[str], worm_name: str,
                seed: int | None = None) -> list[ScoredWindow]:
-    """Score a worm's poem by sampling 10% of its 15-token windows and
+    """Score a worm's poem by sampling ~25% of its 15-token windows and
     sending them to Claude in one prompt-cached call.
 
     Returns one ScoredWindow per sampled window. Windows the API failed
