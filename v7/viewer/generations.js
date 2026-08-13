@@ -585,11 +585,19 @@ async function init() {
     setStatus('no generation data on disk yet — run for at least one rollover.');
     return;
   }
+  // A poetry process serves ALL 8 flasks (it reads its sibling processes'
+  // data dirs read-only), so this dropdown pages through the whole run — not
+  // just the 2 flasks belonging to whichever port you happen to be on.
+  // Each option shows σ and the σ-control scheme, so you can see at a glance
+  // which arm is frozen and which is ratcheting.
   flaskSelect.innerHTML = '';
   for (const f of flasks) {
     const opt = document.createElement('option');
     opt.value = f.name;
-    opt.textContent = `${f.name} (gen ${f.current_generation || f.n_generations})`;
+    const gen = f.current_generation || f.n_generations;
+    const sigma = (typeof f.sigma === 'number') ? `, σ=${f.sigma.toFixed(3)}` : '';
+    const scheme = f.sigma_scheme ? ` ${f.sigma_scheme}` : '';
+    opt.textContent = `${f.label || f.name} (gen ${gen}${sigma}${scheme})`;
     flaskSelect.appendChild(opt);
   }
   flaskSelect.addEventListener('change', e => loadFlask(e.target.value));

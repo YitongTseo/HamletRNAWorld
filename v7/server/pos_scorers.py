@@ -94,12 +94,24 @@ def tag_word(word: str) -> str:
     cached = _pos_cache.get(key)
     if cached is not None:
         return cached
-    # NLTK's pos_tag wants a list of tokens; we pass [word] alone.
+    # NLTK's pos_tag wants a list of tokens; we pass [key] alone.
     # In-isolation tagging is less accurate than in-context tagging but our
     # use case scores eaten sequences that are non-contiguous in the original
     # text, so the per-word tag is the right unit anyway.
+    #
+    # 2026-08-13 BUGFIX: tag the LOWERCASED form, not the original casing.
+    # The cache is keyed on word.lower() but this used to tag `word` as it was
+    # written, so a word's tag was decided by whichever capitalisation the
+    # process happened to see first — and the perceptron treats a capitalised
+    # lone token as a probable proper noun/verb:
+    #     pos_tag(["king"]) -> NOUN      pos_tag(["King"]) -> VERB
+    #     pos_tag(["love"]) -> NOUN      pos_tag(["Love"]) -> VERB
+    # Hamlet is full of sentence-initial and speaker-name capitals, so a large
+    # slice of the vocabulary was being mistagged, non-deterministically with
+    # respect to corpus order. Lowercasing first makes tagging a pure function
+    # of the cache key.
     try:
-        tagged = nltk.pos_tag([word], tagset="universal")
+        tagged = nltk.pos_tag([key], tagset="universal")
         tag = tagged[0][1] if tagged else "X"
     except Exception:
         tag = "X"

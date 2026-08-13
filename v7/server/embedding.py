@@ -33,25 +33,58 @@ from pathlib import Path
 
 import numpy as np
 
-from server import pos_scorers
+from server import pos_grammar, pos_scorers
 
 V7_ROOT = Path(__file__).resolve().parent.parent
 _NOMIC_PATH = V7_ROOT / "cache" / "corpus_nomic512.json"
+_UMAP_PATH = V7_ROOT / "cache" / "corpus_umap.json"
+
+# --- encoder mode ----------------------------------------------------------
+# "umap"    (DEFAULT) — PC0..PC10 are the frozen v6 UMAP coordinates.
+# "learned" — PC0..PC10 come from the v7 co-evolved net below.
+#
+# 2026-08-13: the default reverted to UMAP after the learned encoder was
+# measured on 101 live generations and found to have gone nearly blind. Two
+# compounding causes, both in the numbers:
+#
+#   * He init (`sqrt(2/fan_in)`) assumes unit-variance inputs, but nomic-512
+#     vectors are L2-NORMALISED, so per-component std is 0.044 — a 23x
+#     deficit. Pre-activations land tiny and the sigmoid never spreads.
+#   * Different nomic word vectors have mean pairwise cosine 0.700, and the
+#     shared mean vector is 84% of a typical word's norm. Only ~16% of each
+#     vector is word-specific. A random linear projection PRESERVES that
+#     common component; UMAP exists precisely to strip it and re-spread.
+#
+# Measured across 4000 corpus words: the learned channels had per-channel
+# std 0.027 over the range 0.40-0.55, against UMAP's std 0.131 over the full
+# 0-1. Since `compute_pca_activation` feeds the channel value straight to
+# neuron firing with no renormalisation, word identity was ~4% of the drive
+# and the rest a DC offset — the worms could not smell one word from another.
+# The (1+1)-ES that was meant to learn its way out of this accepted 2-7
+# mutations in 101 generations (zero in the last 30 for six of eight flasks).
+ENCODER_UMAP = "umap"
+ENCODER_LEARNED = "learned"
+
+
+def encoder_mode() -> str:
+    m = os.environ.get("WORMLET_ENCODER", ENCODER_UMAP).strip().lower()
+    return m if m in (ENCODER_UMAP, ENCODER_LEARNED) else ENCODER_UMAP
+
 
 # --- dimensions (load-bearing; the genome layout depends on these) ---------
 D_IN = 512          # frozen nomic embedding width
-D_EMB = 11          # PC0..PC10 (the 12th, PC11, is the POS net's output)
+D_EMB = 11          # PC0..PC10 (the 12th, PC11, is the POS grammar channel)
 HISTORY = 5         # number of eaten words used as context
 D_HIST_CONCAT = D_EMB * HISTORY   # 55
 D_FUSE = D_EMB * 2                 # 22  (E(current) ++ history summary)
 
 # Canonical universal POS tags -> one-hot index. Unknown tags map to "X".
+# Retained because the sanity-experiment scorers and the viewer still use this
+# ordering; the PC11 channel itself no longer one-hots anything.
 POS_TAGS = ["NOUN", "VERB", "ADJ", "ADV", "DET", "ADP",
             "PRON", "PRT", "CONJ", "NUM", "X", "."]
 N_TAGS = len(POS_TAGS)            # 12
 _POS_INDEX = {t: i for i, t in enumerate(POS_TAGS)}
-D_POS_IN = N_TAGS * (HISTORY + 1)  # 72
-D_POS_HID = 16
 
 
 def _relu(x: np.ndarray) -> np.ndarray:
@@ -65,15 +98,22 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
 # Ordered layout of every weight/bias block in the flat genome. Each entry is
 # (name, shape). flatten()/from_flat() walk this list in order, so the genome
 # vector is fully determined by _LAYOUT — never reorder it once runs exist.
+#
+# 2026-08-13: the POS sub-net (W_P1/b_P1/W_P2/b_P2, 1185 floats) was REMOVED
+# from the layout. PC11 now comes from `server.pos_grammar`, a deterministic
+# corpus-derived POS trigram, so there is nothing left to learn there. Those
+# blocks were the LAST entries in the layout, so a legacy 7697-float genome is
+# a valid 6512-float genome followed by dead weight — `from_flat` therefore
+# accepts the longer vector and ignores the tail, which keeps old
+# `embedder.json` files loadable for comparison.
 _LAYOUT: list[tuple[str, tuple[int, ...]]] = [
     ("W_E",  (D_IN, D_EMB)),   ("b_E",  (D_EMB,)),
     ("W_Hh", (D_HIST_CONCAT, D_EMB)), ("b_Hh", (D_EMB,)),
     ("W_Hf", (D_FUSE, D_EMB)), ("b_Hf", (D_EMB,)),
-    ("W_P1", (D_POS_IN, D_POS_HID)),  ("b_P1", (D_POS_HID,)),
-    ("W_P2", (D_POS_HID, 1)), ("b_P2", (1,)),
 ]
 
-GENOME_SIZE = sum(int(np.prod(shape)) for _n, shape in _LAYOUT)  # ~7,697
+GENOME_SIZE = sum(int(np.prod(shape)) for _n, shape in _LAYOUT)  # 6,512
+LEGACY_GENOME_SIZE = 7697  # v7.0/v7.1, with the POS sub-net appended
 
 
 @dataclass
@@ -85,10 +125,6 @@ class EmbeddingParams:
     b_Hh: np.ndarray
     W_Hf: np.ndarray
     b_Hf: np.ndarray
-    W_P1: np.ndarray
-    b_P1: np.ndarray
-    W_P2: np.ndarray
-    b_P2: np.ndarray
 
     def flatten(self) -> np.ndarray:
         return np.concatenate([getattr(self, n).ravel() for n, _s in _LAYOUT])
@@ -102,7 +138,8 @@ class EmbeddingParams:
             n = int(np.prod(shape))
             kw[name] = vec[i:i + n].reshape(shape)
             i += n
-        if i != vec.shape[0]:
+        # A legacy genome carries the removed POS sub-net as a tail; ignore it.
+        if i != vec.shape[0] and vec.shape[0] != LEGACY_GENOME_SIZE:
             raise ValueError(f"genome size {vec.shape[0]} != expected {i}")
         return cls(**kw)
 
@@ -143,9 +180,20 @@ class EmbeddingModel:
     pass. Params are constant within a generation, so per-word encodings are
     cached and the cache is cleared whenever params change."""
 
-    def __init__(self, params: EmbeddingParams, nomic: dict[str, np.ndarray] | None = None):
+    def __init__(self, params: EmbeddingParams, nomic: dict[str, np.ndarray] | None = None,
+                 mode: str | None = None):
+        self.mode = mode or encoder_mode()
         self.params = params
-        self._nomic = nomic if nomic is not None else _load_nomic()
+        # In UMAP mode the frozen 11-dim coordinates ARE the encoder, so the
+        # 512-dim nomic table is never consulted and isn't loaded (it's a 39 MB
+        # blob). `_nomic` stays populated only on the learned path.
+        if self.mode == ENCODER_UMAP:
+            self._nomic = {}
+            self._umap = _load_umap()
+        else:
+            self._nomic = nomic if nomic is not None else _load_nomic()
+            self._umap = {}
+        self._grammar = pos_grammar.get_grammar()
         self._enc_cache: dict[str, np.ndarray] = {}
         # Precompute tables (shared across every worm in a flask; rebuilt when
         # params change). Populated lazily by prime().
@@ -162,6 +210,11 @@ class EmbeddingModel:
         self.prime()
 
     def set_genome(self, vec: np.ndarray) -> None:
+        """No-op in UMAP mode — the encoder is frozen and has no genome. The
+        callers (flask_embedder / the rollover path) stay unchanged; they just
+        stop having any effect."""
+        if self.mode == ENCODER_UMAP:
+            return
         self.set_params(EmbeddingParams.from_flat(vec))
 
     # ---- precompute (once per generation per flask) ----
@@ -172,6 +225,15 @@ class EmbeddingModel:
         worm's per-tick smell-pass then reads the table instead of re-running
         the 512→11 matmul per word. The frozen nomic matrix + index are built
         once and reused across primings."""
+        if self.mode == ENCODER_UMAP:
+            # Frozen table: build the (N, 11) coordinate matrix once. Nothing
+            # depends on params, so re-priming is idempotent and free.
+            if self._words is None:
+                self._words = list(self._umap.keys())
+                self._widx = {w: i for i, w in enumerate(self._words)}
+                self._E_table = (np.stack([self._umap[w] for w in self._words])
+                                 if self._words else np.zeros((0, D_EMB)))
+            return
         if not self._nomic:
             self._words = []
             self._widx = {}
@@ -213,6 +275,16 @@ class EmbeddingModel:
         history_words: most-recent-first, length 0..HISTORY. Shorter histories
         (and OOV history words) are zero-padded.
         """
+        # PC11 is the same in both modes: how grammatical this word's POS is as
+        # a continuation of the POS sequence the worm has already eaten.
+        pos_out = np.array([self._grammar.fit_word(current_word, list(history_words))])
+
+        if self.mode == ENCODER_UMAP:
+            row = self._umap.get(_norm(current_word))
+            if row is None:
+                return None
+            return np.concatenate([row, pos_out])
+
         cur512 = self.vec512(current_word)
         if cur512 is None:
             return None
@@ -225,15 +297,6 @@ class EmbeddingModel:
         cur_emb = _relu(cur512 @ p.W_E + p.b_E)                        # (11,)
         fuse_in = np.concatenate([cur_emb, hist_summary])             # (22,)
         emb_out = _sigmoid(fuse_in @ p.W_Hf + p.b_Hf)                 # (11,)
-
-        # --- POS branch ---
-        cur_pos = pos_scorers.tag_word(current_word)
-        pos_slots = [_onehot_pos(cur_pos)]
-        for w in hist:
-            pos_slots.append(_onehot_pos(pos_scorers.tag_word(w) if w else None))
-        pos_in = np.concatenate(pos_slots)                            # (72,)
-        pos_hid = _relu(pos_in @ p.W_P1 + p.b_P1)                     # (16,)
-        pos_out = _sigmoid(pos_hid @ p.W_P2 + p.b_P2)                 # (1,)
 
         return np.concatenate([emb_out, pos_out])                     # (12,)
 
@@ -268,6 +331,22 @@ class EmbeddingModel:
         valid = ci >= 0
         safe = np.where(valid, ci, 0)
 
+        # --- PC11: POS-grammar fit (both modes) ---
+        # The whole batch shares one history, so the normalised tag->fit map is
+        # looked up ONCE and then indexed per candidate word: K dict lookups,
+        # no matmul. This is why the channel is free relative to the old net.
+        fit_by_tag = self._grammar.context_distribution(list(history_words))
+        pos_out = np.fromiter(
+            (fit_by_tag.get(self._grammar.tag(w), 0.0) for w in current_words),
+            dtype=np.float64, count=K,
+        ).reshape(K, 1)
+
+        if self.mode == ENCODER_UMAP:
+            emb_out = np.where(valid[:, None], E[safe], 0.0)                      # (K,11)
+            out = np.concatenate([emb_out, pos_out], axis=1)                      # (K,12)
+            out[~valid] = 0.0
+            return out, valid
+
         # --- history (computed ONCE for all K words) ---
         hist = (list(history_words) + [None] * HISTORY)[:HISTORY]
         # History E-encodings: table row by _norm, zeros on OOV/pad — matches
@@ -275,12 +354,6 @@ class EmbeddingModel:
         hidx = [self._widx.get(_norm(w), -1) if w else -1 for w in hist]
         he = np.concatenate([E[h] if h >= 0 else np.zeros(D_EMB) for h in hidx])  # (55,)
         hist_summary = _relu(he @ p.W_Hh + p.b_Hh)                                # (11,)
-        # History POS one-hots: tag the ACTUAL word (matches embed(); zeros only
-        # for empty pad slots). Cheap — HISTORY cached tag lookups.
-        hpos = np.concatenate([
-            _onehot_pos(pos_scorers.tag_word(w)) if w else np.zeros(N_TAGS)
-            for w in hist
-        ])                                                                        # (60,)
 
         # --- embedding branch (batched) ---
         cur_emb = np.where(valid[:, None], E[safe], 0.0)                          # (K,11)
@@ -288,16 +361,41 @@ class EmbeddingModel:
             [cur_emb, np.broadcast_to(hist_summary, (K, D_EMB))], axis=1)         # (K,22)
         emb_out = _sigmoid(fuse @ p.W_Hf + p.b_Hf)                                # (K,11)
 
-        # --- POS branch (batched) ---
-        cur_pos = np.stack([_onehot_pos(pos_scorers.tag_word(w)) for w in current_words])  # (K,12)
-        pos_in = np.concatenate(
-            [cur_pos, np.broadcast_to(hpos, (K, hpos.shape[0]))], axis=1)         # (K,72)
-        pos_hid = _relu(pos_in @ p.W_P1 + p.b_P1)                                 # (K,16)
-        pos_out = _sigmoid(pos_hid @ p.W_P2 + p.b_P2)                             # (K,1)
-
         out = np.concatenate([emb_out, pos_out], axis=1)                          # (K,12)
         out[~valid] = 0.0
         return out, valid
+
+
+# --- frozen UMAP table ------------------------------------------------------
+
+_UMAP_CACHE: dict[str, np.ndarray] | None = None
+
+
+def _load_umap() -> dict[str, np.ndarray]:
+    """{lowercased_word: np.array(11)} from cache/corpus_umap.json.
+
+    The artifact holds 12 UMAP dimensions; we take the FIRST 11 as PC0..PC10
+    and hand PC11 to the POS grammar. Coordinates are already min-max scaled
+    into [0,1] per dimension by scripts/build_corpus_umap.py, which is exactly
+    the range `compute_pca_activation` wants — it multiplies the channel value
+    straight into neuron firing with no renormalisation.
+
+    Missing file -> empty map (chemosensation goes silent; smoke tests run
+    without it), matching _load_nomic's behaviour."""
+    global _UMAP_CACHE
+    if _UMAP_CACHE is not None:
+        return _UMAP_CACHE
+    if not _UMAP_PATH.exists():
+        _UMAP_CACHE = {}
+        return _UMAP_CACHE
+    data = json.loads(_UMAP_PATH.read_text())
+    words = data["words"]
+    coords = data["umap12"]
+    _UMAP_CACHE = {
+        _norm(w): np.asarray(c[:D_EMB], dtype=np.float64)
+        for w, c in zip(words, coords)
+    }
+    return _UMAP_CACHE
 
 
 # --- frozen nomic table -----------------------------------------------------

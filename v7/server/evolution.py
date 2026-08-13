@@ -26,7 +26,7 @@ Public API:
     unflatten_weights(vec, k) -> dict (float values)
     fitness(scored_windows)   -> float
     rank_weights(n)           -> ndarray
-    nes_update(parent, eps_list, scores, sigma, eta=0.1) -> new parent vec
+    nes_update(parent, eps_list, scores, sigma, lr, trust_radius) -> new parent
     adapt_sigma(sigma, success_rate) -> new sigma (clipped)
     spawn_population(parent, n, sigma, rng) -> (children, eps)
     evolve_generation(...) -> NextGen
@@ -50,7 +50,15 @@ SIGMA_MAX = 3.0
 SIGMA_SHRINK = 0.82      # multiply by this when success rate < 1/5 (steps too big)
 SIGMA_GROW = 1.22        # multiply by this when success rate > 1/5 (steps too timid)
 SUCCESS_TARGET = 0.2     # Rechenberg 1/5 rule target success fraction
-LEARNING_RATE = 0.1      # η in the NES update
+LEARNING_RATE = 1.0      # η in the NES update. Raised from 0.1 on 2026-08-13
+                         # when the step stopped carrying a 1/σ factor — see
+                         # nes_update. Under the corrected scaling this puts a
+                         # typical step at ~17% of the sampling radius; the old
+                         # 0.1 would have meant ~1.7%, i.e. barely moving.
+TRUST_RADIUS = 0.5       # hard cap: |Δθ| ≤ TRUST_RADIUS · σ · √d, so the parent
+                         # can never move further than the cloud of children it
+                         # actually measured. 0.5 ≈ the mean-shift-per-generation
+                         # that CMA-ES uses (1/√μ_eff for μ_eff≈4).
 GAMMA = 1.5              # fitness exponent — lowered (was 2.5) so a worm that
                          # is consistently language-like beats one lucky window
 EMOTIONAL_WEIGHT = 1.5   # vs 1.0 for coherence
@@ -90,14 +98,17 @@ def unflatten_weights(vec: np.ndarray, keys: list[tuple[str, str]]) -> WeightDic
 
 # --- fitness --------------------------------------------------------------
 
-# v7: deterministic repetition penalty. The gardener flagged for 8+ epochs
-# that the judge hands perfect scores to raw repetition ("God God God",
-# "strew'd strew'd strew'd"). We can't stop the judge being fooled, but we CAN
-# refuse to reward the result: each window's contribution is scaled by a
-# token-diversity factor, so a repetitive window scores strictly less than a
-# diverse one with identical E/C.
-REP_FLOOR_RATIO = 0.6   # unique-token ratio at/above which a window is unpenalized
-REP_MIN_FACTOR = 0.05   # a fully-repeated window still counts a little
+# Token-diversity measure. v7 originally multiplied this into `fitness` as a
+# repetition PENALTY (the gardener kept flagging that the judge hands perfect
+# scores to raw repetition — "God God God", "strew'd strew'd strew'd").
+#
+# 2026-08-13: REMOVED FROM THE FITNESS PATH. Repetition is now unpenalized —
+# worms are free to repeat, and the judge's opinion stands unmodified. The
+# function is kept because the judge-noise experiments use it as a
+# stratification variable (experiments/judge_noise/nonllm_eval.py), not
+# because anything in the live scoring path calls it.
+REP_FLOOR_RATIO = 0.6   # unique-token ratio at/above which a window is undiscounted
+REP_MIN_FACTOR = 0.05   # floor of the (no longer applied) discount
 
 
 def repetition_factor(tokens: list[str]) -> float:
@@ -115,16 +126,19 @@ def repetition_factor(tokens: list[str]) -> float:
 
 
 def fitness(scored_windows: Iterable[ScoredWindow]) -> float:
-    """Sum over windows of
-      repetition_factor(tokens) * (EMOTIONAL_WEIGHT*(E/100)^GAMMA + (C/100)^GAMMA).
+    """Sum over windows of  EMOTIONAL_WEIGHT * (E/100)^GAMMA + (C/100)^GAMMA.
+
     GAMMA makes top-rated windows dominate (a 90 contributes ~10× a 50); the
-    1.5× weights emotional impact above coherence; the repetition factor (v7)
-    discounts the filler the judge over-rewards."""
+    1.5× weights emotional impact above coherence.
+
+    2026-08-13: the repetition discount that v7 applied here is GONE — let them
+    repeat. A repetitive window and a diverse one with identical E/C now score
+    identically, so the judge's rating is the only thing that decides."""
     total = 0.0
     for w in scored_windows:
         e = (w.emotional / 100.0) ** GAMMA
         c = (w.coherence / 100.0) ** GAMMA
-        total += repetition_factor(w.tokens) * (EMOTIONAL_WEIGHT * e + 1.0 * c)
+        total += EMOTIONAL_WEIGHT * e + 1.0 * c
     return total
 
 
@@ -146,25 +160,68 @@ def nes_update(
     scores: list[float],
     sigma: float,
     lr: float = LEARNING_RATE,
+    trust_radius: float = TRUST_RADIUS,
 ) -> np.ndarray:
-    """One NES gradient step toward higher score.
+    """One NES gradient step toward higher score, with the step size DECOUPLED
+    from sigma via a trust region.
 
     Children were θ_i = parent + sigma * eps_i  with one elite at eps_0 = 0.
-    The score-weighted average of those noise vectors estimates the natural
-    gradient of fitness; we step the parent that direction.
 
-        θ' = parent + (lr / (N * sigma)) * Σ_i  rank_weight_i * eps_i
+        θ' = parent + clip( lr * sigma * (1/N) * Σ_i rank_weight_i * eps_i )
+
+    where clip bounds the step to  |Δθ| ≤ trust_radius * sigma * √d.
+
+    WHY THE FORMULA CHANGED (2026-08-13)
+    ------------------------------------
+    This used to be  θ' = parent + (lr / (N * sigma)) * Σ rw_i eps_i, i.e. the
+    step carried a 1/sigma factor. Σ rw_i eps_i has a magnitude that does not
+    depend on sigma (the eps are unit normals), so that made
+
+        |Δθ| ∝ 1/sigma        while the children were sampled at   sigma * √d.
+
+    The two moved in OPPOSITE directions, so no value of sigma was ever sane
+    and no sigma controller could rescue it. Measured on the live run:
+
+        sigma=3.00 (gen 31)   children sampled at 182   parent stepped   0.34
+        sigma=0.02 (gen 101)  children sampled at 1.2   parent stepped  52
+
+    At high sigma the offspring are near-random and the parent is frozen; at
+    low sigma the offspring are clones and the parent leaps ~43x beyond
+    anything it measured, which is a noise-driven random walk — |θ| inflated
+    253 → 420 over 101 generations. The only balance point was sigma ≈ 0.13,
+    and the one arm parked near it (poetry-4 at sigma=0.1) was the only one
+    whose fitness slope was positive and whose |θ| was stable.
+
+    The 1/sigma was also simply the wrong gradient. For an isotropic Gaussian
+    search distribution N(θ, sigma² I), the PLAIN gradient of expected fitness
+    is (1/(N sigma)) Σ rw_i eps_i, but the NATURAL gradient — which is what the
+    docstring always claimed and what "NES" means — preconditions by the
+    inverse Fisher information, sigma² I, giving
+
+        natural grad = sigma² * (1/(N sigma)) Σ rw_i eps_i
+                     = (sigma / N) Σ rw_i eps_i.
+
+    That is the form used here, and it makes |Δθ| ∝ sigma, i.e. proportional to
+    the radius actually sampled. The ratio step/sampling-radius is now a
+    constant ~lr * 0.17 for N=11, independent of sigma.
+
+    The trust region on top is belt-and-braces: even if the rank-weighted sum
+    comes out unusually large, the parent still cannot move outside the region
+    its children explored, so the gradient is never extrapolated.
 
     Args:
-        parent:    (d,) float vector
-        eps_list:  list of (d,) float vectors, one per child (including
-                   the elite, which is zeros)
-        scores:    raw fitness per child, same order as eps_list
-        sigma:     mutation strength used to spawn the children
-        lr:        learning rate (η)
+        parent:       (d,) float vector
+        eps_list:     list of (d,) float vectors, one per child (including
+                      the elite, which is zeros)
+        scores:       raw fitness per child, same order as eps_list
+        sigma:        mutation strength used to spawn the children
+        lr:           learning rate (η)
+        trust_radius: cap on |Δθ| as a multiple of the sampling radius σ√d
     """
     n = len(scores)
     if n == 0 or n != len(eps_list):
+        return parent.copy()
+    if sigma <= 0.0:
         return parent.copy()
 
     # Sort indices by descending score → rank 0 = best.
@@ -174,7 +231,16 @@ def nes_update(
     for rank, child_idx in enumerate(order):
         weighted_eps += rw[rank] * eps_list[child_idx]
 
-    return parent + (lr / (n * sigma)) * weighted_eps
+    # Natural-gradient step: magnitude scales WITH sigma.
+    step = (lr * sigma / n) * weighted_eps
+
+    # Trust region: never move further than the children were sampled.
+    cap = trust_radius * sigma * np.sqrt(parent.shape[0])
+    norm = float(np.linalg.norm(step))
+    if norm > cap > 0.0:
+        step *= cap / norm
+
+    return parent + step
 
 
 def adapt_sigma(sigma: float, success_rate: float) -> float:
@@ -225,6 +291,9 @@ class NextGen:
     ranked_indices: list[int]            # current worms, best fitness first
     fresh_mean: float | None = None      # mean fitness of fresh children this gen
                                          # (the parent-fitness proxy for next gen)
+    scheme: str = "vs_mean"              # σ-control scheme used (Exp-2 A/B)
+    sigma_baseline: float | None = None  # the incumbent the 1/5 rule compared to
+                                         # (None for xnes / sigma_anneal)
 
 
 def evolve_generation(
@@ -239,6 +308,7 @@ def evolve_generation(
     rng: np.random.Generator,
     parent_fitness: float | None = None,
     prev_best_fitness: float | None = None,  # deprecated alias for parent_fitness
+    scheme: str = "vs_mean",                 # Exp-2 σ-control A/B (σ-update only)
 ) -> NextGen:
     """One generation of elitist NES (Changes 2 + 4 + 5).
 
@@ -279,13 +349,21 @@ def evolve_generation(
     # the parent, so their mean ≈ the parent's fitness). This oscillates around
     # the 1/5 target instead of monotonically collapsing. `parent_fitness` is
     # the canonical arg; `prev_best_fitness` is accepted only for back-compat.
-    baseline = parent_fitness if parent_fitness is not None else prev_best_fitness
     fresh_mean = float(np.mean(fresh_scores)) if fresh_scores else None
-    if baseline is None or not fresh_scores:
-        success_rate = SUCCESS_TARGET  # neutral: hold sigma when we can't judge
-    else:
-        success_rate = sum(s > baseline for s in fresh_scores) / len(fresh_scores)
-    new_sigma = adapt_sigma(sigma, success_rate)
+    # Exp-2: the σ-control scheme is pluggable (σ-update ONLY — spawn/gradient
+    # below are untouched). Default "vs_mean" reproduces the prior behaviour
+    # exactly. Lazy import avoids the evolution<->sigma_controllers cycle.
+    from server.sigma_controllers import GenContext, compute_new_sigma
+    elite_fits = [fitnesses[i] for i in range(n) if is_elite[i]]
+    ctx = GenContext(
+        fresh_scores=fresh_scores,
+        prev_fresh_mean=(parent_fitness if parent_fitness is not None else prev_best_fitness),
+        prev_max=None,  # v6 control not wired for the live A/B
+        elite_fitness=(max(elite_fits) if elite_fits else None),  # champion re-scored THIS gen
+        centroid_fitness=None,  # vs_centroid needs an evaluated θ slot — follow-up
+    )
+    new_sigma, sr, sigma_baseline = compute_new_sigma(scheme, sigma, ctx, fresh_eps)
+    success_rate = sr if sr is not None else SUCCESS_TARGET
 
     # --- elitism: carry the top-n_elites genomes verbatim (Change 5) ---
     ranked = sorted(range(n), key=lambda i: -fitnesses[i])
@@ -312,4 +390,6 @@ def evolve_generation(
         success_rate=success_rate,
         ranked_indices=ranked,
         fresh_mean=fresh_mean,
+        scheme=scheme,
+        sigma_baseline=sigma_baseline,
     )

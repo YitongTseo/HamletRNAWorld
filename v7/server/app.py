@@ -52,6 +52,7 @@ from server.orchestrator import (
 )
 from server.worm_group import WormGroup
 from server import flask_embedder as flask_emb
+from server import embedding
 from sim.flask_body import build_flask_body
 from server import generations as gens_mod
 from server.generations import (
@@ -469,7 +470,7 @@ def _run_all_flask_rollovers_sync() -> None:
     skips commit+purge); a single git commit at the end covers
     everything."""
     from server.gardener import maybe_write_meta_log
-    from server.generations import GENERATIONS_ROOT, _git_commit, _purge_gen_dir
+    from server.generations import GENERATIONS_ROOT, _purge_gen_dir
 
     # Initialize the cumulative progress totals BEFORE the per-flask loop
     # so run_generation_rollover doesn't reset them per-flask (it skips
@@ -556,45 +557,47 @@ def _run_all_flask_rollovers_sync() -> None:
         LOG.info("epoch %d global winner: %s/%s (fitness=%.3f)",
                  epoch_num, global_winner_flask, global_winner_worm, global_winner_score)
 
-    # --- One atomic commit covers all six flasks' data + the meta log + winner.json ---
+    # --- Publish the winning worm to the board tree (replaces the git path) ---
+    # No more per-generation git commits: multiple servers racing to push to one
+    # shared branch failed non-fast-forward and bloated history with ~19M lines
+    # of JSON. Instead each process publishes its winner into its OWN subtree
+    # under board_publish/, served at /board over the tunnel — see
+    # server/board_publish.py. Disjoint writers => no race, no lock, no rebase.
     GENERATION_PROGRESS.phase = gens_mod.PHASE_COMMITTING
     _generation_keepalive()
-    committed = False
-    if os.environ.get("WORMLET_GIT_COMMIT", "1") != "0":
-        flask_paths = []
-        commit_lines = []
-        for flask in FLASKS:
-            gen = flask.state.generation if flask.state else 0
-            if gen < 1:
-                continue
-            gen_dir = GENERATIONS_ROOT / flask.name / f"gen-{gen:04d}"
-            if gen_dir.exists():
-                flask_paths.append(gen_dir)
-                best = flask.state.best_score_history[-1] if flask.state.best_score_history else 0.0
-                commit_lines.append(f"{flask.name}: best={best:.3f} σ={flask.state.sigma:.3f}")
-        meta_dir = GENERATIONS_ROOT / "meta" / f"gen-{epoch_num:04d}"
-        if meta_dir.exists():
-            flask_paths.append(meta_dir)
-        if flask_paths:
-            winner_tag = (f" winner={global_winner_flask}/{global_winner_worm} "
-                          f"({global_winner_score:.3f})") if global_winner_flask else ""
-            msg = (f"epoch {epoch_num:04d}:{winner_tag} · "
-                   + ", ".join(commit_lines))
-            committed = _git_commit(msg, flask_paths, keepalive=_generation_keepalive)
-            if committed:
-                LOG.info("epoch %d committed to git", epoch_num)
-            else:
-                LOG.warning("epoch %d git commit failed; data still on disk", epoch_num)
+    published = False
+    if (os.environ.get("WORMLET_BOARD_PUBLISH", "1") != "0"
+            and global_winner_flask and epoch_num >= 1):
+        try:
+            from server.board_publish import publish_board_bundle, PROCESS_ID
+            published = publish_board_bundle(
+                process_id=PROCESS_ID,
+                generations_root=GENERATIONS_ROOT,
+                epoch=epoch_num,
+                winner_flask=global_winner_flask,
+                winner_worm=global_winner_worm,
+                winner_score=global_winner_score,
+                keepalive=_generation_keepalive,
+            )
+        except Exception:
+            LOG.exception("epoch %d board publish raised; data still on disk", epoch_num)
+        if published:
+            LOG.info("epoch %d published board bundle for %s", epoch_num, PROCESS_ID)
+        else:
+            LOG.warning("epoch %d board publish failed; data still on disk", epoch_num)
     else:
-        LOG.info("WORMLET_GIT_COMMIT=0: skipping commit; nothing purged")
+        LOG.info("epoch %d board publish skipped (disabled or no winner)", epoch_num)
 
-    # --- Purge bulky files only after the data is safely in git ---
+    # --- Purge bulky files only after the winner is safely published ---
     # Global-winner policy: only the (global_winner_flask, global_winner_worm)
     # pair gets its weights.json + poem_clean.txt kept. Every other worm in
     # every flask is fully purged (still keeping fitness/seed/scores for the
-    # gardener to read).
+    # gardener to read). NOTE: purged files are no longer recoverable from git —
+    # the published winner bundle is now the durable record, so only the winner's
+    # weights survive. Non-winner weights become ephemeral (as before, they were
+    # only ever kept in git history).
     purge_anyway = os.environ.get("WORMLET_PURGE_ANYWAY", "0") == "1"
-    if committed or purge_anyway:
+    if published or purge_anyway:
         for flask in FLASKS:
             gen = flask.state.generation if flask.state else 0
             if gen < 1:
@@ -640,6 +643,12 @@ def _step_flask_embedder(flask: WormGroup) -> None:
     the flask's shared EmbeddingModel in place so the subsequent respawn installs
     the next candidate. Self-contained per flask — no barrier, no other flask
     involved, so a fast flask never blocks on a slow one."""
+    # 2026-08-13: no-op under the default UMAP encoder — the chemosensory
+    # encoder is frozen, so there is no genome to step. Guarded here rather
+    # than in the callers so both rollover paths get it, and so a run switched
+    # back to WORMLET_ENCODER=learned resumes its ES with no other change.
+    if embedding.encoder_mode() != embedding.ENCODER_LEARNED:
+        return
     est = flask.embedder_state
     model = flask.embedding_model
     if est is None or model is None or not flask.worms:
@@ -995,7 +1004,10 @@ async def disable_cdn_cache(request, call_next):
     response = await call_next(request)
     path = request.url.path
     if (path.startswith("/static/") or path.startswith("/focus/")
-            or path in ("/", "/poems", "/about")):
+            or path in ("/", "/poems", "/about")
+            # Board manifests must always be fresh so boards see new generations;
+            # the gen-NNNN/* payloads they point at are immutable and may cache.
+            or path.endswith("/latest.json") or path.endswith("/index.json")):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["CDN-Cache-Control"] = "no-store"
     return response
@@ -1036,7 +1048,12 @@ async def healthz():
         "tick": tick,
         "uptime_s": round(now - _STARTED_AT, 1),
         "last_tick_advance_s_ago": round(now - _LAST_TICK_AT, 2),
-        "embedding": "learned",
+        # The ACTUAL encoder in use, not a hardcoded label — this was pinned to
+        # the string "learned" and so reported "learned" even after the process
+        # was switched to the frozen UMAP encoder, which makes it useless for
+        # verifying a cutover. Reads the live model so it reflects reality.
+        "embedding": embedding.get_model().mode,
+        "pos_channel": "corpus_grammar",
         "generations_enabled": GENERATIONS_ENABLED,
         "flasks": [
             {"name": f.name, "display": f.display,
@@ -1279,26 +1296,101 @@ def _gv_gen_nums(flask_dir: Path) -> list[int]:
     return sorted(nums)
 
 
+# Separator between the owning process tag and the flask dir name in a
+# qualified flask id. Must not be "/" — see _gv_flask_map.
+FLASK_SEP = ":"
+
+
+def _gv_is_flask_dir(d: Path) -> bool:
+    if not d.is_dir() or d.name == "meta":
+        return False
+    try:
+        return any(c.is_dir() and c.name.startswith("gen-") for c in d.iterdir())
+    except OSError:
+        return False
+
+
+def _gv_sibling_roots() -> list[tuple[str, Path]]:
+    """(process_tag, generations_root) for every poetry process on this box,
+    ordered poetry-1, poetry-2, ...
+
+    The 8 poetry flasks live in FOUR separate processes, each with its own
+    WORMLET_DATA_DIR (data/poetry-N), so GENERATIONS_ROOT only ever sees the 2
+    flasks belonging to THIS process — which is why the generations tab could
+    only ever page through flasks 1-2. The four data dirs are siblings on one
+    filesystem and these endpoints are read-only, so the viewer can simply read
+    across all of them.
+
+    Returns [] when this process isn't a poetry process (experiment-mode runs
+    have their own data dir and should stay scoped to it)."""
+    data_root = _GV_ROOT.parent                     # .../data/poetry-N
+    if not data_root.name.startswith("poetry-"):
+        return []
+    parent = data_root.parent                       # .../data
+    if not parent.is_dir():
+        return []
+    out = []
+    for d in sorted(parent.glob("poetry-*")):
+        gens = d / "generations"
+        if gens.is_dir():
+            out.append((d.name, gens))
+    return out
+
+
+def _gv_flask_map() -> dict[str, Path]:
+    """name -> flask directory, for every flask this viewer can show.
+
+    Single-process/experiment runs keep bare names ('flask_1', 'words'). A
+    poetry process additionally exposes every sibling process's flasks under a
+    qualified 'poetry-N:flask_M' name, so all 8 are reachable from any of the
+    four ports. Bare local names are kept as aliases so existing links and the
+    board-publish paths don't break.
+
+    The separator is ':' and NOT '/': these names travel as a single path
+    segment in /api/generations/{flask}/{gen}, so a slash would be parsed as a
+    route separator (the endpoint 422s / 404s). ':' is legal in a path segment
+    per RFC 3986 §3.3."""
+    out: dict[str, Path] = {}
+    if _GV_ROOT.is_dir():
+        for d in sorted(_GV_ROOT.iterdir()):
+            if _gv_is_flask_dir(d):
+                out[d.name] = d
+    for tag, root in _gv_sibling_roots():
+        for d in sorted(root.iterdir()):
+            if _gv_is_flask_dir(d):
+                out[f"{tag}{FLASK_SEP}{d.name}"] = d
+    return out
+
+
 def _gv_flask_names() -> list[str]:
     """Every flask-shaped subdir of GENERATIONS_ROOT — prod's flask_1.. AND
     any experiment-mode group (e.g. 'words', 'nouns'). Skips 'meta' (the
-    meta-gardener's logs) and anything that doesn't contain gen-NNNN dirs."""
-    if not _GV_ROOT.is_dir():
-        return []
-    out = []
-    for d in _GV_ROOT.iterdir():
-        if not d.is_dir() or d.name == "meta":
-            continue
-        if any(c.is_dir() and c.name.startswith("gen-") for c in d.iterdir()):
-            out.append(d.name)
-    return sorted(out)
+    meta-gardener's logs) and anything that doesn't contain gen-NNNN dirs.
+
+    When the sibling poetry dirs are visible, the qualified names are returned
+    INSTEAD of the bare local ones, so the dropdown lists each flask once."""
+    m = _gv_flask_map()
+    qualified = sorted(k for k in m if FLASK_SEP in k)
+    if qualified:
+        return qualified
+    return sorted(m)
+
+
+def _gv_dir(flask: str) -> Path:
+    """Resolve a flask name from the URL to its directory.
+
+    Validated against the enumerated map rather than joined onto a root, so a
+    crafted name ('../..') can never escape — an unknown name resolves to a
+    non-existent path and every endpoint already 404s on that."""
+    hit = _gv_flask_map().get(flask)
+    return hit if hit is not None else _GV_ROOT / "__unknown__"
 
 
 def _gv_summary(flask: str, n: int) -> dict | None:
     """Per-gen summary used by the existing best/avg/sigma charts. Reads
     metadata.json (prod) or metrics.json (experiment mode) — they share
     the same headline fields."""
-    gen_dir = _GV_ROOT / flask / f"gen-{n:04d}"
+    gen_dir = _gv_dir(flask) / f"gen-{n:04d}"
     meta = _gv_read_json(gen_dir / "metadata.json")
     if meta is None:
         # Experiment-mode generation: metrics.json holds the same headline data.
@@ -1353,16 +1445,40 @@ async def generations_page():
     return FileResponse(VIEWER_DIR / "generations.html")
 
 
+def _gv_label(name: str) -> str:
+    """Display name: 'poetry-2:flask_1' -> 'flask 3 · poetry-2'. Numbers the
+    flasks globally 1..8 so the dropdown reads as the whole poetry run rather
+    than four independent pairs of flask_1/flask_2."""
+    if FLASK_SEP not in name:
+        return name
+    tag, local = name.split(FLASK_SEP, 1)
+    try:
+        proc = int(tag.rsplit("-", 1)[1])
+        idx = int(local.rsplit("_", 1)[1])
+        return f"flask {(proc - 1) * 2 + idx} · {tag}"
+    except (ValueError, IndexError):
+        return name
+
+
 @app.get("/api/generations")
 async def api_generations_index():
     flasks = []
     for name in _gv_flask_names():
-        state = _gv_read_json(_GV_ROOT / name / "state.json", {}) or {}
-        nums = _gv_gen_nums(_GV_ROOT / name)
+        d = _gv_dir(name)
+        state = _gv_read_json(d / "state.json", {}) or {}
+        nums = _gv_gen_nums(d)
         flasks.append({
             "name": name,
+            "label": _gv_label(name),
             "current_generation": state.get("generation", nums[-1] if nums else 0),
             "n_generations": len(nums),
+            # The σ-control A/B assigns one scheme per poetry process, so
+            # surfacing it here is what lets the dropdown answer "is the
+            # frozen-σ arm actually doing anything?"
+            "sigma": state.get("sigma"),
+            "sigma_scheme": _gv_read_json(
+                d / f"gen-{nums[-1]:04d}" / "metadata.json", {}
+            ).get("sigma_scheme") if nums else None,
         })
     return JSONResponse({"flasks": flasks})
 
@@ -1395,7 +1511,7 @@ async def api_generations_metrics(flask: str, gen: int):
     """Full experiment-mode metrics.json for one generation. Drives the new
     per-worm lineage and POS-breakdown charts. Returns 404 for prod-format
     generations (those use the worm-detail endpoint above)."""
-    p = _GV_ROOT / flask / f"gen-{gen:04d}" / "metrics.json"
+    p = _gv_dir(flask) / f"gen-{gen:04d}" / "metrics.json"
     if not p.exists():
         return JSONResponse({"error": "no metrics.json"}, status_code=404)
     return JSONResponse(_gv_read_json(p, {}))
@@ -1403,7 +1519,7 @@ async def api_generations_metrics(flask: str, gen: int):
 
 @app.get("/api/generations/{flask}/weights/trajectory")
 async def api_generations_trajectory(flask: str, top_n: int = 64):
-    flask_dir = _GV_ROOT / flask
+    flask_dir = _gv_dir(flask)
     per_gen = []  # [(gen_num, flat_weights_dict)]
     for n in _gv_gen_nums(flask_dir):
         gen_dir = flask_dir / f"gen-{n:04d}"
@@ -1434,7 +1550,7 @@ async def api_generations_trajectory(flask: str, top_n: int = 64):
 
 @app.get("/api/generations/{flask}")
 async def api_generations_flask(flask: str, limit: int = 500):
-    flask_dir = _GV_ROOT / flask
+    flask_dir = _gv_dir(flask)
     if not flask_dir.is_dir():
         return JSONResponse({"total": 0, "generations": []})
     nums = _gv_gen_nums(flask_dir)
@@ -1445,7 +1561,7 @@ async def api_generations_flask(flask: str, limit: int = 500):
 
 @app.get("/api/generations/{flask}/{gen}")
 async def api_generations_detail(flask: str, gen: int):
-    gen_dir = _GV_ROOT / flask / f"gen-{gen:04d}"
+    gen_dir = _gv_dir(flask) / f"gen-{gen:04d}"
     if not gen_dir.is_dir():
         return JSONResponse({"error": "not found"}, status_code=404)
     meta = _gv_read_json(gen_dir / "metadata.json", {}) or {}
@@ -1583,3 +1699,11 @@ async def debug_add_food(name: str, request: Request):
 
 # Static viewer files (JS/CSS) — mounted under /static so / and /ws take precedence.
 app.mount("/static", StaticFiles(directory=str(VIEWER_DIR)), name="viewer")
+
+# Board publish tree — the per-generation winning-worm bundles the ESP32 boards
+# pull over the tunnel (see server/board_publish.py). All poetry processes mount
+# the same shared dir, so any process can serve any other's subtree. The dir is
+# created here so the mount succeeds even before the first generation publishes.
+from server.board_publish import BOARD_PUBLISH_DIR  # noqa: E402
+BOARD_PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/board", StaticFiles(directory=str(BOARD_PUBLISH_DIR)), name="board")

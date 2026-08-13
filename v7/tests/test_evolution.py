@@ -30,14 +30,108 @@ def test_repetition_factor_bounds():
     assert repetition_factor(["God", "god", "GOD"]) < 1.0
 
 
-def test_repetitive_window_scores_less_than_diverse():
+def test_repetition_is_not_penalized_in_fitness():
+    """2026-08-13: let them repeat. `fitness` no longer applies the token
+    diversity discount, so two windows the judge rated identically score
+    identically regardless of how repetitive they are."""
     diverse = [_win(["the", "king", "is", "dead", "and", "gone", "now",
                      "sleep", "crown", "grief", "cold", "night", "star",
                      "bell", "rose"], 90, 90)]
     repeat = [_win(["god"] * 15, 90, 90)]           # same judge E/C
-    assert fitness(repeat) < fitness(diverse)
-    # and the repeat is near the floor fraction of the diverse score
-    assert fitness(repeat) <= ev.REP_MIN_FACTOR * fitness(diverse) + 1e-9
+    assert fitness(repeat) == fitness(diverse)
+
+
+def test_fitness_is_pure_judge_score():
+    """Fitness is exactly Σ 1.5*(E/100)^γ + (C/100)^γ — no other factors."""
+    w = [_win(["a", "b", "c"], 80, 60)]
+    expected = ev.EMOTIONAL_WEIGHT * (0.8 ** ev.GAMMA) + (0.6 ** ev.GAMMA)
+    assert abs(fitness(w) - expected) < 1e-12
+
+
+# --- step size vs sigma (the decoupling fix) ------------------------------
+
+def _step_norm(sigma, d=3689, n=11, seed=0, **kw):
+    rng = np.random.default_rng(seed)
+    parent = np.zeros(d)
+    eps = [rng.standard_normal(d) for _ in range(n)]
+    scores = list(range(n))[::-1]
+    return float(np.linalg.norm(
+        ev.nes_update(parent, eps, scores, sigma=sigma, **kw) - parent))
+
+
+def test_step_scales_linearly_with_sigma():
+    """THE regression this fixes. The step used to carry a 1/sigma factor, so
+    shrinking sigma GREW the step; it must now scale WITH sigma."""
+    a, b = _step_norm(0.02), _step_norm(0.04)
+    assert b > a
+    assert abs(b / a - 2.0) < 1e-6, f"step must double when sigma doubles: {b/a}"
+
+
+def test_step_to_sampling_radius_ratio_is_sigma_invariant():
+    """The property that makes any sigma controller viable: however sigma
+    moves, the parent always steps the same FRACTION of the region sampled."""
+    d = 3689
+    ratios = [_step_norm(s, d=d) / (s * np.sqrt(d))
+              for s in (0.02, 0.1, 0.5, 3.0)]
+    assert max(ratios) - min(ratios) < 1e-9, ratios
+    # and that fraction is a sane fraction of the sampled cloud, not 40x it
+    assert 0.01 < ratios[0] < ev.TRUST_RADIUS
+
+
+def test_old_formula_would_have_exploded_at_small_sigma():
+    """Documents the bug: with the 1/sigma form the parent moved 40x further
+    than it sampled once sigma hit the floor."""
+    d, n = 3689, 11
+    rng = np.random.default_rng(0)
+    eps = [rng.standard_normal(d) for _ in range(n)]
+    rw = ev.rank_weights(n)
+    weighted = sum(rw[r] * eps[r] for r in range(n))
+    sigma = 0.02
+    old_step = np.linalg.norm((0.1 / (n * sigma)) * weighted)
+    sampling_radius = sigma * np.sqrt(d)
+    assert old_step / sampling_radius > 30          # the pathology
+    assert _step_norm(sigma) / sampling_radius < 1  # the fix
+
+
+def test_trust_region_caps_a_runaway_step():
+    d, n = 500, 8
+    parent = np.zeros(d)
+    # one enormous eps -> huge rank-weighted sum
+    eps = [np.full(d, 1000.0)] + [np.zeros(d) for _ in range(n - 1)]
+    scores = list(range(n))[::-1]
+    sigma = 0.1
+    out = ev.nes_update(parent, eps, scores, sigma=sigma, lr=50.0)
+    cap = ev.TRUST_RADIUS * sigma * np.sqrt(d)
+    assert np.linalg.norm(out - parent) <= cap * (1 + 1e-9)
+
+
+def test_trust_region_not_binding_in_normal_use():
+    """The cap is a safety net; ordinary generations must sit under it so the
+    gradient magnitude still carries information."""
+    d = 3689
+    for s in (0.02, 0.1, 1.0):
+        assert _step_norm(s, d=d) < ev.TRUST_RADIUS * s * np.sqrt(d)
+
+
+def test_zero_sigma_is_a_noop():
+    d = 100
+    parent = np.ones(d)
+    eps = [np.random.default_rng(1).standard_normal(d) for _ in range(4)]
+    out = ev.nes_update(parent, eps, [3, 2, 1, 0], sigma=0.0)
+    assert np.allclose(out, parent)
+
+
+def test_step_direction_still_follows_the_ranking():
+    """Rescaling must not change WHICH way we move."""
+    d, n = 200, 6
+    rng = np.random.default_rng(4)
+    parent = np.zeros(d)
+    eps = [rng.standard_normal(d) for _ in range(n)]
+    scores = [10.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+    step = ev.nes_update(parent, eps, scores, sigma=0.3) - parent
+    # positive projection onto the best child's noise, negative onto the worst
+    assert float(step @ eps[0]) > 0
+    assert float(step @ eps[-1]) < 0
 
 
 def _run_gen(parent_fitness, fresh_scores, sigma=0.1):
