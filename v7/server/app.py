@@ -1,4 +1,4 @@
-"""FastAPI server for v6.
+"""FastAPI server for v7.
 
 Runs N worms headless at 60 Hz. Each worm has its own World, its own seed,
 and its own poem file. Three viewer pages:

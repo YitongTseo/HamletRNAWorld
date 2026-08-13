@@ -209,7 +209,12 @@ you change versions.
 | `WORMLET_VIEW_MODE` | `poetry` | which dropdown entry this process highlights |
 | `WORMLET_EXPERIMENT_MODE` | unset | POS-scorer sanity runs (`words`, `nouns`, `pos_chain`, `semantic`) — no LLM, free |
 | `WORMLET_CHECKPOINT_INTERVAL_S` | `60` | worm-state checkpoint cadence |
-| `WORMLET_BOARD_PUBLISH_DIR` | `/home/web/board_publish` | where generation winners are published |
+| `WORMLET_BOARD_PUBLISH` | `1` | `0` disables publishing generation winners to the board dir |
+| `WORMLET_BOARD_PUBLISH_DIR` | `/home/web/board_publish` | where generation winners are published. Created at import time — point it somewhere writable on a dev box |
+| `WORMLET_PURGE_ANYWAY` | `0` | `1` purges generation data even without a successful git commit |
+| `WORMLET_RUNTIME_DIR` | `/run/wormlet` | where the rollover lock lives (read by the external healthcheck) |
+| `WORMLET_DOMAIN` | `wordswordsworms.org` | domain for experiment-mode subdomain links (`DOMAIN=localhost.dev` for local) |
+| `WORMLET_SEM_THRESHOLD` | `0.30` | mean-centred cosine threshold for the `semantic` experiment scorer |
 | `ANTHROPIC_API_KEY` | unset | required only in generations mode |
 
 ### Set `WORMLET_GIT_COMMIT=0`
