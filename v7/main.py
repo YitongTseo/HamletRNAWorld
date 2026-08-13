@@ -1,4 +1,4 @@
-"""Run the v6 wormlet server.
+"""Run the v7 wormlet server.
 
     python main.py                  # default 127.0.0.1:8000, 6 worms
     python main.py --port 9000

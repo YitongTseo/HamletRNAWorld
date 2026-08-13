@@ -235,6 +235,11 @@ you change versions.
 | `WORMLET_JUDGE_API_KEY` | unset | bearer token for the `openai` backend, if the server wants one |
 | `WORMLET_JUDGE_TIMEOUT_S` | `300` | HTTP timeout for the `openai` backend — small local models take minutes on a full poem |
 | `ANTHROPIC_API_KEY` | unset | required only in generations mode with the `anthropic` judge |
+| `WORMLET_BOARD_PUBLISH` | `1` | `0` disables publishing generation winners to the board dir |
+| `WORMLET_PURGE_ANYWAY` | `0` | `1` purges generation data even without a successful git commit |
+| `WORMLET_RUNTIME_DIR` | `/run/wormlet` | where the rollover lock lives (read by the external healthcheck) |
+| `WORMLET_DOMAIN` | `wordswordsworms.org` | domain for experiment-mode subdomain links (`DOMAIN=localhost.dev` for local) |
+| `WORMLET_SEM_THRESHOLD` | `0.30` | mean-centred cosine threshold for the `semantic` experiment scorer |
 
 ### Set `WORMLET_GIT_COMMIT=0`
 
