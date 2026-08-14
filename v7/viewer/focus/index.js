@@ -31,7 +31,7 @@ const hud = document.getElementById('hud');
 // Food — yellow-ish bacterial spots. Modest emission so they bloom slightly.
 // ---------------------------------------------------------------------------
 const foodMaterial = new THREE.MeshBasicMaterial({
-  color: 0xffd040,
+  color: 0xcfa348,
   toneMapped: false,
   side: THREE.DoubleSide,
   depthTest: false,
@@ -110,7 +110,7 @@ function connect() {
 
     isPaused = msg.paused || false;
     window.__lastPaused = isPaused;
-    const pausedStr = isPaused ? ' <span style="color:#fc6;">[PAUSED]</span>' : '';
+    const pausedStr = isPaused ? ' <span style="color:#cfa348;">[PAUSED]</span>' : '';
 
     // Row 1: tight, just speed and motor.
     const row1 =
@@ -131,11 +131,11 @@ function connect() {
       const top = wordImpact.entries.slice(0, 5);
       row2 += top.map(e => {
         const pct = (e.value / total * 100) | 0;
-        const color = e.eaten ? '#fc8' : '#cfc';
+        const color = e.eaten ? '#d9b98a' : '#ece2cd';
         const note = e.eaten ? `<span style="opacity:0.6;">·eaten</span>` : '';
         return `<span style="color:${color};">${escapeHTML(e.word)} ${pct}%${note}</span>`;
       }).join(' <span style="opacity:0.3;">·</span> ');
-      row2 += ` <span style="opacity:0.4; font-size:10px;">[<span style="color:#cfc;">smelled</span> <span style="color:#fc8;">eaten</span>]</span>`;
+      row2 += ` <span style="opacity:0.4; font-size:10px;">[<span style="color:#ece2cd;">smelled</span> <span style="color:#d9b98a;">eaten</span>]</span>`;
     }
 
     hud.innerHTML = row1 + '<br>' + row2;
@@ -145,7 +145,7 @@ connect();
 
 function bar(percent, hue, w = 70) {
   const v = Math.max(0, Math.min(100, percent));
-  return `<span style="display:inline-block; width:${w}px; height:8px; background:rgba(255,255,255,0.08); border-radius:2px; vertical-align:middle; overflow:hidden;">
+  return `<span style="display:inline-block; width:${w}px; height:8px; background:rgba(236,226,205,0.08); border-radius:2px; vertical-align:middle; overflow:hidden;">
     <span style="display:block; width:${v}%; height:100%; background:hsl(${hue},75%,55%); box-shadow:0 0 4px hsl(${hue},90%,60%);"></span>
   </span>`;
 }
@@ -579,7 +579,7 @@ render();
       background: rgba(0, 0, 0, 0.78); z-index: 9999;
       align-items: center; justify-content: center;
       font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
-      color: #6f9;
+      color: #cfa348;
     }
     #gen-overlay.visible { display: flex; }
     #gen-overlay .panel {
@@ -589,12 +589,12 @@ render();
       border-radius: 6px;
       box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
     }
-    #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: #6f9; }
-    #gen-overlay .phase { margin-bottom: 12px; color: #cfd; font-size: 13px; }
+    #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: #cfa348; }
+    #gen-overlay .phase { margin-bottom: 12px; color: #ece2cd; font-size: 13px; }
     #gen-overlay .bar { height: 6px; background: rgba(100, 255, 200, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
-    #gen-overlay .bar > div { height: 100%; background: #6f9; transition: width 250ms ease; }
-    #gen-overlay .meta { color: #5a5; font-size: 11px; margin-top: 8px; }
-    #gen-overlay .err { color: #f88; margin-top: 10px; font-size: 12px; }
+    #gen-overlay .bar > div { height: 100%; background: #cfa348; transition: width 250ms ease; }
+    #gen-overlay .meta { color: #8f8266; font-size: 11px; margin-top: 8px; }
+    #gen-overlay .err { color: #cd5d4a; margin-top: 10px; font-size: 12px; }
   `;
   document.head.appendChild(style);
   const overlay = document.createElement('div');

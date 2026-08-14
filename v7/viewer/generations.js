@@ -37,7 +37,7 @@ async function fetchJSON(url) {
 
 function setStatus(text, isError) {
   statusEl.textContent = text;
-  statusEl.style.color = isError ? '#f99' : '';
+  statusEl.style.color = isError ? '#cd5d4a' : '';
 }
 
 function chartOpts(title) {
@@ -46,11 +46,11 @@ function chartOpts(title) {
     maintainAspectRatio: false,
     plugins: {
       legend: { display: false },
-      title: { display: true, text: title, color: '#6f9', font: { size: 11, weight: 'normal' } },
+      title: { display: true, text: title, color: '#cfa348', font: { size: 11, weight: 'normal' } },
     },
     scales: {
-      x: { ticks: { color: '#5a5', font: { size: 10 } }, grid: { color: 'rgba(100,200,255,0.06)' } },
-      y: { ticks: { color: '#5a5', font: { size: 10 } }, grid: { color: 'rgba(100,200,255,0.06)' } },
+      x: { ticks: { color: '#8f8266', font: { size: 10 } }, grid: { color: 'rgba(205,127,93,0.06)' } },
+      y: { ticks: { color: '#8f8266', font: { size: 10 } }, grid: { color: 'rgba(205,127,93,0.06)' } },
     },
     elements: { point: { radius: 0, hoverRadius: 4 } },
   };
@@ -107,7 +107,7 @@ function chartOptsWithLegend(title) {
     display: true,
     position: 'top',
     align: 'end',
-    labels: { color: '#9c9', font: { size: 9 }, boxWidth: 8, boxHeight: 2 },
+    labels: { color: '#b3a789', font: { size: 9 }, boxWidth: 8, boxHeight: 2 },
   };
   return opts;
 }
@@ -129,12 +129,12 @@ function renderCharts(gens) {
   }
   charts.best = new Chart(document.getElementById('chart-best'), {
     type: 'line',
-    data: { labels, datasets: [lineDataset('best fitness', '#6f9', best)] },
+    data: { labels, datasets: [lineDataset('best fitness', '#cfa348', best)] },
     options: chartOpts('best fitness per generation'),
   });
   charts.avg = new Chart(document.getElementById('chart-avg'), {
     type: 'line',
-    data: { labels, datasets: [lineDataset('avg fitness', '#fc6', avg)] },
+    data: { labels, datasets: [lineDataset('avg fitness', '#cfa348', avg)] },
     options: chartOpts('average fitness per generation'),
   });
   // σ chart shows the actual σ used each gen, the rolling 10-gen sample
@@ -147,8 +147,8 @@ function renderCharts(gens) {
     data: {
       labels,
       datasets: [
-        lineDataset('σ used', '#f66', sigmas),
-        lineDataset('σ stability (rolling std, 10 gens)', '#9cf', sigmaStd10),
+        lineDataset('σ used', '#cd5d4a', sigmas),
+        lineDataset('σ stability (rolling std, 10 gens)', '#cd7f5d', sigmaStd10),
         constDataset(`max (${SIGMA_MAX})`, 'rgba(255,102,102,0.45)', SIGMA_MAX, sigmas.length, [2, 4]),
         constDataset(`init (${SIGMA_INIT})`, 'rgba(102,255,153,0.45)', SIGMA_INIT, sigmas.length, [2, 4]),
         constDataset(`min (${SIGMA_MIN})`, 'rgba(150,150,150,0.4)', SIGMA_MIN, sigmas.length, [2, 4]),
@@ -166,7 +166,7 @@ function renderGenList(gens) {
   genListEl.innerHTML = '';
   const header = document.createElement('div');
   header.className = 'gen-row';
-  header.style.cssText = 'background:rgba(100,200,255,0.07); font-weight:600; cursor:default;';
+  header.style.cssText = 'background:rgba(205,127,93,0.07); font-weight:600; cursor:default;';
   header.innerHTML = `
     <span class="num">gen</span>
     <span class="score">best</span>
@@ -208,7 +208,7 @@ async function selectGeneration(genNum, rowEl) {
   try {
     data = await fetchJSON(`/api/generations/${currentFlask}/${genNum}`);
   } catch (e) {
-    detailLog.innerHTML = `<div class="subtle" style="color:#f99;">error: ${e.message}</div>`;
+    detailLog.innerHTML = `<div class="subtle" style="color:#cd5d4a;">error: ${e.message}</div>`;
     return;
   }
 
@@ -249,7 +249,7 @@ async function selectGeneration(genNum, rowEl) {
     detailHighlights.innerHTML = [
       hlCard('best combined', 'var(--accent)', bestBy('quality')),
       hlCard('most artsy', 'var(--warm)', bestBy('emotional')),
-      hlCard('most comprehensible', '#9cf', bestBy('coherence')),
+      hlCard('most comprehensible', '#cd7f5d', bestBy('coherence')),
     ].join('');
   } else {
     detailHighlights.innerHTML = '<div class="subtle">no scored windows for this generation yet.</div>';
@@ -260,7 +260,7 @@ async function selectGeneration(genNum, rowEl) {
     ? top.map(w => `
         <div class="window">
           <span class="scores">E=${w.emotional} C=${w.coherence}</span>
-          <span style="color:#9c9;">${w.worm}</span>
+          <span style="color:#b3a789;">${w.worm}</span>
           “${escapeHtml((w.tokens || []).join(' '))}”
         </div>`).join('')
     : '<div class="subtle">no scored windows for this generation.</div>';
@@ -272,7 +272,7 @@ function hlCard(label, color, w) {
       <div class="hl-label" style="color:${color};">${label}</div>
       <div class="hl-scores">
         <span style="color:var(--warm);">artsy ${w.emotional}</span> ·
-        <span style="color:#9cf;">comprehensible ${w.coherence}</span>
+        <span style="color:#cd7f5d;">comprehensible ${w.coherence}</span>
         <span class="hl-worm">· ${escapeHtml(w.worm)}</span>
       </div>
       <div class="hl-text">“${escapeHtml((w.tokens || []).join(' '))}”</div>
@@ -287,11 +287,11 @@ function escapeHtml(s) {
 
 // --- Heatmap of weight trajectory --------------------------------------
 function colorForWeight(w, maxAbs) {
-  if (!maxAbs) return '#111';
+  if (!maxAbs) return '#1d1710';
   const t = Math.max(-1, Math.min(1, w / maxAbs));
-  if (t === 0) return '#111';
+  if (t === 0) return '#1d1710';
   if (t > 0) {
-    // warm: black -> #ffaa33
+    // warm: black -> #cfa348
     const r = Math.round(255 * t);
     const g = Math.round(170 * t);
     const b = Math.round(51 * t);
@@ -308,8 +308,8 @@ function renderHeatmap(trajectory) {
   const traj = trajectory.trajectory || [];
   const keys = trajectory.keys || [];
   if (!traj.length || !keys.length) {
-    ctx.fillStyle = '#001'; ctx.fillRect(0, 0, heatmapEl.width, heatmapEl.height);
-    ctx.fillStyle = '#5a5'; ctx.font = '12px monospace';
+    ctx.fillStyle = '#211a12'; ctx.fillRect(0, 0, heatmapEl.width, heatmapEl.height);
+    ctx.fillStyle = '#8f8266'; ctx.font = '12px monospace';
     ctx.fillText('(no winner weights on disk yet — heatmap will populate as new generations finish)', 12, 24);
     heatStatsEl.textContent = '';
     return;
@@ -348,7 +348,7 @@ function renderMetaLogs(epochs) {
   }
   for (const ep of epochs.slice(0, 30)) {
     const div = document.createElement('div');
-    div.style.cssText = 'margin:8px 0; padding-left:8px; border-left:2px solid rgba(100,200,255,0.15);';
+    div.style.cssText = 'margin:8px 0; padding-left:8px; border-left:2px solid rgba(205,127,93,0.15);';
     const winner = ep.winner
       ? `<span style="color:var(--warm);">winner: ${ep.winner.flask}/${ep.winner.worm} @ ${(ep.winner.score || 0).toFixed(3)}</span>`
       : '';
@@ -491,7 +491,7 @@ function renderLineageChart(gens) {
     type: 'scatter',
     data: {
       datasets: [
-        { label: 'gen winner (rank 0)', data: dotsElite, backgroundColor: '#ffcc66', borderColor: '#ffaa33', pointRadius: 4, pointHoverRadius: 6 },
+        { label: 'gen winner (rank 0)', data: dotsElite, backgroundColor: '#cfa348', borderColor: '#cfa348', pointRadius: 4, pointHoverRadius: 6 },
         { label: 'other worms', data: dotsFresh, backgroundColor: 'rgba(150,255,200,0.7)', borderColor: 'rgba(120,210,170,0.9)', pointRadius: 3, pointHoverRadius: 5 },
       ],
     },
@@ -499,8 +499,8 @@ function renderLineageChart(gens) {
       ...chartOptsWithLegend('per-worm fitness with lineage lines (orange = elite carry, grey = fresh NES child)'),
       parsing: false,
       plugins: {
-        legend: { display: true, position: 'top', align: 'end', labels: { color: '#9c9', font: { size: 9 }, boxWidth: 8, boxHeight: 8 } },
-        title: { display: true, text: 'per-worm fitness with lineage lines', color: '#6f9', font: { size: 11, weight: 'normal' } },
+        legend: { display: true, position: 'top', align: 'end', labels: { color: '#b3a789', font: { size: 9 }, boxWidth: 8, boxHeight: 8 } },
+        title: { display: true, text: 'per-worm fitness with lineage lines', color: '#cfa348', font: { size: 11, weight: 'normal' } },
         tooltip: {
           callbacks: {
             label: (ctx) => {
@@ -516,11 +516,14 @@ function renderLineageChart(gens) {
 }
 
 // --- POS-breakdown stacked area ----------------------------------------
+// Warm categorical set (Tobacco & Ochre restyle): content words get the
+// strong hues (ochre/terracotta/olive/rose), function words recede into
+// translucent earth tones. All distinguishable on the tobacco ground.
 const POS_COLORS = {
-  NOUN: '#6f9', VERB: '#9cf', ADJ: '#ffcc66', ADV: '#cc99ff',
-  DET: 'rgba(160,160,160,0.7)', ADP: 'rgba(120,180,140,0.6)',
-  PRON: 'rgba(180,140,180,0.6)', PRT: 'rgba(140,170,180,0.5)',
-  CONJ: 'rgba(180,170,140,0.5)', other: 'rgba(80,80,80,0.45)',
+  NOUN: '#cfa348', VERB: '#cd7f5d', ADJ: '#a8a468', ADV: '#b08272',
+  DET: 'rgba(143,130,102,0.7)', ADP: 'rgba(125,157,127,0.6)',
+  PRON: 'rgba(176,130,150,0.6)', PRT: 'rgba(150,140,120,0.55)',
+  CONJ: 'rgba(180,166,130,0.55)', other: 'rgba(90,82,66,0.5)',
 };
 const POS_KEYS = ['NOUN', 'VERB', 'ADJ', 'ADV', 'DET', 'ADP', 'PRON', 'PRT', 'CONJ', 'other'];
 
@@ -561,12 +564,12 @@ function renderPOSChart(gens) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { display: true, position: 'top', align: 'end', labels: { color: '#9c9', font: { size: 9 }, boxWidth: 8, boxHeight: 8 } },
-        title: { display: true, text: 'POS breakdown of eaten words (stacked, all worms in flask)', color: '#6f9', font: { size: 11, weight: 'normal' } },
+        legend: { display: true, position: 'top', align: 'end', labels: { color: '#b3a789', font: { size: 9 }, boxWidth: 8, boxHeight: 8 } },
+        title: { display: true, text: 'POS breakdown of eaten words (stacked, all worms in flask)', color: '#cfa348', font: { size: 11, weight: 'normal' } },
       },
       scales: {
-        x: { ticks: { color: '#5a5', font: { size: 10 } }, grid: { color: 'rgba(100,200,255,0.06)' } },
-        y: { stacked: true, ticks: { color: '#5a5', font: { size: 10 } }, grid: { color: 'rgba(100,200,255,0.06)' } },
+        x: { ticks: { color: '#8f8266', font: { size: 10 } }, grid: { color: 'rgba(205,127,93,0.06)' } },
+        y: { stacked: true, ticks: { color: '#8f8266', font: { size: 10 } }, grid: { color: 'rgba(205,127,93,0.06)' } },
       },
     },
   });
@@ -607,7 +610,7 @@ async function init() {
     const meta = await fetchJSON('/api/generations/meta/index');
     renderMetaLogs(meta.epochs || []);
   } catch (e) {
-    metaLogListEl.innerHTML = `<div class="subtle" style="color:#f99;">meta logs unavailable: ${e.message}</div>`;
+    metaLogListEl.innerHTML = `<div class="subtle" style="color:#cd5d4a;">meta logs unavailable: ${e.message}</div>`;
   }
 }
 

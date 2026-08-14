@@ -39,7 +39,7 @@ function drawPcaPopup(word, mouseScreenPos, pcaData) {
   tctx.strokeRect(px, py, PW, PH);
 
   // Crosshairs
-  tctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  tctx.strokeStyle = 'rgba(236,226,205,0.08)';
   tctx.beginPath();
   tctx.moveTo(px + PW / 2, py);
   tctx.lineTo(px + PW / 2, py + PH);

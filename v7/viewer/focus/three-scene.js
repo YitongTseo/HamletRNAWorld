@@ -21,7 +21,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.7;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000);
+scene.background = new THREE.Color(0x211a12);
 
 // World coords arrive in worm-sim "pixel" units (~1600×1000). The camera is
 // y-flipped (top=0, bottom=WORLD_H) so we don't have to invert worm-sim's

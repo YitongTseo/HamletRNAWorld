@@ -21,7 +21,7 @@
         width: 320px; max-height: 600px;
         background: rgba(0, 10, 10, 0.85);
         border: 1px solid rgba(100, 200, 255, 0.4);
-        color: #6f9; font: 11px ui-monospace, monospace;
+        color: #cfa348; font: 11px ui-monospace, monospace;
         padding: 8px; overflow-y: auto;
         pointer-events: none; z-index: 10;
         line-height: 1.4;
@@ -52,11 +52,11 @@
       }
       #nav {
         position: fixed; top: 8px; right: 12px;
-        font: 12px ui-monospace, monospace; color: #6f9; opacity: 0.85;
+        font: 12px ui-monospace, monospace; color: #cfa348; opacity: 0.85;
         z-index: 20;
         pointer-events: auto;
       }
-      #nav a { color: #6f9; text-decoration: none; padding: 4px 8px; }
+      #nav a { color: #cfa348; text-decoration: none; padding: 4px 8px; }
       #nav a:hover { background: rgba(100, 200, 255, 0.15); }
       #wormtitle {
         position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
@@ -75,7 +75,7 @@
       .toggle-btn {
         background: rgba(0, 0, 0, 0.55);
         border: 1px solid rgba(102, 255, 153, 0.4);
-        color: #6f9;
+        color: #cfa348;
         font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
         text-shadow: 0 0 4px #0f0a;
         padding: 7px 13px;
