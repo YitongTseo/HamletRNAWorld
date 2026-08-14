@@ -32,6 +32,7 @@
       header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; }
       header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
       header nav a:hover { color: var(--ochre); }
+      header nav a.here { color: var(--ochre); }
       #status { padding: 8px 34px 0; color: var(--dim); font-size: 10.5px; letter-spacing: 0.14em; }
       #grid { padding: 6px 34px 46px; }
     </style>
@@ -40,7 +41,7 @@
     <header>
       <h1>wormlet <b>vivarium</b>
         <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
-      <nav><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about">about</a></nav>
+      <nav><a href="/" class="here">worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about">about</a></nav>
       <div id="experiment-switcher"></div>
     </header>
     <div id="status">connecting…</div>

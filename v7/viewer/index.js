@@ -138,7 +138,7 @@ function drawDish(entry, worm) {
       const d = Math.hypot(f.x - hx, f.y - hy);
       const near = dead ? 0 : Math.max(0, 1 - d / 300);
       ctx.font = `${near > 0.4 ? 400 : 300} ${11.5 + 3 * near}px 'Fragment Mono', monospace`;
-      ctx.fillStyle = `rgba(236,226,205,${0.5 + 0.45 * near})`;
+      ctx.fillStyle = `rgba(196,182,152,${0.38 + 0.5 * near})`;
       ctx.fillText(f.word, X(f.x), Y(f.y));
     }
   }
@@ -159,12 +159,22 @@ function drawDish(entry, worm) {
       ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
       ctx.stroke();
     }
+    // occlusion: a dark tobacco under-stroke so the body sits ON TOP of the
+    // agar text instead of dissolving into it (cream-on-cream separation)
+    for (let k = 0; k < n - 1; k++) {
+      const w = taper(k / n);
+      ctx.strokeStyle = `rgba(26,20,14,${dead ? 0.4 : 0.62})`;
+      ctx.lineWidth = 58 * w * scale + 1.6;
+      ctx.beginPath();
+      ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
+      ctx.stroke();
+    }
     // cuticle
     for (let k = 0; k < n - 1; k++) {
       const w = taper(k / n);
       ctx.strokeStyle = dead
-        ? `rgba(150,150,148,${0.30 + 0.25 * w})`
-        : `rgba(236,226,205,${0.45 * body + 0.55 * body * w})`;
+        ? `rgba(160,158,152,${0.35 + 0.28 * w})`
+        : `rgba(250,245,233,${0.5 * body + 0.5 * body * w})`;
       ctx.lineWidth = 46 * w * scale + 1.1; // exaggerated cuticle — legibility over literal scale
       ctx.beginPath();
       ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
