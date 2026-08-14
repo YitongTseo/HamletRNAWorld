@@ -4,8 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="/static/palette.js?v=2"></script>
-    <title>wormlet — focus</title>
-    <link rel="stylesheet" href="/static/focus.css?v=5">
+    <title>wormlet — specimen</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500&family=Inter+Tight:wght@300;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/focus.css?v=6">
     <script type="importmap">
       {
         "imports": {
@@ -18,6 +20,14 @@
   <body>
     <canvas id="c"></canvas>
     <canvas id="textcanvas"></canvas>
+    <div id="dishmask"></div>
+    <div id="specimen-card">
+      <div class="binom">Caenorhabditis hamletensis</div>
+      <div class="srow" data-row="words">words ingested <b>0</b></div>
+      <div class="srow" data-row="satiety">satiety <b>—</b></div>
+      <div class="srow" data-row="learning">learning Δ <b>—</b></div>
+      <div class="srow ing" data-row="ingested">recently ingested<br><b>…</b></div>
+    </div>
     <div id="netpanel"><canvas id="netcanvas"></canvas></div>
     <div id="radarpanel"><canvas id="radarcanvas"></canvas></div>
     <div id="chemosensoryPanel"></div>

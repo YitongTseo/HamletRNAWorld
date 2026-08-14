@@ -293,6 +293,10 @@ def _worm_overview_dict(w: Worm, flask_name: str) -> dict:
         "word_count": w.word_count,
         "recent_words": w.recent_words[-3:],
         "paused": w.world.paused,
+        # Lifelike condition for the specimen-tray labels; keys appear only
+        # when the features are on (same policy as snapshot()/api/worms).
+        **({"satiety": round(w.world.satiety, 3), "dead": w.world.dead}
+           if getattr(w.world, "_hunger_on", False) else {}),
     }
 
 

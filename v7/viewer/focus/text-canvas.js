@@ -134,10 +134,11 @@ function drawTextCanvas(state) {
       const [gx, gy] = worldToScreen(smell.x, smell.y);
       const radius = 22 + 46 * t;
       const g = tctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
-      // hot core → amber mid → transparent edge; alpha rides the pull
-      g.addColorStop(0.0, `hsla(${45 - 25 * t}, 100%, ${55 + 10 * t}%, ${0.28 * t + 0.04})`);
-      g.addColorStop(0.45, `hsla(${45 - 25 * t}, 95%, 50%, ${0.12 * t})`);
-      g.addColorStop(1.0, 'hsla(35, 90%, 50%, 0)');
+      // dark-field: a pale cool luminance, like light catching the agar —
+      // desire reads as brightness, not fire (V6 observation-log restyle)
+      g.addColorStop(0.0, `rgba(190, 215, 230, ${0.20 * t + 0.03})`);
+      g.addColorStop(0.45, `rgba(150, 185, 205, ${0.09 * t})`);
+      g.addColorStop(1.0, 'rgba(150, 185, 205, 0)');
       tctx.fillStyle = g;
       tctx.beginPath();
       tctx.arc(gx, gy, radius, 0, Math.PI * 2);
@@ -163,8 +164,8 @@ function drawTextCanvas(state) {
     const pull = desireByPos ? desireByPos.get(`${item.x},${item.y}`) : undefined;
     if (edible && pull !== undefined && desireMax > 0) {
       const t = pull / desireMax;                    // 0..1 this frame
-      const hue = 50 - 28 * t;                       // warm amber → orange
-      tctx.fillStyle = `hsla(${hue}, ${30 + 70 * t}%, ${75 + 12 * t}%, ${isHovered ? 1.0 : 0.78 + 0.22 * t})`;
+      // wanted words whiten and sharpen; unwanted stay quiet ivory
+      tctx.fillStyle = `rgba(${216 + 39 * t | 0}, ${228 + 27 * t | 0}, ${235 + 20 * t | 0}, ${isHovered ? 1.0 : 0.55 + 0.45 * t})`;
     } else if (edible) {
       tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
     } else {
@@ -180,7 +181,7 @@ function drawTextCanvas(state) {
     const [dx, dy] = worldToScreen(desireTop.x, desireTop.y);
     const breathe = 0.5 + 0.5 * Math.sin(performance.now() / 500);
     const r = 18 + 5 * breathe;
-    tctx.strokeStyle = `hsla(25, 100%, 62%, ${0.45 + 0.4 * breathe})`;
+    tctx.strokeStyle = `rgba(106, 209, 224, ${0.35 + 0.35 * breathe})`;
     tctx.lineWidth = 1.5;
     tctx.beginPath();
     tctx.arc(dx, dy, r, 0, Math.PI * 2);

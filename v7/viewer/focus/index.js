@@ -96,6 +96,7 @@ function connect() {
     setFood(msg.food);
     smellsData = msg.smells || [];
     latestResidual = msg.residual || { pca: new Array(12).fill(0), words: [] };
+    updateSpecimenCard(msg);
     const wordImpact = computeWordImpact();
     // Each panel's own draw fn short-circuits when hidden, but we also guard
     // here so once-per-frame work (string building, etc.) doesn't fire when
@@ -377,6 +378,34 @@ let smellsData = [];          // list of sensed smells from snapshot
 let latestResidual = { pca: new Array(12).fill(0), words: [] };
 let smellsVisible = true;     // toggle with 'o' key
 let desireVisible = true;     // desire heatmap on by default; 'd' hides it
+
+// --- specimen data card (observation-log restyle) ---------------------------
+// Fills #specimen-card from each state frame. Lifelike fields (satiety /
+// dead / plasticity_delta) only exist when the server runs those features;
+// rows hide themselves when absent.
+function updateSpecimenCard(msg) {
+  const card = document.getElementById('specimen-card');
+  if (!card) return;
+  const row = (id, val, warn) => {
+    const el = card.querySelector(`[data-row="${id}"]`);
+    if (!el) return;
+    el.style.display = (val === undefined || val === null) ? 'none' : '';
+    const v = el.querySelector('b');
+    if (v && val !== undefined && val !== null) {
+      v.textContent = val;
+      v.classList.toggle('warn', !!warn);
+    }
+  };
+  row('words', msg.word_count);
+  row('satiety', typeof msg.satiety === 'number'
+      ? (msg.dead ? 'deceased' : msg.satiety.toFixed(2))
+      : undefined,
+      msg.dead || (typeof msg.satiety === 'number' && msg.satiety < 0.3));
+  row('learning', typeof msg.plasticity_delta === 'number'
+      ? Math.round(msg.plasticity_delta) : undefined);
+  const ing = card.querySelector('[data-row="ingested"] b');
+  if (ing && msg.recent_eaten) ing.textContent = msg.recent_eaten.slice(0, 8).join(' ');
+}
 
 // X-ray neuron-label visibility ('l' key). Single source of truth — the
 // network panel and the magnifier are both notified on every toggle. This
