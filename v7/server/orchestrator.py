@@ -145,6 +145,14 @@ FLASK_WORM_NAMES = ["Alice", "Bob", "Carol", "Dave", "Eve",
                     "Frank", "Grace", "Heidi", "Ivan", "Judy",
                     "Kara", "Liam", "Mallory", "Niaj", "Oscar",
                     "Peggy", "Quentin", "Ruth", "Sybil", "Trent"]
+# WORMLET_FLASK_WORM_NAMES: comma-separated override of the lineup above, so a
+# deployment can name its own worms without editing code (legacy no-generations
+# mode already allows this via worms.json; flask mode had no equivalent). The
+# same collision rule applies — load_flasks still raises if the list is shorter
+# than WORMLET_N_WORMS_PER_FLASK. Names become directory names; spaces are fine.
+_ENV_NAMES = os.environ.get("WORMLET_FLASK_WORM_NAMES", "").strip()
+if _ENV_NAMES:
+    FLASK_WORM_NAMES = [n.strip() for n in _ENV_NAMES.split(",") if n.strip()]
 FLASKS_DIR = _DATA_ROOT / "flasks"
 
 
