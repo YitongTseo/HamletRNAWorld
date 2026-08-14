@@ -94,11 +94,13 @@ def test_judge_poem_openai_end_to_end_stubbed():
         seen["body"] = body
         seen["headers"] = headers
         seen["timeout"] = timeout
-        # score every window idx present in the user prompt
+        # score every window index present in the user prompt (skip the
+        # "N windows follow…" header line)
         lines = []
         for line in body["messages"][1]["content"].splitlines():
-            idx = int(line.split(":", 1)[0])
-            lines.append(f"{idx},70,55")
+            head = line.split(":", 1)[0]
+            if head.isdigit():
+                lines.append(f"{head},70,55")
         return {"choices": [{"message": {"content": "\n".join(lines)}}]}
 
     old = _swap_env(
@@ -174,6 +176,56 @@ def test_openai_gives_up_after_three_attempts():
         judge._http_post_json = real_post
         judge.time.sleep = real_sleep
         _restore_env(old)
+
+
+def test_openai_renumbered_response_maps_positionally():
+    """qwen2.5:14b answered prompt indices 0..n-1 with 1..n. Same line count,
+    zero index overlap → positional fallback must recover the scores."""
+
+    def fake(url, body, headers, timeout):
+        idxs = [l.split(":", 1)[0] for l in body["messages"][1]["content"].splitlines()]
+        idxs = [i for i in idxs if i.isdigit()]
+        return {"choices": [{"message": {
+            "content": "\n".join(f"{int(i) + 1},40,30" for i in idxs)}}]}
+
+    old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="gemma3:4b")
+    real_post = judge._http_post_json
+    judge._http_post_json = fake
+    try:
+        out = judge.judge_poem(["word"] * judge.WINDOW_SIZE, "wormy", seed=1)
+        assert len(out) == 1 and out[0].emotional == 40 and out[0].coherence == 30
+        assert out[0].idx == 0  # true token offset restored, not the model's label
+    finally:
+        judge._http_post_json = real_post
+        _restore_env(old)
+
+
+def test_openai_hallucinated_extra_windows_score_nothing():
+    """The 2026-08-14 outage shape: one window sent, fifteen invented lines
+    back. Count mismatch → no positional guess, zero windows — the rollover
+    guard aborts instead of laundering noise into fitness."""
+
+    def fake(url, body, headers, timeout):
+        return {"choices": [{"message": {
+            "content": "\n".join(f"{i},{50 + i},{40 + i}" for i in range(1, 16))}}]}
+
+    old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="gemma3:4b")
+    real_post = judge._http_post_json
+    judge._http_post_json = fake
+    try:
+        out = judge.judge_poem(["word"] * judge.WINDOW_SIZE, "wormy", seed=1)
+        assert out == []
+    finally:
+        judge._http_post_json = real_post
+        _restore_env(old)
+
+
+def test_user_prompt_has_count_header_and_sequential_indices():
+    sampled = [(0, ["a"] * 15), (45, ["b"] * 15)]
+    p = judge._format_user_prompt(sampled)
+    first, *rest = p.splitlines()
+    assert first.startswith("2 windows follow")
+    assert rest[0].startswith("0: ") and rest[1].startswith("1: ")  # not 45
 
 
 def test_openai_bad_response_shape_raises():

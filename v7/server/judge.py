@@ -219,7 +219,19 @@ def sample_windows(windows: list[tuple[int, list[str]]],
 
 
 def _format_user_prompt(sampled: list[tuple[int, list[str]]]) -> str:
-    return "\n".join(f"{idx}: {' '.join(toks)}" for idx, toks in sampled)
+    """Windows are numbered 0..n-1 IN PROMPT ORDER, not by token offset, and
+    the prompt states the expected line count explicitly. Both are model-
+    compliance armour: sparse offset labels (0, 15, 30…) and especially
+    single-window prompts derailed a small local judge — qwen2.5:14b answered
+    a lone '0: <15 tokens>' with fifteen invented lines numbered 1-15, so
+    every score missed the join and the whole flask scored zero (2026-08-14).
+    judge_poem maps prompt indices back to true token offsets."""
+    n = len(sampled)
+    header = (f"{n} window{'s' if n != 1 else ''} follow{'s' if n == 1 else ''}. "
+              f"Output exactly {n} line{'s' if n != 1 else ''}, "
+              f"one per window, using only the window indices shown.")
+    lines = [f"{i}: {' '.join(toks)}" for i, (_idx, toks) in enumerate(sampled)]
+    return header + "\n" + "\n".join(lines)
 
 
 _LINE_RE = re.compile(r"^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$")
@@ -303,9 +315,20 @@ def judge_poem(tokens: list[str], worm_name: str,
         )
     scores = _parse_scores(text)
 
+    # Positional fallback: some models renumber anyway (1..n instead of the
+    # 0..n-1 they were shown). If the parsed indices miss the expected set
+    # entirely but the LINE COUNT matches, zip in order — the scores are
+    # per-window, just mislabelled. A count mismatch stays unmatched: those
+    # scores describe windows we never sent, and guessing would launder noise
+    # into fitness.
+    expected = set(range(len(sampled)))
+    if scores and len(scores) == len(sampled) and not (set(scores) & expected):
+        ordered = [scores[k] for k in sorted(scores)]
+        scores = dict(enumerate(ordered))
+
     out: list[ScoredWindow] = []
-    for idx, toks in sampled:
-        if idx in scores:
-            e, c = scores[idx]
+    for i, (idx, toks) in enumerate(sampled):
+        if i in scores:
+            e, c = scores[i]
             out.append(ScoredWindow(idx=idx, tokens=toks, emotional=e, coherence=c))
     return out
