@@ -33,7 +33,15 @@ from pathlib import Path
 
 import numpy as np
 
+from corpus.hamlet import is_non_reactive
 from server import pos_grammar, pos_scorers
+
+
+def _punct_smell_on() -> bool:
+    """WORMLET_PUNCT_SMELL=1 gives punctuation a grammar-only smell so the
+    worm can learn sentence marks. Default off = stock behaviour (punctuation
+    is chemosensorily invisible and eaten only by accident)."""
+    return os.environ.get("WORMLET_PUNCT_SMELL", "0") == "1"
 
 V7_ROOT = Path(__file__).resolve().parent.parent
 _NOMIC_PATH = V7_ROOT / "cache" / "corpus_nomic512.json"
@@ -279,6 +287,11 @@ class EmbeddingModel:
         # a continuation of the POS sequence the worm has already eaten.
         pos_out = np.array([self._grammar.fit_word(current_word, list(history_words))])
 
+        # Punctuation smells of pure grammar (semantic channels zero) when
+        # WORMLET_PUNCT_SMELL=1 — mirrors embed_batch exactly.
+        if _punct_smell_on() and is_non_reactive(current_word):
+            return np.concatenate([np.zeros(D_EMB), pos_out])
+
         if self.mode == ENCODER_UMAP:
             row = self._umap.get(_norm(current_word))
             if row is None:
@@ -328,8 +341,20 @@ class EmbeddingModel:
 
         ci = np.fromiter((self._widx.get(_norm(w), -1) for w in current_words),
                          dtype=np.int64, count=K)
-        valid = ci >= 0
-        safe = np.where(valid, ci, 0)
+        in_vocab = ci >= 0
+        # WORMLET_PUNCT_SMELL=1: punctuation becomes smellable as PURE GRAMMAR
+        # — semantic channels stay zero (a comma means nothing), PC11 carries
+        # the grammar fit already computed below for every word. This is the
+        # only signal that lets a worm LEARN sentence marks: without it,
+        # punctuation is invisible to chemosensation and every eaten mark is a
+        # collision accident no amount of evolution can select on.
+        if _punct_smell_on():
+            punct = np.fromiter((is_non_reactive(w) for w in current_words),
+                                dtype=bool, count=K)
+            valid = in_vocab | punct
+        else:
+            valid = in_vocab
+        safe = np.where(in_vocab, ci, 0)
 
         # --- PC11: POS-grammar fit (both modes) ---
         # The whole batch shares one history, so the normalised tag->fit map is
@@ -342,7 +367,7 @@ class EmbeddingModel:
         ).reshape(K, 1)
 
         if self.mode == ENCODER_UMAP:
-            emb_out = np.where(valid[:, None], E[safe], 0.0)                      # (K,11)
+            emb_out = np.where(in_vocab[:, None], E[safe], 0.0)                   # (K,11)
             out = np.concatenate([emb_out, pos_out], axis=1)                      # (K,12)
             out[~valid] = 0.0
             return out, valid
@@ -356,12 +381,16 @@ class EmbeddingModel:
         hist_summary = _relu(he @ p.W_Hh + p.b_Hh)                                # (11,)
 
         # --- embedding branch (batched) ---
-        cur_emb = np.where(valid[:, None], E[safe], 0.0)                          # (K,11)
+        cur_emb = np.where(in_vocab[:, None], E[safe], 0.0)                       # (K,11)
         fuse = np.concatenate(
             [cur_emb, np.broadcast_to(hist_summary, (K, D_EMB))], axis=1)         # (K,22)
         emb_out = _sigmoid(fuse @ p.W_Hf + p.b_Hf)                                # (K,11)
 
         out = np.concatenate([emb_out, pos_out], axis=1)                          # (K,12)
+        # Punct-valid rows keep only PC11: the sigmoid fuse above produces
+        # nonzero "semantics" even for a zero cur_emb (history leaks through),
+        # and a comma must not smell of meaning.
+        out[~in_vocab, :D_EMB] = 0.0
         out[~valid] = 0.0
         return out, valid
 

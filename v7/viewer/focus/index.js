@@ -376,6 +376,7 @@ let mouseWorldPos = { x: WORLD_W / 2, y: WORLD_H / 2 };  // mouse position in wo
 let smellsData = [];          // list of sensed smells from snapshot
 let latestResidual = { pca: new Array(12).fill(0), words: [] };
 let smellsVisible = true;     // toggle with 'o' key
+let desireVisible = false;    // toggle with 'd' key — words tinted by pull
 
 // X-ray neuron-label visibility ('l' key). Single source of truth — the
 // network panel and the magnifier are both notified on every toggle. This
@@ -428,6 +429,9 @@ window.addEventListener('keydown', ev => {
   }
   if (ev.key === 'o' || ev.key === 'O') {
     smellsVisible = !smellsVisible;
+  }
+  if (ev.key === 'd' || ev.key === 'D') {
+    desireVisible = !desireVisible;
   }
   if (ev.key === 'c' || ev.key === 'C') {
     toggleChemo();
@@ -525,6 +529,7 @@ function render() {
     mouseScreenPos,
     smellsData,
     smellsVisible,
+    desireVisible,
     wormHeadPos,
     pcaData,
   });

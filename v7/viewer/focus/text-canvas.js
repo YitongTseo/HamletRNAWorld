@@ -91,6 +91,24 @@ function drawTextCanvas(state) {
   // Draw smells first (so they appear behind words)
   drawSmells(state);
 
+  // Desire layer ('d' key): per-word pull = the summed chemosensory
+  // activation this word currently produces in the worm's nose — the sim's
+  // own numbers (distance × direction × meaning × hunger gain), not a
+  // recomputation. Salience, not steering: the turn decision uses the L/R
+  // split, but "which word does it want most" is honestly this sum.
+  // Keyed by rounded coords — snapshot food and smells round identically.
+  let desireByPos = null, desireMax = 0, desireTop = null;
+  if (state.desireVisible && state.smellsData && state.smellsData.length) {
+    desireByPos = new Map();
+    for (const smell of state.smellsData) {
+      let pull = 0;
+      for (const v of Object.values(smell.neurons || {})) pull += v;
+      if (pull <= 0) continue;
+      desireByPos.set(`${smell.x},${smell.y}`, pull);
+      if (pull > desireMax) { desireMax = pull; desireTop = smell; }
+    }
+  }
+
   // Find nearest word to mouse cursor
   let minDist = Infinity;
   nearestWord = null;
@@ -114,7 +132,19 @@ function drawTextCanvas(state) {
     // blue-grey so it recedes — echoes the bluish word color in the overview
     // view. `edible !== false` so older payloads (no flag) default to edible.
     const edible = item.edible !== false;
-    if (edible) {
+    // Desire tint: cold white → warm amber → hot orange as the worm's pull
+    // toward this word rises, glow strength following. Words outside smell
+    // range (no entry) stay stock.
+    const pull = desireByPos ? desireByPos.get(`${item.x},${item.y}`) : undefined;
+    if (edible && pull !== undefined && desireMax > 0) {
+      const t = pull / desireMax;                    // 0..1 this frame
+      const hue = 55 - 30 * t;                       // amber → orange
+      tctx.fillStyle = isHovered
+        ? `hsla(${hue}, 100%, 70%, 1.0)`
+        : `hsla(${hue}, ${40 + 60 * t}%, ${70 + 15 * t}%, ${0.7 + 0.3 * t})`;
+      tctx.shadowColor = `hsla(${hue}, 100%, 60%, ${0.9 * t})`;
+      tctx.shadowBlur = 14 * t;
+    } else if (edible) {
       tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
     } else {
       tctx.fillStyle = isHovered ? 'rgba(170,190,225,0.85)' : 'rgba(150,170,205,0.45)';
@@ -122,6 +152,18 @@ function drawTextCanvas(state) {
     tctx.textAlign = 'center';
     tctx.textBaseline = 'middle';
     tctx.fillText(item.word, sx, sy);
+    tctx.shadowBlur = 0;
+  }
+
+  // Ring the single strongest pull — the word the worm most wants right now.
+  if (desireTop) {
+    const [dx, dy] = worldToScreen(desireTop.x, desireTop.y);
+    const r = 16 + 4 * Math.sin(performance.now() / 300);  // slow breathe
+    tctx.strokeStyle = 'hsla(25, 100%, 60%, 0.9)';
+    tctx.lineWidth = 2;
+    tctx.beginPath();
+    tctx.arc(dx, dy, r, 0, Math.PI * 2);
+    tctx.stroke();
   }
 
   // PCA popup for nearest hovered word — only when the user has opened it
