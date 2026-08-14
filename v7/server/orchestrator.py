@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import IO, Iterable
 
 from sim.world import World
+from sim import lifelike
 
 V6_ROOT = Path(__file__).resolve().parent.parent
 
@@ -165,7 +166,15 @@ def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[
     weights_path = wdir / "weights.json"
     if not weights_path.exists():
         shutil.copyfile(DEFAULT_WEIGHTS, weights_path)
-    return wdir, json.loads(weights_path.read_text())
+    weights = json.loads(weights_path.read_text())
+    # Lifelike mode: inject the _lifelike gene block (defaults) so a FRESH
+    # lineage flattens the learning-rule params into the NES search space.
+    # World pops the block before the Connectome sees it. An existing
+    # lineage's parent_keys predate the block, so its worms simply run the
+    # defaults — see sim/lifelike.py's module docstring.
+    if lifelike.plasticity_enabled() or lifelike.hunger_enabled():
+        lifelike.ensure_params(weights)
+    return wdir, weights
 
 
 def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Worm]]:

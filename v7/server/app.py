@@ -1218,6 +1218,20 @@ async def neuron_body_coords():
     return JSONResponse(_NEURON_BODY_CACHE)
 
 
+def _worm_entry(w) -> dict:
+    """REST view of one worm. Lifelike keys (sim/lifelike.py) appear only
+    when the features are on — mirrors World.snapshot(), keeps the
+    default-off payload unchanged, and feeds the metrics collector."""
+    entry = {"name": w.name, "seed": w.seed, "word_count": w.word_count}
+    world = w.world
+    if getattr(world, "_hunger_on", False):
+        entry["satiety"] = round(world.satiety, 3)
+        entry["dead"] = world.dead
+    if getattr(world, "_plasticity_on", False):
+        entry["plasticity_delta"] = round(world.brain.delta_norm(), 2)
+    return entry
+
+
 @app.get("/api/worms")
 async def list_worms():
     """Return worms grouped by flask. In legacy mode FLASKS is empty and
@@ -1227,16 +1241,14 @@ async def list_worms():
             {
                 "flask": f.name,
                 "display": f.display,
-                "worms": [{"name": w.name, "seed": w.seed, "word_count": w.word_count}
-                          for w in f.worms],
+                "worms": [_worm_entry(w) for w in f.worms],
             }
             for f in FLASKS
         ])
     return JSONResponse([{
         "flask": "default",
         "display": "Worms",
-        "worms": [{"name": w.name, "seed": w.seed, "word_count": w.word_count}
-                  for w in WORMS],
+        "worms": [_worm_entry(w) for w in WORMS],
     }])
 
 

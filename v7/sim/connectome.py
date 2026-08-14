@@ -122,18 +122,42 @@ class Connectome:
         self._left_set = set(M_LEFT)
         self._right_set = set(M_RIGHT)
 
+        # --- lifelike plasticity state (inert unless enable_plasticity()) ---
+        # self.weights stays the PRISTINE genome — rollovers and elites read
+        # it — while learned changes live in _delta (effective weight =
+        # genome + delta). Deltas die with the worm: Darwinian, not
+        # Lamarckian. _trace holds per-edge eligibility (recent co-firing);
+        # _fired accumulates firings across the several run() calls one
+        # brain tick makes, consumed by plasticity_step().
+        self._plasticity_on = False
+        self._plast: dict[str, float] = {}
+        self._delta: dict[str, dict[str, float]] = {}
+        self._trace: dict[tuple[str, str], float] = {}
+        self._fired: set[str] = set()
+
+    def enable_plasticity(self, params: dict[str, float]) -> None:
+        self._plasticity_on = True
+        self._plast = params
+
     # --- core ---
     def dendrite_accumulate(self, pre: str, scale: float = 1.0) -> None:
         targets = self.weights.get(pre)
         if not targets:
             return
         ns = self.next_state
-        for post, w in targets.items():
-            self.psyn[post][ns] += w * scale
+        dpre = self._delta.get(pre)
+        if dpre is None:
+            for post, w in targets.items():
+                self.psyn[post][ns] += w * scale
+        else:
+            for post, w in targets.items():
+                self.psyn[post][ns] += (w + dpre.get(post, 0.0)) * scale
 
     def fire_neuron(self, neuron: str) -> None:
         if neuron == "MVULVA":
             return
+        if self._plasticity_on:
+            self._fired.add(neuron)
         self.dendrite_accumulate(neuron)
         self.psyn[neuron][self.next_state] = 0.0
 
@@ -195,3 +219,62 @@ class Connectome:
     def activity(self) -> dict[str, float]:
         ts = self.this_state
         return {n: self.psyn[n][ts] for n in self.neurons}
+
+    # --- lifelike plasticity (called once per brain tick by World) ---
+    def plasticity_step(self, reward: float) -> None:
+        """Three-factor learning rule. (1) Eligibility: edges whose pre AND
+        post fired during this brain tick get their trace bumped — Hebbian
+        co-activity marks candidate synapses. (2) Reward: eating consolidates
+        every currently-traced edge into _delta, scaled by eta — synapses
+        active on the path to food strengthen (positive weights up,
+        inhibitory weights deepen: the delta follows the trace regardless of
+        sign, reinforcing the circuit as wired). (3) Decay: traces fade
+        (trace_decay) and deltas relax toward the genome (baseline_pull), so
+        unreinforced learning is forgotten. All arithmetic is deterministic."""
+        if not self._plasticity_on:
+            return
+        p = self._plast
+        fired = self._fired
+        if fired:
+            trace = self._trace
+            for pre in fired:
+                targets = self.weights.get(pre)
+                if not targets:
+                    continue
+                for post in targets:
+                    if post in fired:
+                        trace[(pre, post)] = trace.get((pre, post), 0.0) + 1.0
+            self._fired = set()
+
+        if reward > 0.0 and self._trace:
+            from sim.lifelike import DELTA_CAP
+            gain = p["eta"] * reward
+            delta = self._delta
+            for (pre, post), e in self._trace.items():
+                dpre = delta.setdefault(pre, {})
+                d = dpre.get(post, 0.0) + gain * e
+                if d > DELTA_CAP:
+                    d = DELTA_CAP
+                elif d < -DELTA_CAP:
+                    d = -DELTA_CAP
+                dpre[post] = d
+
+        # Decay traces and relax deltas toward the genome; prune dust so the
+        # sparse dicts stay small over a long life.
+        from sim.lifelike import PRUNE_EPS
+        td = p["trace_decay"]
+        self._trace = {k: v * td for k, v in self._trace.items() if v * td > PRUNE_EPS}
+        pull = 1.0 - p["baseline_pull"]
+        if self._delta:
+            new_delta: dict[str, dict[str, float]] = {}
+            for pre, posts in self._delta.items():
+                kept = {post: d * pull for post, d in posts.items()
+                        if abs(d * pull) > PRUNE_EPS}
+                if kept:
+                    new_delta[pre] = kept
+            self._delta = new_delta
+
+    def delta_norm(self) -> float:
+        """L1 size of current learned changes — observability for tests,
+        snapshots, and the metrics collector."""
+        return sum(abs(d) for posts in self._delta.values() for d in posts.values())

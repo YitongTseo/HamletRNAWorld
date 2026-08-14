@@ -1,0 +1,217 @@
+"""Tests for lifelike mode (sim/lifelike.py): plasticity, hunger, genome
+ride-along, determinism, and — most importantly — that with both flags OFF
+nothing changes. No network, no LLM."""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sim import lifelike
+from sim.connectome import Connectome
+from sim.world import World
+from server.evolution import flatten_weights, unflatten_weights
+
+
+def _env(**kv):
+    old = {k: os.environ.get(k) for k in kv}
+    for k, v in kv.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    return old
+
+
+def _restore(old):
+    for k, v in old.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+BOTH_OFF = dict(WORMLET_PLASTICITY=None, WORMLET_HUNGER=None)
+BOTH_ON = dict(WORMLET_PLASTICITY="1", WORMLET_HUNGER="1")
+
+
+# --- params & genome ride-along --------------------------------------------
+
+def test_pop_params_defaults_and_clipping():
+    p = lifelike.pop_params(None)
+    assert p["eta"] == 0.05 and p["trace_decay"] == 0.85
+    w = {"_lifelike": {"eta": 99.0, "trace_decay": -3.0}, "AVAL": {"AVBL": 2}}
+    p = lifelike.pop_params(w)
+    assert p["eta"] == 0.5        # clipped to hi
+    assert p["trace_decay"] == 0.0  # clipped to lo
+    assert "_lifelike" not in w   # popped — Connectome never sees it
+    assert "AVAL" in w
+
+
+def test_params_flatten_through_evolution_unchanged():
+    w = lifelike.ensure_params({"AVAL": {"AVBL": 2.0, "AVBR": -3.0}})
+    vec, keys = flatten_weights(w)
+    assert ("_lifelike", "eta") in keys  # rules are genes now
+    back = unflatten_weights(vec, keys)
+    assert back["_lifelike"]["eta"] == 0.05
+    assert back["AVAL"]["AVBR"] == -3.0
+
+
+# --- plasticity unit behaviour ---------------------------------------------
+
+def _tiny_brain(plastic: bool) -> Connectome:
+    # A -> B strong enough that firing A charges B past threshold next tick.
+    c = Connectome(weights={"A": {"B": 40.0}, "B": {"A": 1.0}})
+    if plastic:
+        c.enable_plasticity(lifelike.pop_params(None))
+    return c
+
+
+def test_cofired_edge_gains_delta_on_reward():
+    c = _tiny_brain(plastic=True)
+    c.fire_neuron("A")
+    c.fire_neuron("B")   # co-fired within one brain tick
+    c.plasticity_step(reward=1.0)
+    assert c._delta["A"]["B"] > 0.0
+    assert c.delta_norm() > 0.0
+
+
+def test_no_reward_no_delta_and_traces_decay_out():
+    c = _tiny_brain(plastic=True)
+    c.fire_neuron("A")
+    c.fire_neuron("B")
+    c.plasticity_step(reward=0.0)
+    assert c._delta == {}
+    for _ in range(200):     # trace_decay^200 << PRUNE_EPS
+        c.plasticity_step(reward=0.0)
+    assert c._trace == {}
+
+
+def test_delta_decays_back_toward_genome():
+    c = _tiny_brain(plastic=True)
+    c.fire_neuron("A"); c.fire_neuron("B")
+    c.plasticity_step(reward=5.0)
+    d0 = c._delta["A"]["B"]
+    for _ in range(50):
+        c.plasticity_step(reward=0.0)
+    d1 = c._delta.get("A", {}).get("B", 0.0)
+    assert d1 < d0  # baseline_pull is forgetting
+
+
+def test_delta_capped():
+    c = _tiny_brain(plastic=True)
+    for _ in range(500):
+        c.fire_neuron("A"); c.fire_neuron("B")
+        c.plasticity_step(reward=100.0)
+    assert c._delta["A"]["B"] <= lifelike.DELTA_CAP
+
+
+def test_effective_weight_is_genome_plus_delta_and_genome_untouched():
+    c = _tiny_brain(plastic=True)
+    c.fire_neuron("A"); c.fire_neuron("B")
+    c.plasticity_step(reward=1.0)
+    d = c._delta["A"]["B"]
+    c.dendrite_accumulate("A")
+    assert abs(c.psyn["B"][c.next_state] - (40.0 + d)) < 1e-9
+    assert c.weights["A"]["B"] == 40.0  # genome pristine — Darwinian
+
+
+def test_plasticity_off_is_inert():
+    c = _tiny_brain(plastic=False)
+    c.fire_neuron("A"); c.fire_neuron("B")
+    c.plasticity_step(reward=10.0)
+    assert c._delta == {} and c._trace == {} and c._fired == set()
+
+
+# --- hunger ------------------------------------------------------------------
+
+def test_satiety_decays_and_death_freezes_worm():
+    old = _env(**BOTH_ON)
+    try:
+        w = World(seed=7)
+        w.satiety = 3 * lifelike.SATIETY_DECAY_PER_TICK  # about to starve
+        for _ in range(5):
+            w.tick()
+        assert w.dead and w.satiety == 0.0
+        hx, hy, tc = w.worm.target_x, w.worm.target_y, w.tick_count
+        for _ in range(60):
+            w.tick()
+        assert (w.worm.target_x, w.worm.target_y) == (hx, hy)  # corpse
+        assert w.tick_count == tc + 60          # world/scroller kept going
+    finally:
+        _restore(old)
+
+
+def test_eating_replenishes_satiety_and_rewards_brain():
+    old = _env(**BOTH_ON)
+    try:
+        w = World(seed=7)
+        w.satiety = 0.5
+        before = w.satiety
+        # Simulate the eat branch directly (food placement is scroller-owned):
+        w._recent_eaten.insert(0, "king")
+        w._reward_accum += lifelike.REWARD_BASE + (1.0 - w.satiety)
+        w.satiety = min(1.0, w.satiety + lifelike.SATIETY_BITE)
+        assert w.satiety > before
+        assert w._reward_accum == lifelike.REWARD_BASE + 0.5
+    finally:
+        _restore(old)
+
+
+def test_starving_worm_smells_and_moves_harder():
+    old = _env(**BOTH_ON)
+    try:
+        w = World(seed=7)
+        w.sensed_smells = {"k": {"neurons": {"ASEL": 0.2}}}
+        w.satiety = 1.0
+        fed = w._chemo_pulse()["ASEL"]
+        w.satiety = 0.0
+        starved = w._chemo_pulse()["ASEL"]
+        assert starved > fed
+        assert starved <= 1.0  # still saturates
+    finally:
+        _restore(old)
+
+
+# --- default-off equivalence & determinism ----------------------------------
+
+def _run_world(ticks: int, seed: int = 11) -> tuple:
+    w = World(seed=seed)
+    for _ in range(ticks):
+        w.tick()
+    return (round(w.worm.target_x, 9), round(w.worm.target_y, 9),
+            w.tick_count, tuple(w._recent_eaten))
+
+
+def test_flags_off_no_lifelike_state_leaks():
+    old = _env(**BOTH_OFF)
+    try:
+        w = World(seed=3)
+        for _ in range(240):
+            w.tick()
+        assert w.brain._delta == {} and w.brain._trace == {}
+        assert not w.dead
+        snap = w.snapshot()
+        assert "satiety" not in snap and "plasticity_delta" not in snap
+    finally:
+        _restore(old)
+
+
+def test_deterministic_with_lifelike_on():
+    old = _env(**BOTH_ON)
+    try:
+        a = _run_world(400)
+        b = _run_world(400)
+        assert a == b
+    finally:
+        _restore(old)
+
+
+def test_deterministic_with_lifelike_off_matches_itself():
+    old = _env(**BOTH_OFF)
+    try:
+        assert _run_world(400) == _run_world(400)
+    finally:
+        _restore(old)

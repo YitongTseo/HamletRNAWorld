@@ -24,6 +24,7 @@ from sim.connectome import Connectome
 from sim.muscle_body import MuscleBody
 from sim.worm import WormBody
 from sim.text_scroller import TextScroller
+from sim import lifelike
 from corpus.hamlet import get_sentences_with_flags
 from sim.chemosensory_mapping import (
     compute_pca_activation, PC_NEURON_PAIRS,
@@ -108,10 +109,23 @@ class World:
     _recent_eaten: list = field(default_factory=list)
     # Brain tick counter (kept for pacing; no longer drives any decay math).
     _brain_tick_count: int = 0
+    # Lifelike mode (sim/lifelike.py). Flags are read once at init so a
+    # worm's behaviour can't change mid-life if the env mutates.
+    satiety: float = lifelike.SATIETY_START
+    dead: bool = False
+    _reward_accum: float = 0.0
 
     def __post_init__(self):
         self.rng = random.Random(self.seed)
+        # Pop the _lifelike gene block BEFORE the dict reaches Connectome —
+        # it's params, not a neuron. pop_params returns clipped values (or
+        # defaults) whether or not the genome carries the block.
+        self._plasticity_on = lifelike.plasticity_enabled()
+        self._hunger_on = lifelike.hunger_enabled()
+        self.lifelike_params = lifelike.pop_params(self.weights)
         self.brain = Connectome(weights=self.weights, rng=self.rng)
+        if self._plasticity_on:
+            self.brain.enable_plasticity(self.lifelike_params)
         # v7.1 chemosensory embedding: the flask's SHARED model if given, else
         # the process-wide default (random-init). Shared across the flask so the
         # precomputed E-table is built once per generation, not per worm.
@@ -231,6 +245,15 @@ class World:
                         # capped at HISTORY_LEN. This IS the worm's residual now.
                         self._recent_eaten.insert(0, f.word)
                         del self._recent_eaten[HISTORY_LEN:]
+                        # Lifelike: eating feeds the worm and/or rewards the
+                        # brain. Reward scales with hunger — a meal found
+                        # while starving consolidates harder (dopamine).
+                        if self._hunger_on:
+                            self._reward_accum += (
+                                lifelike.REWARD_BASE + (1.0 - self.satiety))
+                            self.satiety = min(1.0, self.satiety + lifelike.SATIETY_BITE)
+                        elif self._plasticity_on:
+                            self._reward_accum += 1.0
                     self.food.pop(i)
                     continue
             i += 1
@@ -268,6 +291,13 @@ class World:
             for w in self.text_scroller.alive_words()
         ]
 
+        # A starved worm is dead: no brain, no body, no eating. The scroller
+        # keeps stepping above so the corpus still exhausts and the flask's
+        # rollover fires on time regardless of casualties.
+        if self.dead:
+            self.tick_count += 1
+            return
+
         # Brain at 2 Hz (every BRAIN_TICK_PERIOD body ticks).
         if self.tick_count % BRAIN_TICK_PERIOD == 0:
             # v7: chemosensation is expensive now (a learned embedding forward
@@ -285,8 +315,20 @@ class World:
             if chemo:
                 self.brain.stimulate_weighted(chemo)
             self._brain_tick_count += 1
+            # Lifelike: consolidate rewards accumulated since the last brain
+            # tick (traces are fresh — the brain fired within trace memory of
+            # the meal), then decay traces/deltas. No-op when plasticity off.
+            if self._plasticity_on:
+                self.brain.plasticity_step(self._reward_accum)
+                self._reward_accum = 0.0
+            # Hunger: a starving worm roams — motor gain rises as satiety
+            # falls (serotonin/dopamine roam-dwell switch, crudely).
+            motor_gain = 1.0
+            if self._hunger_on:
+                motor_gain += self.lifelike_params["roam_gain"] * (1.0 - self.satiety)
             if isinstance(self.worm, WormBody):
-                self.worm.consume_motor(self.brain.accum_left, self.brain.accum_right)
+                self.worm.consume_motor(self.brain.accum_left * motor_gain,
+                                        self.brain.accum_right * motor_gain)
 
         # Body every tick. MuscleBody re-reads per-muscle activations with
         # smoothing; the IK body is driven only at brain ticks via
@@ -303,6 +345,13 @@ class World:
             self.stim_nose_touch = False
             self.stim_food_sense = False
 
+        # Hunger: metabolism runs every body tick; hitting zero is death.
+        if self._hunger_on and not self.dead:
+            self.satiety -= lifelike.SATIETY_DECAY_PER_TICK
+            if self.satiety <= 0.0:
+                self.satiety = 0.0
+                self.dead = True
+
         self.tick_count += 1
 
     def drain_eaten_words(self) -> list[tuple[int, int, str]]:
@@ -316,10 +365,17 @@ class World:
         residual term — memory lives in the context-aware embedding of each
         in-range word). Each smell already carries direction-aware L/R splits."""
         out: dict[str, float] = {}
+        # Hunger: starving worms smell harder — chemosensory gain rises as
+        # satiety falls (real starved C. elegans show heightened chemotaxis).
+        # Applied before saturation, so faint far-off words become salient to
+        # a desperate worm but strong smells still cap at 1.0.
+        gain = 1.0
+        if self._hunger_on:
+            gain += self.lifelike_params["starve_gain"] * (1.0 - self.satiety)
         for smell in self.sensed_smells.values():
             for n, v in smell.get("neurons", {}).items():
                 if v > 0:
-                    out[n] = out.get(n, 0.0) + v
+                    out[n] = out.get(n, 0.0) + v * gain
         # Saturate at 1.0 per neuron.
         for k in list(out.keys()):
             if out[k] > 1.0:
@@ -375,4 +431,10 @@ class World:
                      "food_sense": self.stim_food_sense},
             "paused": self.paused,
             "neurons": neurons_active,
+            # Lifelike keys appear only when the features are on, so the
+            # default-off snapshot payload is unchanged byte for byte.
+            **({"satiety": round(self.satiety, 3), "dead": self.dead}
+               if self._hunger_on else {}),
+            **({"plasticity_delta": round(self.brain.delta_norm(), 2)}
+               if self._plasticity_on else {}),
         }
