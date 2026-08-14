@@ -359,6 +359,21 @@ def run_generation_rollover(
         fitness_by_worm[w.name] = fitness(scored)
         progress.worms_done += 1
 
+    # Judge-outage guard: if EVERY worm came back unscored, the judge is down
+    # (local endpoint offline, API key missing/unreachable) or every poem was
+    # empty — either way there is nothing to select on. Evolving would rank an
+    # all-zero field (arbitrary elites) and adapt σ on noise, silently
+    # corrupting the lineage. Raise instead: the caller logs and continues,
+    # state stays untouched, the flask never respawns, so its corpus stays
+    # exhausted and the rollover re-fires — i.e. the lineage WAITS for the
+    # judge to come back rather than taking a garbage step.
+    if not any(scored_by_worm.values()):
+        raise RuntimeError(
+            f"judge produced zero scored windows across all {len(worms)} worms "
+            f"in {group} — aborting rollover; will retry when the corpus "
+            f"exhaustion re-fires"
+        )
+
     # --- Phase: evolving ---
     progress.phase = PHASE_EVOLVING
     if keepalive: keepalive()

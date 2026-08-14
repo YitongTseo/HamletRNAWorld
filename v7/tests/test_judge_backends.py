@@ -127,6 +127,55 @@ def test_judge_poem_openai_end_to_end_stubbed():
         _restore_env(old)
 
 
+def test_openai_retries_transient_errors():
+    """Two connection failures then success: judge_poem should retry through
+    them (sleeps stubbed out) and return scores on the third attempt."""
+    calls = {"n": 0}
+
+    def flaky(url, body, headers, timeout):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError("connection refused")
+        return {"choices": [{"message": {"content": "0,50,50"}}]}
+
+    old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="gemma3:4b")
+    real_post, real_sleep = judge._http_post_json, judge.time.sleep
+    judge._http_post_json = flaky
+    judge.time.sleep = lambda s: None
+    try:
+        out = judge.judge_poem(["word"] * judge.WINDOW_SIZE, "wormy", seed=1)
+        assert calls["n"] == 3
+        assert out and out[0].emotional == 50
+    finally:
+        judge._http_post_json = real_post
+        judge.time.sleep = real_sleep
+        _restore_env(old)
+
+
+def test_openai_gives_up_after_three_attempts():
+    calls = {"n": 0}
+
+    def dead(url, body, headers, timeout):
+        calls["n"] += 1
+        raise OSError("no route to host")
+
+    old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="gemma3:4b")
+    real_post, real_sleep = judge._http_post_json, judge.time.sleep
+    judge._http_post_json = dead
+    judge.time.sleep = lambda s: None
+    try:
+        try:
+            judge.judge_poem(["word"] * judge.WINDOW_SIZE, "wormy", seed=1)
+            assert False, "expected RuntimeError after retries exhausted"
+        except RuntimeError as e:
+            assert "unreachable after 3 attempts" in str(e)
+        assert calls["n"] == 3
+    finally:
+        judge._http_post_json = real_post
+        judge.time.sleep = real_sleep
+        _restore_env(old)
+
+
 def test_openai_bad_response_shape_raises():
     old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="gemma3:4b")
     real_post = judge._http_post_json

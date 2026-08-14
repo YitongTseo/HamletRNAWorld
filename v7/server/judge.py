@@ -27,6 +27,7 @@ import json
 import os
 import random
 import re
+import time
 import urllib.request
 from dataclasses import dataclass
 
@@ -122,9 +123,30 @@ def _complete_openai(user_prompt: str) -> str:
     if key:
         headers["Authorization"] = f"Bearer {key}"
     timeout = float(os.environ.get("WORMLET_JUDGE_TIMEOUT_S", "300"))
-    payload = _http_post_json(
-        base + "/chat/completions", _openai_payload(user_prompt), headers, timeout
-    )
+    # A local judge (Ollama on someone's gaming PC, LM Studio on a laptop) is
+    # far less available than a hosted API — it may be asleep or rebooting at
+    # rollover time. Retry transient transport errors briefly (0s/5s/15s);
+    # a genuinely dead endpoint falls through to the caller, where the
+    # all-zero guard in generations.py aborts the rollover rather than
+    # letting the lineage evolve on noise. URLError/timeout/reset are all
+    # OSError subclasses, so one except covers the transport failure modes.
+    last_err: Exception | None = None
+    payload = None
+    for delay in (0, 5, 15):
+        if delay:
+            time.sleep(delay)
+        try:
+            payload = _http_post_json(
+                base + "/chat/completions", _openai_payload(user_prompt),
+                headers, timeout,
+            )
+            break
+        except OSError as e:
+            last_err = e
+    if payload is None:
+        raise RuntimeError(
+            f"judge endpoint {base} unreachable after 3 attempts: {last_err!r}"
+        ) from last_err
     try:
         return payload["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as e:
