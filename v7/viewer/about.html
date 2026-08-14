@@ -8,7 +8,10 @@
     <style>
       html, body { margin: 0; padding: 0; background: var(--bg, #000); color: var(--fg, #ece2cd); }
       body { font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-             max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
+             margin: 0; padding: 0 0 80px; }
+      /* header runs full-bleed like every other page; only the prose narrows */
+      body > *:not(header) { max-width: 720px; margin-left: auto; margin-right: auto;
+                             padding-left: 22px; padding-right: 22px; }
       header {
         display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
         padding: 22px 0 16px; margin-bottom: 18px; border-bottom: 1px solid #3a3226;
