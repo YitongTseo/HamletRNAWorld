@@ -188,7 +188,7 @@ html, body { background: #08090b; }
 #hud { color: #e8e4da; opacity: 0.55; text-shadow: none;
        font-family: 'IBM Plex Mono', ui-monospace, monospace; }
 #nav, #nav a { color: #5c646e; font-family: 'IBM Plex Mono', ui-monospace, monospace; }
-#nav a:hover { background: none; color: #6ad1e0; }
+#nav a:hover { background: none; color: #d2a24e; }
 #wormtitle { font-family: 'Inter Tight', sans-serif !important;
              font-weight: 300 !important; letter-spacing: 0.05em;
              color: #e8e4da !important; }
@@ -219,7 +219,7 @@ html, body { background: #08090b; }
 #specimen-card .binom { font-style: italic; color: #5c646e; font-size: 11px;
   border-bottom: 1px dotted #232a33; padding-bottom: 6px; margin-bottom: 6px; }
 #specimen-card .srow { display: flex; justify-content: space-between; gap: 10px; }
-#specimen-card .srow b { font-weight: 400; color: #6ad1e0; }
+#specimen-card .srow b { font-weight: 400; color: #d2a24e; }
 #specimen-card .srow b.warn { color: #e0503f; }
 #specimen-card .srow.ing { display: block; color: #5c646e; margin-top: 6px;
   border-top: 1px dotted #232a33; padding-top: 6px; }

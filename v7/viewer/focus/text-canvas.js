@@ -181,7 +181,7 @@ function drawTextCanvas(state) {
     const [dx, dy] = worldToScreen(desireTop.x, desireTop.y);
     const breathe = 0.5 + 0.5 * Math.sin(performance.now() / 500);
     const r = 18 + 5 * breathe;
-    tctx.strokeStyle = `rgba(106, 209, 224, ${0.35 + 0.35 * breathe})`;
+    tctx.strokeStyle = `rgba(210, 162, 78, ${0.35 + 0.35 * breathe})`;
     tctx.lineWidth = 1.5;
     tctx.beginPath();
     tctx.arc(dx, dy, r, 0, Math.PI * 2);

@@ -1,7 +1,7 @@
 // Observation-log overview: a lab tray of petri dishes, one per worm.
-// Subscribes to /ws/overview (10 Hz). Each dish is a CAMERA-FOLLOW crop of
-// that worm's private world, centred on its head, so the specimen renders
-// large — the worm is the subject, the scrolling play is the medium.
+// Subscribes to /ws/overview (10 Hz). Each dish is a STATIC view of that
+// worm's entire private world — a fixed stage the specimen moves within.
+// Words still brighten near the worm's head, so appetite reads at a glance.
 // Click a dish to open /focus/<flask>/<name>.
 //
 // Rendering is dark-field microscopy: ivory translucent nematode (tapered
@@ -11,8 +11,6 @@
 
 const WORLD_W = 1600;
 const WORLD_H = 1000;
-// How much of the world a dish shows, edge to edge. Smaller = bigger worm.
-const DISH_SPAN = 520;
 
 const grid = document.getElementById('grid');
 const status = document.getElementById('status');
@@ -29,7 +27,7 @@ const flaskSections = new Map();  // flask_name -> { section, sectionGrid, heade
       letter-spacing: 0.3em; text-transform: uppercase; color: var(--dim);
       display: flex; gap: 14px; align-items: baseline;
     }
-    .flask-section > h2 .gen { color: var(--cyan); font-size: 10.5px; letter-spacing: 0.2em; }
+    .flask-section > h2 .gen { color: var(--brass); font-size: 10.5px; letter-spacing: 0.2em; }
     .flask-section > .flask-grid {
       display: grid; gap: 26px 20px;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -119,15 +117,14 @@ function drawDish(entry, worm) {
   ctx.save();
   ctx.beginPath(); ctx.arc(c, c, R - 2, 0, 7); ctx.clip();
 
-  // camera follows the head; clamp so the crop stays inside the world
-  const scale = S / DISH_SPAN;
-  const half = DISH_SPAN / 2;
-  let cx = worm.head ? worm.head[0] : WORLD_W / 2;
-  let cy = worm.head ? worm.head[1] : WORLD_H / 2;
-  cx = Math.max(half, Math.min(WORLD_W - half, cx));
-  cy = Math.max(half, Math.min(WORLD_H - half, cy));
+  // static framing: the worm's ENTIRE world fits inside the dish (scaled by
+  // the world diagonal so no corner is ever clipped by the circle). The dish
+  // is a fixed stage; the worm moves within it.
+  const scale = (2 * (R - 4)) / Math.hypot(WORLD_W, WORLD_H);
+  const cx = WORLD_W / 2, cy = WORLD_H / 2;
   const X = (x) => c + (x - cx) * scale;
   const Y = (y) => c + (y - cy) * scale;
+  const half = Math.hypot(WORLD_W, WORLD_H) / 2;  // for word-proximity fades
 
   const dead = worm.dead === true;
   const sat = (typeof worm.satiety === 'number') ? worm.satiety : 1;
@@ -135,11 +132,12 @@ function drawDish(entry, worm) {
   // words on the agar — quiet ivory, brightening slightly near the head
   if (worm.food && worm.food.length) {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const hx = worm.head ? worm.head[0] : cx;
+    const hy = worm.head ? worm.head[1] : cy;
     for (const f of worm.food) {
       if (!f.word) continue;
-      const d = Math.hypot(f.x - cx, f.y - cy);
-      if (d > half * 1.15) continue;
-      const near = dead ? 0 : Math.max(0, 1 - d / half);
+      const d = Math.hypot(f.x - hx, f.y - hy);
+      const near = dead ? 0 : Math.max(0, 1 - d / 300);
       ctx.font = `300 ${10 + 3 * near}px 'IBM Plex Mono', monospace`;
       ctx.fillStyle = `rgba(210,225,235,${0.28 + 0.5 * near})`;
       ctx.fillText(f.word, X(f.x), Y(f.y));
@@ -260,10 +258,10 @@ connect();
       background: #0d1015; border: 1px solid #232a33;
     }
     #gen-overlay h2 { margin: 0 0 14px; font-size: 11px; font-weight: 400;
-      letter-spacing: 0.3em; text-transform: uppercase; color: var(--cyan); }
+      letter-spacing: 0.3em; text-transform: uppercase; color: var(--brass); }
     #gen-overlay .phase { margin-bottom: 12px; font-size: 13px; }
     #gen-overlay .bar { height: 3px; background: #1a1f26; overflow: hidden; margin-bottom: 8px; }
-    #gen-overlay .bar > div { height: 100%; background: var(--cyan); transition: width 250ms ease; }
+    #gen-overlay .bar > div { height: 100%; background: var(--brass); transition: width 250ms ease; }
     #gen-overlay .meta { color: var(--dim); font-size: 11px; margin-top: 8px; }
     #gen-overlay .err { color: var(--warn); margin-top: 10px; font-size: 12px; }
   `;
