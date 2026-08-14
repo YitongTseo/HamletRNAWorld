@@ -121,6 +121,31 @@ function drawTextCanvas(state) {
     }
   }
 
+  // Desire heatmap: additive radial glows under the words, so overlapping
+  // pulls stack into genuine heat. Drawn before the text so words stay
+  // crisp on top.
+  if (desireByPos && desireMax > 0) {
+    tctx.save();
+    tctx.globalCompositeOperation = 'lighter';
+    for (const smell of state.smellsData) {
+      const pull = desireByPos.get(`${smell.x},${smell.y}`);
+      if (pull === undefined) continue;
+      const t = pull / desireMax;
+      const [gx, gy] = worldToScreen(smell.x, smell.y);
+      const radius = 22 + 46 * t;
+      const g = tctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
+      // hot core → amber mid → transparent edge; alpha rides the pull
+      g.addColorStop(0.0, `hsla(${45 - 25 * t}, 100%, ${55 + 10 * t}%, ${0.28 * t + 0.04})`);
+      g.addColorStop(0.45, `hsla(${45 - 25 * t}, 95%, 50%, ${0.12 * t})`);
+      g.addColorStop(1.0, 'hsla(35, 90%, 50%, 0)');
+      tctx.fillStyle = g;
+      tctx.beginPath();
+      tctx.arc(gx, gy, radius, 0, Math.PI * 2);
+      tctx.fill();
+    }
+    tctx.restore();
+  }
+
   // Draw each word. Smaller on mobile so the lines don't overlap when the
   // camera frustum is zoomed in (#9).
   tctx.font = (isMobile() ? '13px' : '18px') + ' ui-monospace, monospace';
@@ -138,12 +163,8 @@ function drawTextCanvas(state) {
     const pull = desireByPos ? desireByPos.get(`${item.x},${item.y}`) : undefined;
     if (edible && pull !== undefined && desireMax > 0) {
       const t = pull / desireMax;                    // 0..1 this frame
-      const hue = 55 - 30 * t;                       // amber → orange
-      tctx.fillStyle = isHovered
-        ? `hsla(${hue}, 100%, 70%, 1.0)`
-        : `hsla(${hue}, ${40 + 60 * t}%, ${70 + 15 * t}%, ${0.7 + 0.3 * t})`;
-      tctx.shadowColor = `hsla(${hue}, 100%, 60%, ${0.9 * t})`;
-      tctx.shadowBlur = 14 * t;
+      const hue = 50 - 28 * t;                       // warm amber → orange
+      tctx.fillStyle = `hsla(${hue}, ${30 + 70 * t}%, ${75 + 12 * t}%, ${isHovered ? 1.0 : 0.78 + 0.22 * t})`;
     } else if (edible) {
       tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
     } else {
@@ -152,15 +173,15 @@ function drawTextCanvas(state) {
     tctx.textAlign = 'center';
     tctx.textBaseline = 'middle';
     tctx.fillText(item.word, sx, sy);
-    tctx.shadowBlur = 0;
   }
 
-  // Ring the single strongest pull — the word the worm most wants right now.
+  // Halo the single strongest pull — the word the worm most wants right now.
   if (desireTop) {
     const [dx, dy] = worldToScreen(desireTop.x, desireTop.y);
-    const r = 16 + 4 * Math.sin(performance.now() / 300);  // slow breathe
-    tctx.strokeStyle = 'hsla(25, 100%, 60%, 0.9)';
-    tctx.lineWidth = 2;
+    const breathe = 0.5 + 0.5 * Math.sin(performance.now() / 500);
+    const r = 18 + 5 * breathe;
+    tctx.strokeStyle = `hsla(25, 100%, 62%, ${0.45 + 0.4 * breathe})`;
+    tctx.lineWidth = 1.5;
     tctx.beginPath();
     tctx.arc(dx, dy, r, 0, Math.PI * 2);
     tctx.stroke();

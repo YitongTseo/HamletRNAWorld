@@ -354,6 +354,39 @@ class World:
 
         self.tick_count += 1
 
+    def lifelike_checkpoint(self) -> dict | None:
+        """Serialisable within-life biology for the mid-generation checkpoint:
+        satiety and the learned plasticity deltas/traces. Without this every
+        restart was mild amnesia plus a free meal — the worm forgot what it
+        had learned this life and respawned fed. None when both features are
+        off, so stock checkpoints don't grow a key."""
+        if not (self._hunger_on or self._plasticity_on):
+            return None
+        out: dict = {}
+        if self._hunger_on:
+            out["satiety"] = self.satiety
+            out["dead"] = self.dead
+        if self._plasticity_on:
+            out["delta"] = self.brain._delta
+            out["trace"] = [[pre, post, v]
+                            for (pre, post), v in self.brain._trace.items()]
+        return out
+
+    def restore_lifelike(self, data: dict | None) -> None:
+        """Inverse of lifelike_checkpoint. Tolerates None and missing keys
+        (v1 checkpoints predate this), and ignores state for features that
+        are currently off."""
+        if not data:
+            return
+        if self._hunger_on and "satiety" in data:
+            self.satiety = float(data["satiety"])
+            self.dead = bool(data.get("dead", False))
+        if self._plasticity_on and "delta" in data:
+            self.brain._delta = {pre: {post: float(v) for post, v in posts.items()}
+                                 for pre, posts in data["delta"].items()}
+            self.brain._trace = {(a, b): float(v)
+                                 for a, b, v in data.get("trace", [])}
+
     def drain_eaten_words(self) -> list[tuple[int, int, str]]:
         """Return and clear the buffer of words eaten since the last drain."""
         out = self._eaten_buffer

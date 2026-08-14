@@ -163,6 +163,12 @@ def _write_checkpoint(worm, generation: int) -> None:
             "word_count": worm.word_count,
             "scroller": worm.world.text_scroller.snapshot(),
         }
+        # Lifelike biology (satiety + learned deltas) rides along so a
+        # restart doesn't cost the worm its within-life learning. Absent
+        # when the features are off; old checkpoints without it restore fine.
+        ll = worm.world.lifelike_checkpoint()
+        if ll is not None:
+            data["lifelike"] = ll
         path = _checkpoint_path(worm)
         tmp = path.with_name("checkpoint.json.tmp")
         tmp.write_text(json.dumps(data))
@@ -205,6 +211,7 @@ def _restore_or_reset_worm(worm, generation: int) -> None:
             data = json.loads(path.read_text())
             if data.get("generation") == generation and "scroller" in data:
                 worm.world.text_scroller.restore(data["scroller"])
+                worm.world.restore_lifelike(data.get("lifelike"))
                 LOG.info("restored mid-gen checkpoint: %s (gen=%d, words=%d)",
                          worm.poem_path.parent, generation, worm.word_count)
                 return

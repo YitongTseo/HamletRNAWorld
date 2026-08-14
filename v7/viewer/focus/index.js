@@ -376,7 +376,7 @@ let mouseWorldPos = { x: WORLD_W / 2, y: WORLD_H / 2 };  // mouse position in wo
 let smellsData = [];          // list of sensed smells from snapshot
 let latestResidual = { pca: new Array(12).fill(0), words: [] };
 let smellsVisible = true;     // toggle with 'o' key
-let desireVisible = false;    // toggle with 'd' key — words tinted by pull
+let desireVisible = true;     // desire heatmap on by default; 'd' hides it
 
 // X-ray neuron-label visibility ('l' key). Single source of truth — the
 // network panel and the magnifier are both notified on every toggle. This

@@ -175,6 +175,40 @@ def test_starving_worm_smells_and_moves_harder():
         _restore(old)
 
 
+# --- checkpoint round-trip ---------------------------------------------------
+
+def test_lifelike_checkpoint_roundtrip():
+    """Restart must not cost the worm its within-life learning or its hunger:
+    checkpoint -> fresh world -> restore == same satiety, deltas, traces."""
+    import json
+    old = _env(**BOTH_ON)
+    try:
+        w = World(seed=9)
+        w.satiety = 0.37
+        w.brain._delta = {"AVAL": {"AVBL": 2.5, "AVBR": -1.25}}
+        w.brain._trace = {("AVAL", "AVBL"): 0.6}
+        ck = json.loads(json.dumps(w.lifelike_checkpoint()))  # via-JSON, like disk
+        w2 = World(seed=9)
+        w2.restore_lifelike(ck)
+        assert w2.satiety == 0.37 and not w2.dead
+        assert w2.brain._delta == {"AVAL": {"AVBL": 2.5, "AVBR": -1.25}}
+        assert w2.brain._trace == {("AVAL", "AVBL"): 0.6}
+    finally:
+        _restore(old)
+
+
+def test_lifelike_checkpoint_none_when_off_and_v1_restore_tolerated():
+    old = _env(**BOTH_OFF)
+    try:
+        w = World(seed=9)
+        assert w.lifelike_checkpoint() is None  # stock checkpoints don't grow
+        w.restore_lifelike(None)                # v1 checkpoint: no-op
+        w.restore_lifelike({"satiety": 0.1})    # features off: ignored
+        assert w.satiety == lifelike.SATIETY_START
+    finally:
+        _restore(old)
+
+
 # --- default-off equivalence & determinism ----------------------------------
 
 def _run_world(ticks: int, seed: int = 11) -> tuple:
