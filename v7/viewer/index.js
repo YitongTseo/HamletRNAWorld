@@ -30,7 +30,7 @@ const flaskSections = new Map();  // flask_name -> { section, sectionGrid, heade
     .flask-section > h2 .gen { color: var(--ochre); font-size: 10.5px; letter-spacing: 0.2em; }
     .flask-section > .flask-grid {
       display: grid; gap: 26px 20px;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     }
     .cell { cursor: pointer; text-align: center; }
     .cell canvas { display: block; width: 100%; aspect-ratio: 1; }
@@ -137,8 +137,8 @@ function drawDish(entry, worm) {
       if (!f.word) continue;
       const d = Math.hypot(f.x - hx, f.y - hy);
       const near = dead ? 0 : Math.max(0, 1 - d / 300);
-      ctx.font = `300 ${10 + 3 * near}px 'Fragment Mono', monospace`;
-      ctx.fillStyle = `rgba(236,226,205,${0.28 + 0.5 * near})`;
+      ctx.font = `${near > 0.4 ? 400 : 300} ${13 + 3 * near}px 'Fragment Mono', monospace`;
+      ctx.fillStyle = `rgba(236,226,205,${0.5 + 0.45 * near})`;
       ctx.fillText(f.word, X(f.x), Y(f.y));
     }
   }
@@ -147,14 +147,14 @@ function drawDish(entry, worm) {
   const M = worm.midline;
   if (M && M.length > 3) {
     const n = M.length;
-    const body = dead ? 0.22 : 0.30 + 0.55 * sat;
+    const body = dead ? 0.26 : 0.42 + 0.5 * sat;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const taper = (u) => Math.sin(Math.PI * Math.min(1, u * 0.92 + 0.05)) ** 0.55;
     // translucent sheath
     for (let k = 0; k < n - 1; k++) {
       const w = taper(k / n);
       ctx.strokeStyle = `rgba(236,226,205,${0.10 * body + 0.10 * body * w})`;
-      ctx.lineWidth = 34 * w * scale + 1;   // ~34 world-units of sheath
+      ctx.lineWidth = 75 * w * scale + 1.6; // exaggerated sheath — legibility over literal scale
       ctx.beginPath();
       ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
       ctx.stroke();
@@ -165,7 +165,7 @@ function drawDish(entry, worm) {
       ctx.strokeStyle = dead
         ? `rgba(150,150,148,${0.30 + 0.25 * w})`
         : `rgba(236,226,205,${0.45 * body + 0.55 * body * w})`;
-      ctx.lineWidth = 20 * w * scale + 0.7; // ~20 world-units of cuticle
+      ctx.lineWidth = 46 * w * scale + 1.1; // exaggerated cuticle — legibility over literal scale
       ctx.beginPath();
       ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
       ctx.stroke();
