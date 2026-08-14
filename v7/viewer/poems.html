@@ -58,12 +58,19 @@
       .col-body {
         flex: 1; overflow-y: auto; padding: 14px 18px 18px; min-height: 0;
         scroll-behavior: smooth;
-        /* Verse, not a word-list: the eaten words flow as italic serif lines
-           (2026-08 redesign) — one-word-per-line read as clutter. */
+        /* Verse, not a word-list. Words are adjacent elements with no text
+           whitespace between them, so inline display had NO soft-wrap
+           opportunities (one endless line + a horizontal scrollbar) —
+           flex-wrap gives every word a break point. */
         font-family: var(--font-serif, Georgia, serif); font-style: italic;
-        font-size: 17px; line-height: 1.9;
+        font-size: 17px; line-height: 1.55;
+        display: flex; flex-wrap: wrap; align-content: flex-start;
+        column-gap: 0.45em; row-gap: 0.6em;
+        overflow-x: hidden;
+        scrollbar-width: thin;
+        scrollbar-color: var(--line, rgba(236,226,205,0.16)) transparent;
       }
-      .col-body .word { display: inline; margin-right: 0.45em; opacity: 0.85; }
+      .col-body .word { opacity: 0.85; }
       .col-body .word.newest { color: var(--accent, #cfa348); opacity: 1; }
       #status { padding: 4px 18px; color: var(--dim, #5a5); font-size: 11px; }
     </style>
