@@ -185,6 +185,52 @@ def _delete_checkpoint(worm) -> None:
                   exc_info=True)
 
 
+def _log_death(flask_name: str, worm) -> None:
+    """Append a post-mortem record to <data>/flasks/<flask>/deaths.jsonl and
+    mirror the headline to the server log. The sim is wallclock-free, so the
+    World only captures deterministic facts (death tick, last-meal tick,
+    position) in death_record; everything else a diagnosis needs — poem size,
+    last meals, the evolved learning-rule genes, and how much of the
+    plasticity budget was saturated — is frozen on the corpse and read here.
+    Motivating case: popat and dowager cixi died with nothing on disk but
+    dead=true, and the process log is root-only. Best-effort like checkpoints:
+    never breaks the sim loop. The 'logged' flag rides the death_record into
+    the checkpoint so a restart doesn't duplicate the entry (worst case: one
+    dupe if we die within a checkpoint interval of the worm)."""
+    try:
+        w = worm.world
+        gen = next((f.state.generation for f in FLASKS
+                    if f.name == flask_name and f.state), 0)
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()),
+            "flask": flask_name,
+            "worm": worm.name,
+            "generation": gen,
+            **{k: v for k, v in (w.death_record or {}).items() if k != "logged"},
+            # Sim runs 60 body ticks/s (SATIETY_DECAY empties 1.0 in 36000
+            # ticks = the documented ~10 sim-minutes).
+            "starved_s": round((w.death_record or {}).get("starved_ticks", 0) / 60.0, 1),
+            "word_count": worm.word_count,
+            "recent_eaten": list(w._recent_eaten[:10]),
+            "lifelike_params": {k: round(v, 4) for k, v in w.lifelike_params.items()},
+            "plasticity": w.brain.plasticity_stats(),
+        }
+        deaths_path = worm.poem_path.parent.parent / "deaths.jsonl"
+        with open(deaths_path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        if w.death_record is not None:
+            w.death_record["logged"] = True
+        LOG.info(
+            "death: %s/%s gen=%d tick=%s — starved %.0fs after last meal; "
+            "words=%d, plasticity capped=%d/%d edges",
+            flask_name, worm.name, gen, rec.get("died_at_tick", "?"),
+            rec["starved_s"], worm.word_count,
+            rec["plasticity"]["capped"], rec["plasticity"]["edges"])
+    except Exception:
+        LOG.exception("death log failed for %s/%s", flask_name,
+                      getattr(worm, "name", "?"))
+
+
 def _reset_worm_poem(worm) -> None:
     """Truncate a worm's poem and zero its counters — used when no valid
     checkpoint exists, so the generation genuinely starts from word 0.
@@ -776,6 +822,13 @@ async def sim_loop():
             for flask_name, worm in _iter_flask_worms():
                 try:
                     worm.world.tick()
+                    # First tick we observe a death (or a restored-dead worm
+                    # whose record was never written), log the post-mortem.
+                    # Old checkpoints may restore dead=True with no record —
+                    # nothing to log there, hence the record check.
+                    if (worm.world.dead and worm.world.death_record is not None
+                            and not worm.world.death_record.get("logged")):
+                        _log_death(flask_name, worm)
                     for word in drain_and_persist(worm):
                         await _broadcast(POEM_CLIENTS, {
                             "type": "eaten",

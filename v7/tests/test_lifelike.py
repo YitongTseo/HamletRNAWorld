@@ -143,6 +143,27 @@ def test_delta_capped():
     assert c._delta["A"]["B"] <= lifelike.DELTA_CAP
 
 
+def test_plasticity_stats_separates_learning_from_saturation():
+    """delta_norm alone can't tell 'learned a lot' from 'hit the wall' (field
+    case: three worms with the identical L1 of 29620.0 — 2,962 edges pinned at
+    DELTA_CAP — one thriving, two starved). stats() must expose the split.
+    baseline_pull=0 so deltas rest exactly AT the cap rather than pull-decayed
+    a hair under it — the same phenotype the saturated field worms ran."""
+    c = Connectome(weights={"A": {"B": 40.0}, "B": {"A": 1.0}})
+    c.enable_plasticity({"eta": 0.05, "trace_decay": 0.85, "baseline_pull": 0.0,
+                         "starve_gain": 0.8, "roam_gain": 0.5})
+    c.fire_neuron("A"); c.fire_neuron("B")
+    c.plasticity_step(reward=0.1)              # tiny nudge: learned, not capped
+    s = c.plasticity_stats()                   # A->B and B->A both co-fired
+    assert s["edges"] == 2 and s["capped"] == 0 and s["l1"] > 0
+    for _ in range(500):
+        c.fire_neuron("A"); c.fire_neuron("B")
+        c.plasticity_step(reward=100.0)        # slam into the cap
+    s = c.plasticity_stats()
+    assert s["edges"] == 2 and s["capped"] == 2
+    assert abs(s["l1"] - 2 * lifelike.DELTA_CAP) < 1e-6  # saturated: l1 == capped×CAP
+
+
 def test_effective_weight_is_genome_plus_delta_and_genome_untouched():
     c = _tiny_brain(plastic=True)
     c.fire_neuron("A"); c.fire_neuron("B")
@@ -175,6 +196,55 @@ def test_satiety_decays_and_death_freezes_worm():
             w.tick()
         assert (w.worm.target_x, w.worm.target_y) == (hx, hy)  # corpse
         assert w.tick_count == tc + 60          # world/scroller kept going
+    finally:
+        _restore(old)
+
+
+def test_death_record_captures_facts_at_death_and_freezes():
+    """tick_count keeps advancing for a corpse, so the death tick / meal gap
+    are only knowable at the moment of death — the record must capture them
+    then and never change after (popat and dowager cixi died with nothing on
+    disk but dead=true; this record is the post-mortem)."""
+    old = _env(**BOTH_ON)
+    try:
+        w = World(seed=7)
+        assert w.death_record is None
+        w.satiety = 3 * lifelike.SATIETY_DECAY_PER_TICK  # about to starve
+        for _ in range(5):
+            w.tick()
+        assert w.dead
+        r = w.death_record
+        assert r["cause"] == "starvation"
+        assert r["last_meal_tick"] == -1                 # never ate...
+        assert r["starved_ticks"] == r["died_at_tick"]   # ...fasted all life
+        snap = dict(r)
+        for _ in range(60):
+            w.tick()
+        assert w.death_record == snap                    # corpse ticks: frozen
+    finally:
+        _restore(old)
+
+
+def test_death_record_checkpoint_roundtrip_keeps_logged_flag():
+    """A restart must neither lose the post-mortem nor re-log it: the record
+    (with the server's 'logged' marker) and last_meal_tick ride the lifelike
+    checkpoint."""
+    old = _env(**BOTH_ON)
+    try:
+        w = World(seed=9)
+        w._last_meal_tick = 0                # ate at birth, then nothing
+        w.satiety = 2 * lifelike.SATIETY_DECAY_PER_TICK
+        for _ in range(4):
+            w.tick()
+        assert w.dead and w.death_record is not None
+        w.death_record["logged"] = True      # set by the server's death logger
+        ck = w.lifelike_checkpoint()
+        w2 = World(seed=9)
+        w2.restore_lifelike(ck)
+        assert w2.dead
+        assert w2.death_record == w.death_record
+        assert w2.death_record["logged"] is True
+        assert w2._last_meal_tick == 0
     finally:
         _restore(old)
 

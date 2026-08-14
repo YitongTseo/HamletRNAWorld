@@ -114,6 +114,13 @@ class World:
     satiety: float = lifelike.SATIETY_START
     dead: bool = False
     _reward_accum: float = 0.0
+    # Post-mortem bookkeeping. tick_count keeps advancing for a corpse (the
+    # scroller must exhaust for rollover), so the death tick and the gap since
+    # the last meal exist only at the moment of death — capture them then.
+    # Deterministic: sim ticks only, no wallclock (the server's death logger
+    # adds the wall timestamp when it writes the record out).
+    _last_meal_tick: int = -1
+    death_record: dict | None = None
 
     def __post_init__(self):
         self.rng = random.Random(self.seed)
@@ -245,6 +252,7 @@ class World:
                         # capped at HISTORY_LEN. This IS the worm's residual now.
                         self._recent_eaten.insert(0, f.word)
                         del self._recent_eaten[HISTORY_LEN:]
+                        self._last_meal_tick = self.tick_count
                         # Lifelike: eating feeds the worm and/or rewards the
                         # brain. Reward scales with hunger — a meal found
                         # while starving consolidates harder (dopamine).
@@ -354,6 +362,17 @@ class World:
             if self.satiety <= 0.0:
                 self.satiety = 0.0
                 self.dead = True
+                self.death_record = {
+                    "cause": "starvation",
+                    "died_at_tick": self.tick_count,
+                    "last_meal_tick": self._last_meal_tick,
+                    # -1 last_meal_tick = never ate; the whole life was the fast.
+                    "starved_ticks": (self.tick_count - self._last_meal_tick
+                                      if self._last_meal_tick >= 0
+                                      else self.tick_count),
+                    "x": round(self.worm.target_x, 1),
+                    "y": round(self.worm.target_y, 1),
+                }
 
         self.tick_count += 1
 
@@ -369,6 +388,11 @@ class World:
         if self._hunger_on:
             out["satiety"] = self.satiety
             out["dead"] = self.dead
+            out["last_meal_tick"] = self._last_meal_tick
+            if self.death_record is not None:
+                # Carries the "logged" flag the server sets after writing
+                # deaths.jsonl, so a restart doesn't re-log the same death.
+                out["death_record"] = self.death_record
         if self._plasticity_on:
             out["delta"] = self.brain._delta
             out["trace"] = [[pre, post, v]
@@ -384,6 +408,8 @@ class World:
         if self._hunger_on and "satiety" in data:
             self.satiety = float(data["satiety"])
             self.dead = bool(data.get("dead", False))
+            self._last_meal_tick = int(data.get("last_meal_tick", -1))
+            self.death_record = data.get("death_record")
         if self._plasticity_on and "delta" in data:
             self.brain._delta = {pre: {post: float(v) for post, v in posts.items()}
                                  for pre, posts in data["delta"].items()}

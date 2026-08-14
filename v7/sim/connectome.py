@@ -287,3 +287,22 @@ class Connectome:
         """L1 size of current learned changes — observability for tests,
         snapshots, and the metrics collector."""
         return sum(abs(d) for posts in self._delta.values() for d in posts.values())
+
+    def plasticity_stats(self) -> dict:
+        """Rollup of the learned layer for post-mortems and diagnostics.
+        delta_norm alone proved ambiguous in the field: three worms in one
+        flask all reported the identical L1 (29620.0 — 2,962 edges pinned at
+        DELTA_CAP) and one thrived while two starved. The capped-edge count is
+        what separates 'learned a lot' from 'every traced synapse slammed into
+        the cap and the rule can no longer steer'."""
+        from sim.lifelike import DELTA_CAP
+        edges = capped = 0
+        l1 = 0.0
+        for posts in self._delta.values():
+            for d in posts.values():
+                edges += 1
+                l1 += abs(d)
+                if abs(d) >= DELTA_CAP - 1e-9:
+                    capped += 1
+        return {"edges": edges, "capped": capped, "l1": round(l1, 2),
+                "traces": len(self._trace)}
