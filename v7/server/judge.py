@@ -16,12 +16,18 @@ axes" and 3-5× the cost. Per-generation cost lands around $0.05 at full
 
 Public API:
     judge_poem(tokens, worm_name, seed=None) -> list[ScoredWindow]
+
+The judge is pluggable: WORMLET_JUDGE_BACKEND=anthropic (default, the path
+described above) or openai (any OpenAI-compatible /v1/chat/completions —
+Ollama, LM Studio, llama.cpp server, vLLM). See the backend block below.
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
+import urllib.request
 from dataclasses import dataclass
 
 import anthropic
@@ -43,6 +49,88 @@ SAMPLE_N = None         # (was 5, reverted) fixed-count path unused; fraction wi
 JUDGE_TEMPERATURE = 0.0
 MODEL = "claude-haiku-4-5"
 MAX_OUTPUT_TOKENS = 8192  # 210 sampled windows × ~8 tokens output + buffer
+
+# --- pluggable backend ------------------------------------------------------
+# WORMLET_JUDGE_BACKEND selects who scores the windows:
+#   * "anthropic" (default) — Claude via the anthropic SDK, prompt-cached;
+#     exactly the production path.
+#   * "openai" — any OpenAI-compatible /v1/chat/completions endpoint (Ollama,
+#     LM Studio, llama.cpp server, vLLM). Built for judging with a LOCAL model:
+#     no API cost, no key, works with all external egress blocked. The rubric,
+#     sampling, temperature-0 pin, CSV protocol and parsing are identical —
+#     only the transport differs. Calibration is NOT: a small local model is a
+#     different critic, so fitness histories judged by different models must
+#     never be compared as if they were one judge.
+# Env is read at call time, not import, so tests and multi-process configs can
+# switch backends without reimporting the module.
+#   WORMLET_JUDGE_MODEL     required for openai (e.g. "gemma3:4b"); optional
+#                           override of MODEL for anthropic
+#   WORMLET_JUDGE_URL       base URL, default http://127.0.0.1:11434/v1 (Ollama)
+#   WORMLET_JUDGE_API_KEY   optional bearer token, openai backend only
+#   WORMLET_JUDGE_TIMEOUT_S HTTP timeout, default 300 — a 4B model scoring ~40
+#                           windows on consumer hardware can take minutes
+
+
+def _judge_backend() -> str:
+    return os.environ.get("WORMLET_JUDGE_BACKEND", "anthropic")
+
+
+def _judge_model() -> str:
+    model = os.environ.get("WORMLET_JUDGE_MODEL")
+    if model:
+        return model
+    if _judge_backend() == "openai":
+        raise RuntimeError(
+            "WORMLET_JUDGE_MODEL is required with WORMLET_JUDGE_BACKEND=openai "
+            "— set it to a model your server lists under /v1/models."
+        )
+    return MODEL
+
+
+def _openai_payload(user_prompt: str) -> dict:
+    """Request body for /chat/completions. No cache_control — OpenAI-compatible
+    servers don't speak it, and local models don't bill input anyway."""
+    return {
+        "model": _judge_model(),
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "temperature": JUDGE_TEMPERATURE,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+
+def _http_post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
+    """Tiny stdlib POST — deliberately no new dependency for a backend most
+    installs never enable. Tests stub this symbol to stay off the network."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _complete_openai(user_prompt: str) -> str:
+    base = os.environ.get("WORMLET_JUDGE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
+    headers: dict[str, str] = {}
+    key = os.environ.get("WORMLET_JUDGE_API_KEY")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    timeout = float(os.environ.get("WORMLET_JUDGE_TIMEOUT_S", "300"))
+    payload = _http_post_json(
+        base + "/chat/completions", _openai_payload(user_prompt), headers, timeout
+    )
+    try:
+        return payload["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(
+            f"unexpected /chat/completions response shape from {base}: {e!r}"
+        ) from e
 
 JUDGE_SYSTEM_PROMPT = """You are a careful judge of poetry produced by an artificial worm-like neural agent that has been eating words from Shakespeare's Hamlet. The worm's eaten-word sequence forms a found poem — most fragments will be partly nonsensical, but some may surprise you with rhythm, emotional resonance, or accidental coherence.
 
@@ -143,6 +231,27 @@ def _client() -> anthropic.Anthropic:
     return _CLIENT
 
 
+def _complete_anthropic(user_prompt: str, worm_name: str) -> str:
+    client = _client()
+    response = client.messages.create(
+        model=_judge_model(),
+        max_tokens=MAX_OUTPUT_TOKENS,
+        temperature=JUDGE_TEMPERATURE,
+        system=[
+            {
+                "type": "text",
+                "text": JUDGE_SYSTEM_PROMPT,
+                # Cache the rubric — identical across every worm in every
+                # generation, so after the first call this is ~$0/MTok.
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        messages=[{"role": "user", "content": user_prompt}],
+        metadata={"user_id": f"wormlet-judge-{worm_name}"},
+    )
+    return next((b.text for b in response.content if b.type == "text"), "")
+
+
 def judge_poem(tokens: list[str], worm_name: str,
                seed: int | None = None) -> list[ScoredWindow]:
     """Score a worm's poem by sampling 10% of its 15-token windows and
@@ -161,25 +270,15 @@ def judge_poem(tokens: list[str], worm_name: str,
 
     user_prompt = _format_user_prompt(sampled)
 
-    client = _client()
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=MAX_OUTPUT_TOKENS,
-        temperature=JUDGE_TEMPERATURE,
-        system=[
-            {
-                "type": "text",
-                "text": JUDGE_SYSTEM_PROMPT,
-                # Cache the rubric — identical across every worm in every
-                # generation, so after the first call this is ~$0/MTok.
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user_prompt}],
-        metadata={"user_id": f"wormlet-judge-{worm_name}"},
-    )
-
-    text = next((b.text for b in response.content if b.type == "text"), "")
+    backend = _judge_backend()
+    if backend == "anthropic":
+        text = _complete_anthropic(user_prompt, worm_name)
+    elif backend == "openai":
+        text = _complete_openai(user_prompt)
+    else:
+        raise RuntimeError(
+            f"unknown WORMLET_JUDGE_BACKEND={backend!r} — use 'anthropic' or 'openai'"
+        )
     scores = _parse_scores(text)
 
     out: list[ScoredWindow] = []
