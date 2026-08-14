@@ -27,30 +27,36 @@
         flex: 1; display: flex; flex-direction: column; gap: 16px;
         padding: 4px 18px 18px 18px; overflow: auto; min-height: 0;
       }
-      .flask-wrap { display: flex; flex-direction: column; min-height: 240px; }
+      .flask-wrap { display: flex; flex-direction: column; }
       .flask-head {
         margin: 0 0 6px 0; font-size: 12px; font-weight: 600;
         color: var(--accent, #cfa348); letter-spacing: 0.5px;
       }
       .flask-grid {
-        display: grid; gap: 10px; flex: 1; min-height: 0;
-        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        /* Specimen records, not thumbnails: two readable cards per row on a
+           desktop, one on narrow screens (2026-08 redesign — the old
+           minmax(150px) crammed ten unreadable slivers into one strip). */
+        display: grid; gap: 22px;
+        grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
       }
       .col {
         display: flex; flex-direction: column;
-        background: var(--panel, rgba(0, 20, 10, 0.5));
-        border: 1px solid var(--line, rgba(100, 200, 255, 0.18));
+        background: var(--panel, #211a12);
+        border: 1px solid var(--line, rgba(236,226,205,0.16));
         border-radius: 4px;
-        overflow: hidden; min-height: 0;
+        overflow: hidden;
+        min-height: 280px; max-height: 60vh;
       }
       .col-head {
-        padding: 6px 10px; border-bottom: 1px solid var(--line, rgba(100,200,255,0.12));
-        display: flex; justify-content: space-between;
-        color: var(--accent, #cfa348); font-weight: 600;
+        padding: 10px 16px; border-bottom: 1px solid var(--line, rgba(236,226,205,0.12));
+        display: flex; justify-content: space-between; align-items: baseline;
+        color: var(--fg, #ece2cd);
+        font-family: var(--font-serif, serif); font-style: italic;
+        font-size: 20px; font-weight: 400;
       }
       .col-head .count { color: var(--dim, #5a5); font-weight: 400; font-size: 11px; }
       .col-body {
-        flex: 1; overflow-y: auto; padding: 12px 14px; min-height: 0;
+        flex: 1; overflow-y: auto; padding: 14px 18px 18px; min-height: 0;
         scroll-behavior: smooth;
         /* Verse, not a word-list: the eaten words flow as italic serif lines
            (2026-08 redesign) — one-word-per-line read as clutter. */
