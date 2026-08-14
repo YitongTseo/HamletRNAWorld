@@ -376,7 +376,10 @@ let mouseWorldPos = { x: WORLD_W / 2, y: WORLD_H / 2 };  // mouse position in wo
 // Smell visualization
 let smellsData = [];          // list of sensed smells from snapshot
 let latestResidual = { pca: new Array(12).fill(0), words: [] };
-let smellsVisible = true;     // toggle with 'o' key
+// Smell lines default OFF since the desire layer landed — ten dashed lines
+// per word read as clutter next to the heatmap. 'o' brings them back for
+// neuron-level debugging.
+let smellsVisible = false;    // toggle with 'o' key
 let desireVisible = true;     // desire heatmap on by default; 'd' hides it
 
 // --- specimen data card (observation-log restyle) ---------------------------

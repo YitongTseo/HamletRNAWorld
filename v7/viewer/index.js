@@ -72,8 +72,7 @@ function ensureCard(flaskName, wormName) {
   cell.className = 'cell';
   cell.innerHTML =
     `<canvas></canvas>` +
-    `<div class="lbl"><span class="who"></span><small></small></div>` +
-    `<div class="recent">…</div>`;
+    `<div class="lbl"><span class="who"></span><small></small></div>`;
   cell.querySelector('.who').textContent = wormName;
   cell.addEventListener('click', () => {
     location.href = `/focus/${encodeURIComponent(flaskName)}/${encodeURIComponent(wormName)}`;
@@ -209,10 +208,6 @@ function updateCardChrome(entry, worm) {
     small.textContent = `${worm.word_count} word${worm.word_count === 1 ? '' : 's'}`;
     small.className = '';
   }
-  const rec = entry.cell.querySelector('.recent');
-  rec.textContent = (worm.recent_words && worm.recent_words.length)
-    ? worm.recent_words.join(' · ')
-    : '…';
 }
 
 let ws = null;
