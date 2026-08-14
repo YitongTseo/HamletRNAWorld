@@ -228,6 +228,66 @@ def test_user_prompt_has_count_header_and_sequential_indices():
     assert rest[0].startswith("0: ") and rest[1].startswith("1: ")  # not 45
 
 
+def test_fallback_to_anthropic_when_openai_dies():
+    """WORMLET_JUDGE_FALLBACK=anthropic: primary openai exhausts its retries,
+    the anthropic path scores instead (with its own model, not the local tag)."""
+
+    def dead(url, body, headers, timeout):
+        raise OSError("host down")
+
+    old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="qwen2.5:14b",
+                    WORMLET_JUDGE_FALLBACK="anthropic")
+    real_post, real_sleep = judge._http_post_json, judge.time.sleep
+    real_anth = judge._complete_anthropic
+    judge._http_post_json = dead
+    judge.time.sleep = lambda s: None
+    judge._complete_anthropic = lambda prompt, worm: "0,60,40"
+    try:
+        out = judge.judge_poem(["word"] * judge.WINDOW_SIZE, "wormy", seed=1)
+        assert out and out[0].emotional == 60 and out[0].coherence == 40
+    finally:
+        judge._http_post_json = real_post
+        judge.time.sleep = real_sleep
+        judge._complete_anthropic = real_anth
+        _restore_env(old)
+
+
+def test_anthropic_model_never_inherits_local_tag():
+    """When anthropic runs as fallback, WORMLET_JUDGE_MODEL holds the LOCAL
+    model's tag — it must not be sent to the Anthropic API."""
+    old = _swap_env(WORMLET_JUDGE_MODEL="qwen2.5:14b")
+    try:
+        assert judge._judge_model("anthropic") == judge.MODEL
+    finally:
+        _restore_env(old)
+    old = _swap_env(WORMLET_JUDGE_MODEL="claude-sonnet-5")
+    try:
+        assert judge._judge_model("anthropic") == "claude-sonnet-5"
+    finally:
+        _restore_env(old)
+
+
+def test_no_fallback_unless_configured():
+    def dead(url, body, headers, timeout):
+        raise OSError("host down")
+
+    old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="x",
+                    WORMLET_JUDGE_FALLBACK=None)
+    real_post, real_sleep = judge._http_post_json, judge.time.sleep
+    judge._http_post_json = dead
+    judge.time.sleep = lambda s: None
+    try:
+        try:
+            judge.judge_poem(["word"] * judge.WINDOW_SIZE, "wormy", seed=1)
+            assert False, "expected RuntimeError with no fallback configured"
+        except RuntimeError as e:
+            assert "unreachable" in str(e)
+    finally:
+        judge._http_post_json = real_post
+        judge.time.sleep = real_sleep
+        _restore_env(old)
+
+
 def test_openai_bad_response_shape_raises():
     old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="gemma3:4b")
     real_post = judge._http_post_json

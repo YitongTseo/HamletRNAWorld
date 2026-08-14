@@ -27,7 +27,9 @@ import json
 import os
 import random
 import re
+import socket
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -76,23 +78,40 @@ def _judge_backend() -> str:
     return os.environ.get("WORMLET_JUDGE_BACKEND", "anthropic")
 
 
-def _judge_model() -> str:
+def _judge_fallback() -> str | None:
+    """WORMLET_JUDGE_FALLBACK names a second backend to try when the primary
+    fails (e.g. openai primary on a LAN box that might be powered off,
+    anthropic fallback). Empty/unset = no fallback: the rollover's all-zero
+    guard aborts and retries later. NOTE the splice caveat: fallback-judged
+    generations are scored by a DIFFERENT critic (measured tau ~0.47 vs
+    Haiku) — fitness across the splice is not one lineage's history."""
+    fb = os.environ.get("WORMLET_JUDGE_FALLBACK", "").strip()
+    return fb or None
+
+
+def _judge_model(backend: str | None = None) -> str:
+    backend = backend or _judge_backend()
+    if backend == "anthropic":
+        # WORMLET_JUDGE_MODEL doubles as the anthropic override, but ONLY if
+        # it names a claude model — when anthropic runs as the FALLBACK the
+        # env var holds the local model's tag (e.g. "qwen2.5:14b"), which
+        # must not be sent to the Anthropic API.
+        model = os.environ.get("WORMLET_JUDGE_MODEL", "")
+        return model if model.startswith("claude") else MODEL
     model = os.environ.get("WORMLET_JUDGE_MODEL")
     if model:
         return model
-    if _judge_backend() == "openai":
-        raise RuntimeError(
-            "WORMLET_JUDGE_MODEL is required with WORMLET_JUDGE_BACKEND=openai "
-            "— set it to a model your server lists under /v1/models."
-        )
-    return MODEL
+    raise RuntimeError(
+        "WORMLET_JUDGE_MODEL is required with WORMLET_JUDGE_BACKEND=openai "
+        "— set it to a model your server lists under /v1/models."
+    )
 
 
 def _openai_payload(user_prompt: str) -> dict:
     """Request body for /chat/completions. No cache_control — OpenAI-compatible
     servers don't speak it, and local models don't bill input anyway."""
     return {
-        "model": _judge_model(),
+        "model": _judge_model("openai"),
         "max_tokens": MAX_OUTPUT_TOKENS,
         "temperature": JUDGE_TEMPERATURE,
         "stream": False,
@@ -105,7 +124,17 @@ def _openai_payload(user_prompt: str) -> dict:
 
 def _http_post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
     """Tiny stdlib POST — deliberately no new dependency for a backend most
-    installs never enable. Tests stub this symbol to stay off the network."""
+    installs never enable. Tests stub this symbol to stay off the network
+    (which also skips the probe below).
+
+    Fast-fail probe: a powered-OFF LAN host silently swallows SYNs, so a
+    plain urlopen burned the full read timeout per attempt (observed: 600s
+    x 3 retries x 10 worms ≈ a 40-minute failing rollover). A 4-second TCP
+    probe detects a dead judge box in seconds instead."""
+    parts = urllib.parse.urlsplit(url)
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    sock = socket.create_connection((parts.hostname, port), timeout=4)
+    sock.close()
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -268,7 +297,7 @@ def _client() -> anthropic.Anthropic:
 def _complete_anthropic(user_prompt: str, worm_name: str) -> str:
     client = _client()
     response = client.messages.create(
-        model=_judge_model(),
+        model=_judge_model("anthropic"),
         max_tokens=MAX_OUTPUT_TOKENS,
         temperature=JUDGE_TEMPERATURE,
         system=[
@@ -304,15 +333,38 @@ def judge_poem(tokens: list[str], worm_name: str,
 
     user_prompt = _format_user_prompt(sampled)
 
-    backend = _judge_backend()
-    if backend == "anthropic":
-        text = _complete_anthropic(user_prompt, worm_name)
-    elif backend == "openai":
-        text = _complete_openai(user_prompt)
-    else:
-        raise RuntimeError(
-            f"unknown WORMLET_JUDGE_BACKEND={backend!r} — use 'anthropic' or 'openai'"
-        )
+    # Backend chain: primary, then the optional fallback. Each backend gets
+    # its own full retry cycle; a fallback success is logged loudly because
+    # those generations are judged by a DIFFERENT critic (splice caveat in
+    # _judge_fallback's docstring).
+    backends = [_judge_backend()]
+    fb = _judge_fallback()
+    if fb and fb not in backends:
+        backends.append(fb)
+    text = None
+    last_err: Exception | None = None
+    for be in backends:
+        try:
+            if be == "anthropic":
+                text = _complete_anthropic(user_prompt, worm_name)
+            elif be == "openai":
+                text = _complete_openai(user_prompt)
+            else:
+                raise RuntimeError(
+                    f"unknown judge backend {be!r} — use 'anthropic' or 'openai'"
+                )
+            if be != backends[0]:
+                print(f"[JUDGE] primary backend failed; scored {worm_name} via "
+                      f"FALLBACK {be} ({_judge_model(be)}) — splice caveat applies",
+                      flush=True)
+            break
+        except Exception as e:
+            last_err = e
+            if be != backends[-1]:
+                print(f"[JUDGE] backend {be} failed for {worm_name}: {e}; "
+                      f"trying fallback", flush=True)
+    if text is None:
+        raise last_err if last_err else RuntimeError("no judge backend configured")
     scores = _parse_scores(text)
 
     # Positional fallback: some models renumber anyway (1..n instead of the
