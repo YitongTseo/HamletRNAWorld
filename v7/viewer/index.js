@@ -75,7 +75,10 @@ function ensureCard(flaskName, wormName) {
     `<div class="lbl"><span class="who"></span><small></small></div>`;
   cell.querySelector('.who').textContent = wormName;
   cell.addEventListener('click', () => {
-    location.href = `/focus/${encodeURIComponent(flaskName)}/${encodeURIComponent(wormName)}`;
+    // hyphen-slug the name so the URL carries no literal spaces
+    // ("dowager cixi" -> dowager-cixi); the server resolves the slug.
+    const slug = wormName.replace(/ /g, '-');
+    location.href = `/focus/${encodeURIComponent(flaskName)}/${encodeURIComponent(slug)}`;
   });
   flaskEntry.sectionGrid.appendChild(cell);
   const canvas = cell.querySelector('canvas');

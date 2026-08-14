@@ -230,7 +230,14 @@ def _focus_key(flask: str, worm: str) -> str:
 
 
 def _find_worm(flask: str, worm: str) -> Worm | None:
-    return WORM_BY_KEY.get((flask, worm))
+    """Exact name first, then the hyphen-slug form: the overview links
+    'dowager cixi' as /focus/flask_1/dowager-cixi so URLs carry no literal
+    spaces. Exact-first means a name that genuinely contains hyphens is
+    never mis-resolved."""
+    w = WORM_BY_KEY.get((flask, worm))
+    if w is None and "-" in worm:
+        w = WORM_BY_KEY.get((flask, worm.replace("-", " ")))
+    return w
 
 
 def _find_flask(name: str) -> WormGroup | None:
@@ -372,6 +379,15 @@ def _build_snapshot(worm: Worm) -> dict:
                  "food_sense": w.stim_food_sense},
         "paused": w.paused,
         "neurons": neurons_active,
+        # The worm's chemosensory memory — the specimen card's "recently
+        # ingested" reads this (it was missing from this inline snapshot,
+        # which predates the card; World.snapshot() always had it).
+        "recent_eaten": list(w._recent_eaten),
+        # Lifelike keys only when the features are on (site-wide policy).
+        **({"satiety": round(w.satiety, 3), "dead": w.dead}
+           if getattr(w, "_hunger_on", False) else {}),
+        **({"plasticity_delta": round(w.brain.delta_norm(), 2)}
+           if getattr(w, "_plasticity_on", False) else {}),
     }
 
 
@@ -898,9 +914,17 @@ def _asyncio_exception_handler(loop, context: dict) -> None:
 
 
 def _load_initial_default_weights() -> dict:
-    """The starter connectome every flask's parent vector is seeded from."""
+    """The starter connectome every flask's parent vector is seeded from.
+    In lifelike mode the _lifelike gene block is injected here so a COLD-START
+    lineage's parent_keys include the learning-rule genes — this must stay in
+    lockstep with the fresh-file injection in orchestrator._ensure_flask_worm_dir
+    or gen-1 flattening dimensions mismatch and the rollover livelocks."""
     from server.orchestrator import DEFAULT_WEIGHTS
-    return json.loads(DEFAULT_WEIGHTS.read_text())
+    from sim import lifelike
+    weights = json.loads(DEFAULT_WEIGHTS.read_text())
+    if lifelike.plasticity_enabled() or lifelike.hunger_enabled():
+        lifelike.ensure_params(weights)
+    return weights
 
 
 @asynccontextmanager

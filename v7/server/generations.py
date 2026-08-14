@@ -39,7 +39,7 @@ from server.evolution import (
     evolve_generation, fitness, flatten_weights, unflatten_weights, WeightDict,
 )
 from server.gardener import maybe_write_log
-from server.judge import judge_poem, ScoredWindow
+from server.judge import judge_poem, judge_description, ScoredWindow
 from server.orchestrator import Worm
 from server.poem_clean import clean as clean_punctuation
 
@@ -368,6 +368,20 @@ def run_generation_rollover(
     # exhausted and the rollover re-fires — i.e. the lineage WAITS for the
     # judge to come back rather than taking a garbage step.
     if not any(scored_by_worm.values()):
+        if not any(poems_clean.values()):
+            # Void generation: no worm ate a single token (mass starvation or
+            # a degenerate brood). Nothing was judged because there was
+            # nothing to judge — raising here would LIVELOCK: the corpus
+            # re-exhausts with the same empty poems forever. Respawn the same
+            # genomes instead: poems reset, satiety refills, the brood gets
+            # another life. No NES step, no generation increment.
+            print(f"[GENERATIONS] void generation in {group} — no worm ate "
+                  f"anything; respawning unchanged genomes", flush=True)
+            return {
+                w.name: json.loads(
+                    w.poem_path.parent.joinpath("weights.json").read_text())
+                for w in worms
+            }
         raise RuntimeError(
             f"judge produced zero scored windows across all {len(worms)} worms "
             f"in {group} — aborting rollover; will retry when the corpus "
@@ -451,7 +465,10 @@ def run_generation_rollover(
     (gen_dir / "metadata.json").write_text(json.dumps({
         "group": group,
         "generation": state.generation + 1,
-        "judge_model": "claude-haiku-4-5",
+        # Record the ACTUAL judge (backend:model), not an assumption — with
+        # the openai backend or a fallback splice, "claude-haiku-4-5" would
+        # be exactly the scoring-regime misattribution CLAUDE.md warns about.
+        "judge_model": judge_description(),
         "sigma_used": state.sigma,
         "sigma_next": new_sigma,
         "sigma_scheme": ng.scheme,

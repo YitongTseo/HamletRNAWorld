@@ -381,12 +381,23 @@ let latestResidual = { pca: new Array(12).fill(0), words: [] };
 // neuron-level debugging.
 let smellsVisible = false;    // toggle with 'o' key
 let desireVisible = true;     // desire heatmap on by default; 'd' hides it
+let isMouseDown = false;      // pca popup shows only while pointer held
+window.addEventListener('mousedown', () => { isMouseDown = true; });
+window.addEventListener('mouseup', () => { isMouseDown = false; });
 
 // --- specimen data card (observation-log restyle) ---------------------------
 // Fills #specimen-card from each state frame. Lifelike fields (satiety /
 // dead / plasticity_delta) only exist when the server runs those features;
 // rows hide themselves when absent.
 function updateSpecimenCard(msg) {
+  // True worm name from the sim (the URL may carry a hyphen slug).
+  if (msg.name) {
+    const t = document.getElementById('wormtitle');
+    if (t && t.textContent !== msg.name) {
+      t.textContent = msg.name;
+      document.title = `wormlet — ${msg.name}`;
+    }
+  }
   const card = document.getElementById('specimen-card');
   if (!card) return;
   const row = (id, val, warn) => {
@@ -562,6 +573,7 @@ function render() {
     smellsData,
     smellsVisible,
     desireVisible,
+    mouseDown: isMouseDown,
     wormHeadPos,
     pcaData,
   });
@@ -584,14 +596,14 @@ render();
     #gen-overlay.visible { display: flex; }
     #gen-overlay .panel {
       min-width: 360px; max-width: 560px; padding: 22px 28px;
-      background: rgba(0, 20, 10, 0.92);
-      border: 1px solid rgba(100, 255, 200, 0.4);
+      background: rgba(33, 26, 18, 0.92);
+      border: 1px solid rgba(207, 163, 72, 0.4);
       border-radius: 6px;
       box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
     }
     #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: #cfa348; }
     #gen-overlay .phase { margin-bottom: 12px; color: #ece2cd; font-size: 13px; }
-    #gen-overlay .bar { height: 6px; background: rgba(100, 255, 200, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+    #gen-overlay .bar { height: 6px; background: rgba(207, 163, 72, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
     #gen-overlay .bar > div { height: 100%; background: #cfa348; transition: width 250ms ease; }
     #gen-overlay .meta { color: #8f8266; font-size: 11px; margin-top: 8px; }
     #gen-overlay .err { color: #cd5d4a; margin-top: 10px; font-size: 12px; }

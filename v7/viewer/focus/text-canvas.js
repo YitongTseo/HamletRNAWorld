@@ -190,7 +190,9 @@ function drawTextCanvas(state) {
 
   // PCA popup for nearest hovered word — only when the user has opened it
   // via the dock (glyph [x,y]). Default = closed.
-  if (isPcaVisible() && nearestWord && minDist < 80 && pcaData) {
+  // Popup only while the pointer is HELD on a word — a hover-triggered
+  // preview read as visual noise (user feedback); press-and-hold to inspect.
+  if (isPcaVisible() && state.mouseDown && nearestWord && minDist < 80 && pcaData) {
     drawPcaPopup(nearestWord.word, mouseScreenPos, pcaData);
   }
 }

@@ -282,6 +282,18 @@ def _parse_scores(text: str) -> dict[int, tuple[int, int]]:
 _CLIENT: anthropic.Anthropic | None = None
 
 
+def judge_description() -> str:
+    """Provenance string for generation artifacts: the PRIMARY judge's
+    backend and model (fallback scorings are additionally logged per worm at
+    judge time). Never raises — provenance must not break a rollover."""
+    be = _judge_backend()
+    try:
+        model = _judge_model(be)
+    except RuntimeError:
+        model = "unconfigured"
+    return f"{be}:{model}"
+
+
 def _client() -> anthropic.Anthropic:
     global _CLIENT
     if _CLIENT is None:
@@ -367,16 +379,22 @@ def judge_poem(tokens: list[str], worm_name: str,
         raise last_err if last_err else RuntimeError("no judge backend configured")
     scores = _parse_scores(text)
 
-    # Positional fallback: some models renumber anyway (1..n instead of the
-    # 0..n-1 they were shown). If the parsed indices miss the expected set
-    # entirely but the LINE COUNT matches, zip in order — the scores are
-    # per-window, just mislabelled. A count mismatch stays unmatched: those
-    # scores describe windows we never sent, and guessing would launder noise
-    # into fitness.
+    # Renumber fallback: some models renumber anyway. Two safe shapes:
+    #   * exact shift-by-one (model wrote 1..n for our 0..n-1) — for n >= 2
+    #     this OVERLAPS the expected set, so an overlap test alone never
+    #     fires and, worse, window i would silently receive the score meant
+    #     for window i-1. Detect the exact shift and shift back.
+    #   * fully disjoint labels with a matching count — zip positionally.
+    # Anything else (partial overlap that isn't a clean shift, count
+    # mismatch) is left alone: unmatched windows score nothing rather than
+    # guessing, and the rollover's all-zero guard handles the fallout.
     expected = set(range(len(sampled)))
-    if scores and len(scores) == len(sampled) and not (set(scores) & expected):
-        ordered = [scores[k] for k in sorted(scores)]
-        scores = dict(enumerate(ordered))
+    if scores and len(scores) == len(sampled) and set(scores) != expected:
+        keys = sorted(scores)
+        if keys == list(range(1, len(sampled) + 1)):
+            scores = {k - 1: scores[k] for k in keys}
+        elif not (set(scores) & expected):
+            scores = dict(enumerate(scores[k] for k in keys))
 
     out: list[ScoredWindow] = []
     for i, (idx, toks) in enumerate(sampled):

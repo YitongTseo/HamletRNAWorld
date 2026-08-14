@@ -28,12 +28,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from corpus.hamlet import is_non_reactive
 from server import pos_grammar, pos_scorers
 
 
@@ -42,6 +42,17 @@ def _punct_smell_on() -> bool:
     worm can learn sentence marks. Default off = stock behaviour (punctuation
     is chemosensorily invisible and eaten only by accident)."""
     return os.environ.get("WORMLET_PUNCT_SMELL", "0") == "1"
+
+
+# Punctuation-ONLY predicate. Deliberately not corpus.hamlet.is_non_reactive,
+# whose set also contains ~50 stop words ("the", "of", "and"…): those are in
+# the embedded vocab and must keep their full semantic smell — the flag is
+# advertised as punctuation-only (audit finding).
+_PUNCT_RE = re.compile(r"^[^\w\s]+$")
+
+
+def _is_punct(token: str) -> bool:
+    return bool(token) and bool(_PUNCT_RE.match(token))
 
 V7_ROOT = Path(__file__).resolve().parent.parent
 _NOMIC_PATH = V7_ROOT / "cache" / "corpus_nomic512.json"
@@ -289,7 +300,7 @@ class EmbeddingModel:
 
         # Punctuation smells of pure grammar (semantic channels zero) when
         # WORMLET_PUNCT_SMELL=1 — mirrors embed_batch exactly.
-        if _punct_smell_on() and is_non_reactive(current_word):
+        if _punct_smell_on() and _is_punct(current_word) and self._widx.get(_norm(current_word), -1) < 0:
             return np.concatenate([np.zeros(D_EMB), pos_out])
 
         if self.mode == ENCODER_UMAP:
@@ -349,7 +360,7 @@ class EmbeddingModel:
         # punctuation is invisible to chemosensation and every eaten mark is a
         # collision accident no amount of evolution can select on.
         if _punct_smell_on():
-            punct = np.fromiter((is_non_reactive(w) for w in current_words),
+            punct = np.fromiter((_is_punct(w) for w in current_words),
                                 dtype=bool, count=K)
             valid = in_vocab | punct
         else:

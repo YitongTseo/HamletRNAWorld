@@ -150,7 +150,7 @@ function renderCharts(gens) {
         lineDataset('σ used', '#cd5d4a', sigmas),
         lineDataset('σ stability (rolling std, 10 gens)', '#cd7f5d', sigmaStd10),
         constDataset(`max (${SIGMA_MAX})`, 'rgba(255,102,102,0.45)', SIGMA_MAX, sigmas.length, [2, 4]),
-        constDataset(`init (${SIGMA_INIT})`, 'rgba(102,255,153,0.45)', SIGMA_INIT, sigmas.length, [2, 4]),
+        constDataset(`init (${SIGMA_INIT})`, 'rgba(207,163,72,0.45)', SIGMA_INIT, sigmas.length, [2, 4]),
         constDataset(`min (${SIGMA_MIN})`, 'rgba(150,150,150,0.4)', SIGMA_MIN, sigmas.length, [2, 4]),
       ],
     },
@@ -479,7 +479,7 @@ function renderLineageChart(gens) {
         ctx.beginPath();
         ctx.moveTo(scales.x.getPixelForValue(c.from.x), scales.y.getPixelForValue(c.from.y));
         ctx.lineTo(scales.x.getPixelForValue(c.to.x), scales.y.getPixelForValue(c.to.y));
-        ctx.strokeStyle = c.elite ? 'rgba(255,170,51,0.6)' : 'rgba(150,150,150,0.22)';
+        ctx.strokeStyle = c.elite ? 'rgba(207,163,72,0.6)' : 'rgba(150,150,150,0.22)';
         ctx.lineWidth = c.elite ? 1.2 : 0.6;
         ctx.stroke();
       }

@@ -320,7 +320,10 @@ class World:
             # the meal), then decay traces/deltas. No-op when plasticity off.
             if self._plasticity_on:
                 self.brain.plasticity_step(self._reward_accum)
-                self._reward_accum = 0.0
+            # Drain regardless: with hunger on and plasticity off the accum
+            # would otherwise grow unbounded for the whole life (harmless but
+            # sloppy — audit finding).
+            self._reward_accum = 0.0
             # Hunger: a starving worm roams — motor gain rises as satiety
             # falls (serotonin/dopamine roam-dwell switch, crudely).
             motor_gain = 1.0

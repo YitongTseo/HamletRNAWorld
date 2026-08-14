@@ -8,10 +8,9 @@
     <style>
       html, body { margin: 0; padding: 0; background: var(--bg, #000); color: var(--fg, #ece2cd); }
       body { font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-             margin: 0; padding: 0 0 80px; }
-      /* header runs full-bleed like every other page; only the prose narrows */
-      body > *:not(header) { max-width: 720px; margin-left: auto; margin-right: auto;
-                             padding-left: 22px; padding-right: 22px; }
+             margin: 0; padding: 0; }
+      /* header runs full-bleed like every other page; the prose narrows */
+      main { max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
       header {
         display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
         padding: 22px 0 16px; margin-bottom: 18px; border-bottom: 1px solid #3a3226;
@@ -41,12 +40,13 @@
   </head>
   <body>
     <header>
-      <h1>wormlet <b>vivarium</b>
+      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
         <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
       <nav><a href="/">worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about" class="here">about</a></nav>
       <div id="experiment-switcher"></div>
     </header>
     <script src="/static/experiment_dropdown.js?v=2"></script>
+    <main>
 
     <div class="lead">
       Six independent <em>C. elegans</em> brains, each one a faithful port of
@@ -203,5 +203,6 @@
       Embedding model: <a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener">nomic-ai/nomic-embed-text-v1.5</a>.
       Connectome data via the GoPiGo / Busbice / Garrett / Churchill <em>C. elegans</em> port.
     </div>
+    </main>
   </body>
 </html>

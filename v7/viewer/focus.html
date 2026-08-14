@@ -20,7 +20,6 @@
   <body>
     <canvas id="c"></canvas>
     <canvas id="textcanvas"></canvas>
-    <div id="dishmask"></div>
     <div id="specimen-card">
       <div class="binom">Caenorhabditis hamletensis</div>
       <div class="srow" data-row="words">words ingested <b>0</b></div>
@@ -39,11 +38,13 @@
     </div>
     <script src="/static/experiment_dropdown.js?v=2"></script>
     <script>
-      // Show worm name in the title.
-      const wormName = decodeURIComponent(location.pathname.replace(/^\/focus\//, '').replace(/\/$/, ''));
-      document.getElementById('wormtitle').textContent = wormName;
-      document.title = `wormlet — ${wormName}`;
+      // Provisional title from the URL (slug form); the first WS frame
+      // carries the worm's TRUE name (msg.name) and focus/index.js corrects
+      // it — so "dowager-cixi" in the URL still titles as "dowager cixi".
+      const wormName = decodeURIComponent(location.pathname.split('/').pop() || '');
+      document.getElementById('wormtitle').textContent = wormName.replace(/-/g, ' ');
+      document.title = `wormlet — ${wormName.replace(/-/g, ' ')}`;
     </script>
-    <script type="module" src="/static/focus/index.js?v=5"></script>
+    <script type="module" src="/static/focus/index.js?v=6"></script>
   </body>
 </html>

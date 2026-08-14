@@ -237,7 +237,11 @@ class Connectome:
         fired = self._fired
         if fired:
             trace = self._trace
-            for pre in fired:
+            # sorted: set iteration order varies with PYTHONHASHSEED across
+            # processes; per-key arithmetic is order-safe, but insertion order
+            # feeds delta_norm()'s summation order and the checkpoint's JSON
+            # byte order — sorting keeps those reproducible across restarts.
+            for pre in sorted(fired):
                 targets = self.weights.get(pre)
                 if not targets:
                     continue
@@ -251,8 +255,13 @@ class Connectome:
             gain = p["eta"] * reward
             delta = self._delta
             for (pre, post), e in self._trace.items():
+                # Reinforce the circuit AS WIRED: excitatory synapses
+                # strengthen (+), inhibitory synapses deepen (−). An unsigned
+                # increment would erode inhibition every meal and could drive
+                # an inhibitory weight across zero into excitation.
+                sign = 1.0 if self.weights.get(pre, {}).get(post, 0.0) >= 0 else -1.0
                 dpre = delta.setdefault(pre, {})
-                d = dpre.get(post, 0.0) + gain * e
+                d = dpre.get(post, 0.0) + gain * e * sign
                 if d > DELTA_CAP:
                     d = DELTA_CAP
                 elif d < -DELTA_CAP:

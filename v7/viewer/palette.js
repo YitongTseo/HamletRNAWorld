@@ -56,7 +56,7 @@
   document.head.appendChild(fonts);
   var type = document.createElement("style");
   type.textContent =
-    'body{font-family:"Fragment Mono",ui-monospace,SFMono-Regular,Menlo,monospace!important;}' +
+    'body{font-family:"Fragment Mono",ui-monospace,SFMono-Regular,Menlo,monospace;}' +
     'h1{font-family:"Instrument Serif",serif!important;font-style:italic;font-weight:400!important;letter-spacing:0.02em;}';
   document.head.appendChild(type);
   root.style.setProperty("--font-serif", '"Instrument Serif", serif');

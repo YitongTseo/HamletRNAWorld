@@ -100,6 +100,41 @@ def test_delta_decays_back_toward_genome():
     assert d1 < d0  # baseline_pull is forgetting
 
 
+def test_inhibitory_edges_deepen_not_weaken():
+    """Reinforcement must follow the genome's sign: an inhibitory synapse
+    gets MORE inhibitory when its circuit leads to food (audit finding —
+    unsigned increments eroded inhibition every meal)."""
+    c = Connectome(weights={"A": {"B": -40.0}, "B": {"A": 1.0}})
+    c.enable_plasticity(lifelike.pop_params(None))
+    c.fire_neuron("A"); c.fire_neuron("B")
+    c.plasticity_step(reward=1.0)
+    assert c._delta["A"]["B"] < 0.0
+
+
+def test_fresh_worm_dir_persists_lifelike_genes():
+    """The rule params must be ON DISK in a fresh lineage's weights.json
+    (rollovers flatten the disk genome) and must never be retro-injected
+    into existing files (dimension mismatch would livelock the rollover)."""
+    import json as _json
+    import tempfile
+    import server.orchestrator as orch
+    old = _env(**BOTH_ON)
+    real = orch.FLASKS_DIR
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            orch.FLASKS_DIR = Path(td)
+            wdir, w = orch._ensure_flask_worm_dir("flask_t", "wormy", 1)
+            assert lifelike.LIFELIKE_KEY in w
+            assert lifelike.LIFELIKE_KEY in _json.loads((wdir / "weights.json").read_text())
+            # existing files are never retro-injected
+            (wdir / "weights.json").write_text(_json.dumps({"A": {"B": 1.0}}))
+            _, w2 = orch._ensure_flask_worm_dir("flask_t", "wormy", 1)
+            assert lifelike.LIFELIKE_KEY not in w2
+    finally:
+        orch.FLASKS_DIR = real
+        _restore(old)
+
+
 def test_delta_capped():
     c = _tiny_brain(plastic=True)
     for _ in range(500):

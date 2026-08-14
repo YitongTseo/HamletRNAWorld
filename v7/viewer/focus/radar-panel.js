@@ -58,7 +58,7 @@ export function toggleRadar() {
 function pcHue(i) { return Math.round((i * 360) / 12); }
 
 const EMOTION_AXIS_COLORS = {
-  joy: '#cfa348', trust: '#cfa348', anticipation: '#cd7f5d', surprise: '#ece2cd',
+  joy: '#e0c48f', trust: '#cfa348', anticipation: '#cd7f5d', surprise: '#ece2cd',
   fear: '#8a7a9d', disgust: '#7d9d7f', sadness: '#7a93a8', anger: '#cd5d4a',
 };
 
@@ -156,13 +156,13 @@ export function drawRadar(state) {
     const radius = Math.min(cellW, cellH) * 0.32;
 
     // Background rings
-    ctx.strokeStyle = 'rgba(205,127,93,0.10)';
+    ctx.strokeStyle = 'rgba(236,226,205,0.20)';
     ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = 'rgba(205,127,93,0.07)';
+    ctx.strokeStyle = 'rgba(236,226,205,0.16)';
     ctx.beginPath(); ctx.arc(cx, cy, radius * 0.5, 0, Math.PI * 2); ctx.stroke();
 
     // Axis spokes + (on top-right cell only) emotion abbreviations
-    ctx.strokeStyle = 'rgba(205,127,93,0.10)';
+    ctx.strokeStyle = 'rgba(236,226,205,0.20)';
     ctx.beginPath();
     for (let a = 0; a < axes; a++) {
       const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;

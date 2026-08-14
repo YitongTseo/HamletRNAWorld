@@ -111,7 +111,7 @@ export function drawChemoPanel(state) {
   const anyFiring = pairs.some(([L, R]) =>
     (contributions[L] && contributions[L].length) || (contributions[R] && contributions[R].length)
   );
-  let html = `<div style="font-weight:bold; margin-bottom:8px; color:${anyFiring ? '#e0c48f' : '#6f6'}; opacity:${anyFiring ? 1 : 0.35};">● CHEMOSENSORY STATE (${corpusPca.embeddingName || 'PCA'})</div>`;
+  let html = `<div style="font-weight:bold; margin-bottom:8px; color:${anyFiring ? '#e0c48f' : '#b3a789'}; opacity:${anyFiring ? 1 : 0.35};">● CHEMOSENSORY STATE (${corpusPca.embeddingName || 'PCA'})</div>`;
 
   // Column headers
   const labelW = 60, barW = 110;

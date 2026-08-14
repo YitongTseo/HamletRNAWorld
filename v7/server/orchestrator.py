@@ -154,6 +154,15 @@ FLASK_WORM_NAMES = ["Alice", "Bob", "Carol", "Dave", "Eve",
 _ENV_NAMES = os.environ.get("WORMLET_FLASK_WORM_NAMES", "").strip()
 if _ENV_NAMES:
     FLASK_WORM_NAMES = [n.strip() for n in _ENV_NAMES.split(",") if n.strip()]
+    # Names become directory names and (flask, name) identity keys: duplicates
+    # silently collide two worms onto one poem/weights/checkpoint file, and a
+    # slash becomes a path separator. Fail loudly at startup instead.
+    if len(set(FLASK_WORM_NAMES)) != len(FLASK_WORM_NAMES):
+        raise ValueError(
+            f"WORMLET_FLASK_WORM_NAMES contains duplicates: {_ENV_NAMES!r}")
+    if any("/" in n for n in FLASK_WORM_NAMES):
+        raise ValueError(
+            f"WORMLET_FLASK_WORM_NAMES names must not contain '/': {_ENV_NAMES!r}")
 FLASKS_DIR = _DATA_ROOT / "flasks"
 
 
@@ -165,16 +174,20 @@ def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[
         seed_file.write_text(str(seed))
     weights_path = wdir / "weights.json"
     if not weights_path.exists():
-        shutil.copyfile(DEFAULT_WEIGHTS, weights_path)
-    weights = json.loads(weights_path.read_text())
-    # Lifelike mode: inject the _lifelike gene block (defaults) so a FRESH
-    # lineage flattens the learning-rule params into the NES search space.
-    # World pops the block before the Connectome sees it. An existing
-    # lineage's parent_keys predate the block, so its worms simply run the
-    # defaults — see sim/lifelike.py's module docstring.
-    if lifelike.plasticity_enabled() or lifelike.hunger_enabled():
-        lifelike.ensure_params(weights)
-    return wdir, weights
+        # Fresh worm dir. In lifelike mode the _lifelike gene block is
+        # PERSISTED into the new weights.json so the learning-rule params
+        # genuinely enter the NES search space (rollovers flatten the on-disk
+        # genome). Existing files are NEVER retro-injected: a lineage whose
+        # parent_keys predate the block would flatten to a different length
+        # and livelock the rollover — old lineages keep running the clipped
+        # defaults instead. Must stay in lockstep with the cold-start
+        # injection in app._load_initial_default_weights.
+        weights = json.loads(DEFAULT_WEIGHTS.read_text())
+        if lifelike.plasticity_enabled() or lifelike.hunger_enabled():
+            lifelike.ensure_params(weights)
+        weights_path.write_text(json.dumps(weights))
+        return wdir, weights
+    return wdir, json.loads(weights_path.read_text())
 
 
 def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Worm]]:
