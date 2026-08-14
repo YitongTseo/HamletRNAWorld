@@ -136,9 +136,9 @@ function drawTextCanvas(state) {
       const g = tctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
       // dark-field: a pale cool luminance, like light catching the agar —
       // desire reads as brightness, not fire (V6 observation-log restyle)
-      g.addColorStop(0.0, `rgba(190, 215, 230, ${0.20 * t + 0.03})`);
-      g.addColorStop(0.45, `rgba(150, 185, 205, ${0.09 * t})`);
-      g.addColorStop(1.0, 'rgba(150, 185, 205, 0)');
+      g.addColorStop(0.0, `rgba(236, 226, 205, ${0.20 * t + 0.03})`);
+      g.addColorStop(0.45, `rgba(207, 163, 72, ${0.09 * t})`);
+      g.addColorStop(1.0, 'rgba(207, 163, 72, 0)');
       tctx.fillStyle = g;
       tctx.beginPath();
       tctx.arc(gx, gy, radius, 0, Math.PI * 2);
@@ -181,7 +181,7 @@ function drawTextCanvas(state) {
     const [dx, dy] = worldToScreen(desireTop.x, desireTop.y);
     const breathe = 0.5 + 0.5 * Math.sin(performance.now() / 500);
     const r = 18 + 5 * breathe;
-    tctx.strokeStyle = `rgba(210, 162, 78, ${0.35 + 0.35 * breathe})`;
+    tctx.strokeStyle = `rgba(207, 163, 72, ${0.35 + 0.35 * breathe})`;
     tctx.lineWidth = 1.5;
     tctx.beginPath();
     tctx.arc(dx, dy, r, 0, Math.PI * 2);

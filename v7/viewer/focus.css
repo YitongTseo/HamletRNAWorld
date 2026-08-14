@@ -185,42 +185,42 @@
    world like a microscope field; #specimen-card is the live data plate.
    =========================================================================== */
 html, body { background: #08090b; }
-#hud { color: #e8e4da; opacity: 0.55; text-shadow: none;
-       font-family: 'IBM Plex Mono', ui-monospace, monospace; }
-#nav, #nav a { color: #5c646e; font-family: 'IBM Plex Mono', ui-monospace, monospace; }
-#nav a:hover { background: none; color: #d2a24e; }
-#wormtitle { font-family: 'Inter Tight', sans-serif !important;
+#hud { color: #ece2cd; opacity: 0.55; text-shadow: none;
+       font-family: 'Fragment Mono', ui-monospace, monospace; }
+#nav, #nav a { color: #8f8266; font-family: 'Fragment Mono', ui-monospace, monospace; }
+#nav a:hover { background: none; color: #cfa348; }
+#wormtitle { font-family: 'Instrument Serif', serif !important;
              font-weight: 300 !important; letter-spacing: 0.05em;
-             color: #e8e4da !important; }
-#netpanel { background: rgba(10, 13, 17, 0.92); border-color: #232a33; }
-#radarpanel { background: rgba(10, 13, 17, 0.92); border-color: #232a33; }
-#chemosensoryPanel { background: rgba(10, 13, 17, 0.92); border-color: #232a33;
+             color: #ece2cd !important; }
+#netpanel { background: rgba(33, 26, 18, 0.92); border-color: #3a3226; }
+#radarpanel { background: rgba(33, 26, 18, 0.92); border-color: #3a3226; }
+#chemosensoryPanel { background: rgba(33, 26, 18, 0.92); border-color: #3a3226;
                      color: #9aa7b0; }
 #dishmask {
   position: fixed; inset: 0; pointer-events: none; z-index: 6;
   background: radial-gradient(circle at 50% 50%,
     transparent 0 34vmin,
-    rgba(4, 5, 7, 0.25) 40vmin,
-    rgba(4, 5, 7, 0.72) 62vmin,
-    rgba(4, 5, 7, 0.92) 100%);
+    rgba(26, 20, 14, 0.25) 40vmin,
+    rgba(26, 20, 14, 0.72) 62vmin,
+    rgba(26, 20, 14, 0.92) 100%);
 }
 #dishmask::after {
   content: ''; position: absolute; left: 50%; top: 50%;
   width: 76vmin; height: 76vmin; transform: translate(-50%, -50%);
-  border-radius: 50%; border: 1.5px solid rgba(200, 220, 235, 0.16);
-  box-shadow: 0 0 0 5px rgba(200, 220, 235, 0.05);
+  border-radius: 50%; border: 1.5px solid rgba(236, 226, 205, 0.16);
+  box-shadow: 0 0 0 5px rgba(236, 226, 205, 0.05);
 }
 #specimen-card {
   position: fixed; left: 12px; top: 64px; z-index: 15; width: 250px;
   padding: 14px 16px; pointer-events: none;
-  background: rgba(10, 13, 17, 0.88); border: 1px solid #232a33;
-  color: #e8e4da; font: 12px/1.9 'IBM Plex Mono', ui-monospace, monospace;
+  background: rgba(33, 26, 18, 0.9); border: 1px solid #3a3226;
+  color: #ece2cd; font: 12px/1.9 'Fragment Mono', ui-monospace, monospace;
 }
-#specimen-card .binom { font-style: italic; color: #5c646e; font-size: 11px;
-  border-bottom: 1px dotted #232a33; padding-bottom: 6px; margin-bottom: 6px; }
+#specimen-card .binom { font-style: italic; color: #8f8266; font-size: 11px;
+  border-bottom: 1px dotted #3a3226; padding-bottom: 6px; margin-bottom: 6px; }
 #specimen-card .srow { display: flex; justify-content: space-between; gap: 10px; }
-#specimen-card .srow b { font-weight: 400; color: #d2a24e; }
+#specimen-card .srow b { font-weight: 400; color: #cfa348; }
 #specimen-card .srow b.warn { color: #e0503f; }
-#specimen-card .srow.ing { display: block; color: #5c646e; margin-top: 6px;
-  border-top: 1px dotted #232a33; padding-top: 6px; }
-#specimen-card .srow.ing b { color: #e8e4da; font-style: italic; }
+#specimen-card .srow.ing { display: block; color: #8f8266; margin-top: 6px;
+  border-top: 1px dotted #3a3226; padding-top: 6px; }
+#specimen-card .srow.ing b { color: #ece2cd; font-style: italic; }

@@ -1,4 +1,4 @@
-// Observation-log overview: a lab tray of petri dishes, one per worm.
+// Vivarium overview: a lab tray of petri dishes, one per worm.
 // Subscribes to /ws/overview (10 Hz). Each dish is a STATIC view of that
 // worm's entire private world — a fixed stage the specimen moves within.
 // Words still brighten near the worm's head, so appetite reads at a glance.
@@ -27,7 +27,7 @@ const flaskSections = new Map();  // flask_name -> { section, sectionGrid, heade
       letter-spacing: 0.3em; text-transform: uppercase; color: var(--dim);
       display: flex; gap: 14px; align-items: baseline;
     }
-    .flask-section > h2 .gen { color: var(--brass); font-size: 10.5px; letter-spacing: 0.2em; }
+    .flask-section > h2 .gen { color: var(--ochre); font-size: 10.5px; letter-spacing: 0.2em; }
     .flask-section > .flask-grid {
       display: grid; gap: 26px 20px;
       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -98,19 +98,19 @@ function drawDish(entry, worm) {
   ctx.clearRect(0, 0, S, S);
 
   // glass + agar
-  ctx.fillStyle = '#0d1015';
+  ctx.fillStyle = '#1d1710';
   ctx.beginPath(); ctx.arc(c, c, R + 3, 0, 7); ctx.fill();
-  ctx.fillStyle = '#10141a';
+  ctx.fillStyle = '#211a12';
   ctx.beginPath(); ctx.arc(c, c, R, 0, 7); ctx.fill();
   const vg = ctx.createRadialGradient(c, c, R * 0.3, c, c, R);
-  vg.addColorStop(0, 'rgba(120,140,160,0.05)');
+  vg.addColorStop(0, 'rgba(207,163,72,0.04)');
   vg.addColorStop(1, 'rgba(0,0,0,0.38)');
   ctx.fillStyle = vg;
   ctx.beginPath(); ctx.arc(c, c, R, 0, 7); ctx.fill();
   // rim + glass highlight
-  ctx.strokeStyle = 'rgba(200,220,235,0.14)'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(236,226,205,0.14)'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(c, c, R, 0, 7); ctx.stroke();
-  ctx.strokeStyle = 'rgba(230,240,250,0.28)'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(236,226,205,0.26)'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(c, c, R + 2, Math.PI * 1.12, Math.PI * 1.45); ctx.stroke();
 
   ctx.save();
@@ -137,8 +137,8 @@ function drawDish(entry, worm) {
       if (!f.word) continue;
       const d = Math.hypot(f.x - hx, f.y - hy);
       const near = dead ? 0 : Math.max(0, 1 - d / 300);
-      ctx.font = `300 ${10 + 3 * near}px 'IBM Plex Mono', monospace`;
-      ctx.fillStyle = `rgba(210,225,235,${0.28 + 0.5 * near})`;
+      ctx.font = `300 ${10 + 3 * near}px 'Fragment Mono', monospace`;
+      ctx.fillStyle = `rgba(236,226,205,${0.28 + 0.5 * near})`;
       ctx.fillText(f.word, X(f.x), Y(f.y));
     }
   }
@@ -153,7 +153,7 @@ function drawDish(entry, worm) {
     // translucent sheath
     for (let k = 0; k < n - 1; k++) {
       const w = taper(k / n);
-      ctx.strokeStyle = `rgba(232,228,218,${0.10 * body + 0.10 * body * w})`;
+      ctx.strokeStyle = `rgba(236,226,205,${0.10 * body + 0.10 * body * w})`;
       ctx.lineWidth = 34 * w * scale + 1;   // ~34 world-units of sheath
       ctx.beginPath();
       ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
@@ -164,7 +164,7 @@ function drawDish(entry, worm) {
       const w = taper(k / n);
       ctx.strokeStyle = dead
         ? `rgba(150,150,148,${0.30 + 0.25 * w})`
-        : `rgba(232,228,218,${0.45 * body + 0.55 * body * w})`;
+        : `rgba(236,226,205,${0.45 * body + 0.55 * body * w})`;
       ctx.lineWidth = 20 * w * scale + 0.7; // ~20 world-units of cuticle
       ctx.beginPath();
       ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
@@ -186,7 +186,7 @@ function drawDish(entry, worm) {
 
   if (worm.paused) {
     ctx.fillStyle = 'rgba(224,80,63,0.9)';
-    ctx.font = `500 10px 'IBM Plex Mono', monospace`;
+    ctx.font = `500 10px 'Fragment Mono', monospace`;
     ctx.textAlign = 'center';
     ctx.fillText('PAUSED', c, c - R + 18);
   }
@@ -242,21 +242,21 @@ connect();
   style.textContent = `
     #gen-overlay {
       position: fixed; inset: 0; display: none;
-      background: rgba(4, 5, 7, 0.82); z-index: 9999;
+      background: rgba(26, 20, 14, 0.82); z-index: 9999;
       align-items: center; justify-content: center;
-      font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px;
+      font-family: 'Fragment Mono', ui-monospace, monospace; font-size: 13px;
       color: var(--ivory);
     }
     #gen-overlay.visible { display: flex; }
     #gen-overlay .panel {
       min-width: 380px; max-width: 560px; padding: 24px 30px;
-      background: #0d1015; border: 1px solid #232a33;
+      background: #1d1710; border: 1px solid #3a3226;
     }
     #gen-overlay h2 { margin: 0 0 14px; font-size: 11px; font-weight: 400;
-      letter-spacing: 0.3em; text-transform: uppercase; color: var(--brass); }
+      letter-spacing: 0.3em; text-transform: uppercase; color: var(--ochre); }
     #gen-overlay .phase { margin-bottom: 12px; font-size: 13px; }
-    #gen-overlay .bar { height: 3px; background: #1a1f26; overflow: hidden; margin-bottom: 8px; }
-    #gen-overlay .bar > div { height: 100%; background: var(--brass); transition: width 250ms ease; }
+    #gen-overlay .bar { height: 3px; background: #3a3226; overflow: hidden; margin-bottom: 8px; }
+    #gen-overlay .bar > div { height: 100%; background: var(--ochre); transition: width 250ms ease; }
     #gen-overlay .meta { color: var(--dim); font-size: 11px; margin-top: 8px; }
     #gen-overlay .err { color: var(--warn); margin-top: 10px; font-size: 12px; }
   `;

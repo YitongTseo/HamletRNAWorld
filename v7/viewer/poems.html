@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script src="/static/palette.js?v=2"></script>
+    <script src="/static/palette.js?v=3"></script>
     <title>wormlet · poems</title>
     <style>
       html, body { margin: 0; padding: 0; height: 100%; background: var(--bg, #000); color: var(--fg, #afa); }
@@ -42,11 +42,15 @@
       }
       .col-head .count { color: var(--dim, #5a5); font-weight: 400; font-size: 11px; }
       .col-body {
-        flex: 1; overflow-y: auto; padding: 8px 10px; min-height: 0;
+        flex: 1; overflow-y: auto; padding: 12px 14px; min-height: 0;
         scroll-behavior: smooth;
+        /* Verse, not a word-list: the eaten words flow as italic serif lines
+           (2026-08 redesign) — one-word-per-line read as clutter. */
+        font-family: var(--font-serif, Georgia, serif); font-style: italic;
+        font-size: 17px; line-height: 1.9;
       }
-      .col-body .word { padding: 2px 0; opacity: 0.85; }
-      .col-body .word.newest { color: var(--fg, #cfc); opacity: 1; text-shadow: 0 0 6px var(--accent, #6f9); }
+      .col-body .word { display: inline; margin-right: 0.45em; opacity: 0.85; }
+      .col-body .word.newest { color: var(--accent, #cfa348); opacity: 1; }
       #status { padding: 4px 18px; color: var(--dim, #5a5); font-size: 11px; }
     </style>
   </head>
@@ -58,7 +62,7 @@
     </header>
     <div id="status">loading…</div>
     <div id="columns"></div>
-    <script src="/static/experiment_dropdown.js?v=1"></script>
+    <script src="/static/experiment_dropdown.js?v=2"></script>
     <script src="/static/poems.js?v=2"></script>
   </body>
 </html>

@@ -18,7 +18,11 @@
     nouns:     { label: "black / purple", bg: "#050011", fg: "#e7d6ff", accent: "#b388ff", dim: "#8a6cb0", warm: "#ffcf6b", hot: "#ff6b9d", panel: "#0c0420", line: "rgba(179,136,255,0.20)", stage: "#0c0420" },
     adj_noun:  { label: "white / pink", bg: "#fff6fa", fg: "#3a1020", accent: "#e5447f", dim: "#b06b84", warm: "#e08a00", hot: "#dd1133", panel: "#ffe6ef", line: "rgba(229,68,127,0.22)", stage: "#1a0512" },
     pos_chain: { label: "black / gold", bg: "#0a0700", fg: "#f3e4b0", accent: "#ffcc33", dim: "#a8893f", warm: "#ffd97a", hot: "#ff7a45", panel: "#140d00", line: "rgba(255,204,51,0.20)", stage: "#140d00" },
-    poetry:    { label: "black / green", bg: "#000000", fg: "#c6f6d5", accent: "#3ddc84", dim: "#5a8f6a", warm: "#ffcc66", hot: "#ff6b6b", panel: "#03140a", line: "rgba(61,220,132,0.18)", stage: "#03140a" }
+    // "Tobacco & Ochre" — the vivarium's house palette (2026-08 redesign):
+    // dark tobacco ground, cream ink, ONE ochre accent, red reserved for
+    // starving/deceased. Chrome is Fragment Mono, display/verse Instrument
+    // Serif (injected below so every page inherits without per-page edits).
+    poetry:    { label: "tobacco / ochre", bg: "#292118", fg: "#ece2cd", accent: "#cfa348", dim: "#8f8266", warm: "#cfa348", hot: "#cd5d4a", panel: "#211a12", line: "rgba(236,226,205,0.16)", stage: "#211a12" }
   };
 
   function detectMode() {
@@ -42,6 +46,21 @@
     root.style.setProperty("--" + key, p[key]);
   }
   root.setAttribute("data-mode", mode);
+
+  // Site-wide type (2026-08 redesign): Fragment Mono for chrome, Instrument
+  // Serif for display + verse. Injected here — the one file every page loads
+  // in <head> — so legacy pages inherit without touching each stylesheet.
+  var fonts = document.createElement("link");
+  fonts.rel = "stylesheet";
+  fonts.href = "https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Instrument+Serif:ital@0;1&display=swap";
+  document.head.appendChild(fonts);
+  var type = document.createElement("style");
+  type.textContent =
+    'body{font-family:"Fragment Mono",ui-monospace,SFMono-Regular,Menlo,monospace!important;}' +
+    'h1{font-family:"Instrument Serif",serif!important;font-style:italic;font-weight:400!important;letter-spacing:0.02em;}';
+  document.head.appendChild(type);
+  root.style.setProperty("--font-serif", '"Instrument Serif", serif');
+  root.style.setProperty("--font-mono", '"Fragment Mono", ui-monospace, monospace');
 
   // Expose for other scripts (e.g. the worm canvas reads --accent/--stage).
   window.__paletteMode = mode;
