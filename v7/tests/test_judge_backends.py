@@ -200,6 +200,30 @@ def test_openai_renumbered_response_maps_positionally():
         _restore_env(old)
 
 
+def test_openai_shift_by_one_renumber_recovered():
+    """The observed qwen shape at n>=2: model labels our 0..n-1 prompt as
+    1..n. Overlap-only detection never fired AND mis-attributed by one;
+    the exact-shift remap must recover correct alignment."""
+
+    def fake(url, body, headers, timeout):
+        idxs = [l.split(":", 1)[0] for l in body["messages"][1]["content"].splitlines()]
+        idxs = [int(i) for i in idxs if i.isdigit()]
+        return {"choices": [{"message": {
+            "content": "\n".join(f"{i + 1},{50 + i},{40 + i}" for i in idxs)}}]}
+
+    old = _swap_env(WORMLET_JUDGE_BACKEND="openai", WORMLET_JUDGE_MODEL="gemma3:4b")
+    real_post = judge._http_post_json
+    judge._http_post_json = fake
+    try:
+        out = judge.judge_poem(["word"] * (judge.WINDOW_SIZE * 16), "wormy", seed=1)
+        assert len(out) == 4  # 16 windows, 25% sampled
+        for i, s_ in enumerate(out):
+            assert s_.emotional == 50 + i and s_.coherence == 40 + i
+    finally:
+        judge._http_post_json = real_post
+        _restore_env(old)
+
+
 def test_openai_hallucinated_extra_windows_score_nothing():
     """The 2026-08-14 outage shape: one window sent, fifteen invented lines
     back. Count mismatch → no positional guess, zero windows — the rollover
