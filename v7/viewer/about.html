@@ -3,17 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script src="/static/palette.js?v=2"></script>
+    <script src="/static/palette.js?v=3"></script>
     <title>wormlet · about</title>
     <style>
-      html, body { margin: 0; padding: 0; background: var(--bg, #000); color: var(--fg, #cfc); }
+      html, body { margin: 0; padding: 0; background: var(--bg, #000); color: var(--fg, #ece2cd); }
       body { font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-             max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
-      header { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 6px; border-bottom: 1px solid var(--line, rgba(150, 230, 180, 0.15)); margin-bottom: 18px; }
-      header h1 { margin: 0; font-size: 18px; color: var(--accent, #6f9); font-family: ui-monospace, monospace; font-weight: 600; }
-      header nav a { color: var(--accent, #6f9); text-decoration: none; padding: 4px 8px; margin-left: 4px; font-family: ui-monospace, monospace; font-size: 13px; }
-      header nav a:hover { background: rgba(100, 200, 255, 0.15); }
-      h2 { color: var(--fg, #afa); font-family: ui-monospace, monospace; font-size: 15px; margin: 28px 0 6px; border-left: 3px solid var(--accent, #6f9); padding-left: 8px; }
+             margin: 0; padding: 0; }
+      /* header runs full-bleed like every other page; the prose narrows */
+      main { max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
+      header {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
+        padding: 22px 0 16px; margin-bottom: 18px; border-bottom: 1px solid #3a3226;
+      }
+      header h1 { margin: 0; font-family: var(--font-serif, serif); font-style: italic;
+                  font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--fg); }
+      header h1 b { font-weight: 400; color: var(--accent); }
+      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
+                        color: var(--dim); margin-left: 14px; font-style: normal; }
+      header h1 small a { color: var(--dim); }
+      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
+                   font-family: var(--font-mono, monospace); }
+      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
+      header nav a:hover { color: var(--accent); }
+      header nav a.here { color: var(--accent); }
+      h2 { color: var(--fg, #ece2cd); font-family: ui-monospace, monospace; font-size: 15px; margin: 28px 0 6px; border-left: 3px solid var(--accent, #cfa348); padding-left: 8px; }
       h3 { color: var(--accent, #9ec); font-family: ui-monospace, monospace; font-size: 13px; margin: 18px 0 4px; }
       p { margin: 6px 0 12px; opacity: 0.88; }
       code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel, rgba(20, 40, 30, 0.5)); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
@@ -21,20 +34,19 @@
       a { color: var(--accent, #6cf); }
       ul { padding-left: 22px; }
       li { margin: 4px 0; opacity: 0.9; }
-      .lead { color: var(--fg, #cfc); opacity: 0.95; font-size: 15px; border-left: 3px solid var(--accent, rgba(100,200,255,0.4)); padding-left: 12px; margin: 14px 0 20px; }
-      .credit { opacity: 0.55; font-size: 11px; font-family: ui-monospace, monospace; margin-top: 40px; padding-top: 10px; border-top: 1px solid rgba(150, 230, 180, 0.15); }
+      .lead { color: var(--fg, #ece2cd); opacity: 0.95; font-size: 15px; border-left: 3px solid var(--accent, rgba(205,127,93,0.4)); padding-left: 12px; margin: 14px 0 20px; }
+      .credit { opacity: 0.55; font-size: 11px; font-family: ui-monospace, monospace; margin-top: 40px; padding-top: 10px; border-top: 1px solid rgba(207, 163, 72, 0.14); }
     </style>
   </head>
   <body>
     <header>
-      <h1>wormlet · about</h1>
-      <nav>
-        <a href="/">worms</a>
-        <a href="/poems">poems</a>
-      </nav>
+      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
+        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
+      <nav><a href="/">worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about" class="here">about</a></nav>
       <div id="experiment-switcher"></div>
     </header>
-    <script src="/static/experiment_dropdown.js?v=1"></script>
+    <script src="/static/experiment_dropdown.js?v=2"></script>
+    <main>
 
     <div class="lead">
       Six independent <em>C. elegans</em> brains, each one a faithful port of
@@ -191,5 +203,6 @@
       Embedding model: <a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener">nomic-ai/nomic-embed-text-v1.5</a>.
       Connectome data via the GoPiGo / Busbice / Garrett / Churchill <em>C. elegans</em> port.
     </div>
+    </main>
   </body>
 </html>

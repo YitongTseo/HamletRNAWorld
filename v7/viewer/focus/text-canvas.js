@@ -91,6 +91,24 @@ function drawTextCanvas(state) {
   // Draw smells first (so they appear behind words)
   drawSmells(state);
 
+  // Desire layer ('d' key): per-word pull = the summed chemosensory
+  // activation this word currently produces in the worm's nose — the sim's
+  // own numbers (distance × direction × meaning × hunger gain), not a
+  // recomputation. Salience, not steering: the turn decision uses the L/R
+  // split, but "which word does it want most" is honestly this sum.
+  // Keyed by rounded coords — snapshot food and smells round identically.
+  let desireByPos = null, desireMax = 0, desireTop = null;
+  if (state.desireVisible && state.smellsData && state.smellsData.length) {
+    desireByPos = new Map();
+    for (const smell of state.smellsData) {
+      let pull = 0;
+      for (const v of Object.values(smell.neurons || {})) pull += v;
+      if (pull <= 0) continue;
+      desireByPos.set(`${smell.x},${smell.y}`, pull);
+      if (pull > desireMax) { desireMax = pull; desireTop = smell; }
+    }
+  }
+
   // Find nearest word to mouse cursor
   let minDist = Infinity;
   nearestWord = null;
@@ -101,6 +119,32 @@ function drawTextCanvas(state) {
       minDist = d;
       nearestWord = item;
     }
+  }
+
+  // Desire heatmap: additive radial glows under the words, so overlapping
+  // pulls stack into genuine heat. Drawn before the text so words stay
+  // crisp on top.
+  if (desireByPos && desireMax > 0) {
+    tctx.save();
+    tctx.globalCompositeOperation = 'lighter';
+    for (const smell of state.smellsData) {
+      const pull = desireByPos.get(`${smell.x},${smell.y}`);
+      if (pull === undefined) continue;
+      const t = pull / desireMax;
+      const [gx, gy] = worldToScreen(smell.x, smell.y);
+      const radius = 22 + 46 * t;
+      const g = tctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
+      // dark-field: a pale cool luminance, like light catching the agar —
+      // desire reads as brightness, not fire (V6 observation-log restyle)
+      g.addColorStop(0.0, `rgba(236, 226, 205, ${0.20 * t + 0.03})`);
+      g.addColorStop(0.45, `rgba(207, 163, 72, ${0.09 * t})`);
+      g.addColorStop(1.0, 'rgba(207, 163, 72, 0)');
+      tctx.fillStyle = g;
+      tctx.beginPath();
+      tctx.arc(gx, gy, radius, 0, Math.PI * 2);
+      tctx.fill();
+    }
+    tctx.restore();
   }
 
   // Draw each word. Smaller on mobile so the lines don't overlap when the
@@ -114,7 +158,15 @@ function drawTextCanvas(state) {
     // blue-grey so it recedes — echoes the bluish word color in the overview
     // view. `edible !== false` so older payloads (no flag) default to edible.
     const edible = item.edible !== false;
-    if (edible) {
+    // Desire tint: cold white → warm amber → hot orange as the worm's pull
+    // toward this word rises, glow strength following. Words outside smell
+    // range (no entry) stay stock.
+    const pull = desireByPos ? desireByPos.get(`${item.x},${item.y}`) : undefined;
+    if (edible && pull !== undefined && desireMax > 0) {
+      const t = pull / desireMax;                    // 0..1 this frame
+      // wanted words whiten and sharpen; unwanted stay quiet ivory
+      tctx.fillStyle = `rgba(${216 + 39 * t | 0}, ${228 + 27 * t | 0}, ${235 + 20 * t | 0}, ${isHovered ? 1.0 : 0.55 + 0.45 * t})`;
+    } else if (edible) {
       tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
     } else {
       tctx.fillStyle = isHovered ? 'rgba(170,190,225,0.85)' : 'rgba(150,170,205,0.45)';
@@ -124,9 +176,23 @@ function drawTextCanvas(state) {
     tctx.fillText(item.word, sx, sy);
   }
 
+  // Halo the single strongest pull — the word the worm most wants right now.
+  if (desireTop) {
+    const [dx, dy] = worldToScreen(desireTop.x, desireTop.y);
+    const breathe = 0.5 + 0.5 * Math.sin(performance.now() / 500);
+    const r = 18 + 5 * breathe;
+    tctx.strokeStyle = `rgba(207, 163, 72, ${0.35 + 0.35 * breathe})`;
+    tctx.lineWidth = 1.5;
+    tctx.beginPath();
+    tctx.arc(dx, dy, r, 0, Math.PI * 2);
+    tctx.stroke();
+  }
+
   // PCA popup for nearest hovered word — only when the user has opened it
   // via the dock (glyph [x,y]). Default = closed.
-  if (isPcaVisible() && nearestWord && minDist < 80 && pcaData) {
+  // Popup only while the pointer is HELD on a word — a hover-triggered
+  // preview read as visual noise (user feedback); press-and-hold to inspect.
+  if (isPcaVisible() && state.mouseDown && nearestWord && minDist < 80 && pcaData) {
     drawPcaPopup(nearestWord.word, mouseScreenPos, pcaData);
   }
 }

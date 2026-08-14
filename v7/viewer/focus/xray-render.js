@@ -30,12 +30,12 @@ const _xrayBuf = { contourTop: [], contourBot: [], neuronPos: new Map() };
 // Class-color palette shared between the static graph view and the x-ray
 // view so visitors learn one color → class association.
 const NEURON_CLASS_PALETTE = [
-  { key: 'chemo',  color: 'rgba(40,200,255,0.85)', label: 'chemosensory' },
+  { key: 'chemo',  color: 'rgba(224,196,143,0.85)', label: 'chemosensory' },
   { key: 'sensory',color: 'rgba(100,160,255,0.7)', label: 'sensory' },
   { key: 'motor',  color: 'rgba(255,150,40,0.85)', label: 'motor' },
-  { key: 'inter',  color: 'rgba(68,255,119,0.85)', label: 'interneuron' },
+  { key: 'inter',  color: 'rgba(207,163,72,0.85)', label: 'interneuron' },
   { key: 'muscle', color: 'rgba(255,220,40,0.85)', label: 'muscle' },
-  { key: 'firing', color: '#44ff77',               label: 'firing' },
+  { key: 'firing', color: '#cfa348',               label: 'firing' },
 ];
 
 function _fitMidlineToPanel(midline, panelLeft, panelTop, panelW, panelH, headerH) {
@@ -124,7 +124,7 @@ function drawNeuronLegend(ctx, x0, yBase) {
     ctx.arc(x + 4, yBase, 3.2, 0, Math.PI * 2);
     ctx.fillStyle = NEURON_CLASS_PALETTE[i].color;
     ctx.fill();
-    ctx.fillStyle = 'rgba(68,255,119,0.7)';
+    ctx.fillStyle = 'rgba(207,163,72,0.7)';
     ctx.fillText(NEURON_CLASS_PALETTE[i].label, x + 10, yBase + 3);
   }
 }
@@ -170,15 +170,15 @@ export function drawXRay(ctx, screenRect, opts) {
 
   if (!lensMode) {
     // Header strip (panel-only — the lens skips this for a clean look).
-    ctx.fillStyle = '#8f8';
+    ctx.fillStyle = '#e0c48f';
     ctx.font = 'bold 11px ui-monospace, monospace';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
     ctx.fillText('● LIVE BODY CONNECTOME', X0 + 8, Y0 + 6);
-    ctx.fillStyle = '#9c9';
+    ctx.fillStyle = '#b3a789';
     ctx.font = '9px ui-monospace, monospace';
     ctx.fillText(`${neuronBodyCoords.n_neurons} neurons mapped to wormbody`, X0 + 8, Y0 + 19);
-    ctx.fillStyle = '#9c9';
+    ctx.fillStyle = '#b3a789';
     ctx.textAlign = 'right';
     ctx.fillText("'x' → connectome graph · 'l' labels" + (xrayLabelsVisible ? ' ✓' : ''), X0 + W - 8, Y0 + 19);
     ctx.textAlign = 'left';
@@ -238,7 +238,7 @@ export function drawXRay(ctx, screenRect, opts) {
   }
 
   // Filled body, soft outline — smooth curve through both edges.
-  ctx.fillStyle = 'rgba(40, 80, 60, 0.35)';
+  ctx.fillStyle = 'rgba(33, 26, 18, 0.6)';
   ctx.strokeStyle = 'rgba(120, 220, 170, 0.55)';
   ctx.lineWidth = 1;
   ctx.beginPath();

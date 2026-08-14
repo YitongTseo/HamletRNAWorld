@@ -17,16 +17,16 @@
     const style = document.createElement("style");
     style.id = "experiment-switcher-styles";
     style.textContent = `
-      .experiment-switcher { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim, #5a5); }
-      .experiment-switcher label { color: var(--dim, #5a5); text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px; }
+      .experiment-switcher { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim, #8f8266); }
+      .experiment-switcher label { color: var(--dim, #8f8266); text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px; }
       .experiment-switcher select {
-        background: #001; color: var(--accent, #6f9);
-        border: 1px solid rgba(100, 200, 255, 0.3);
-        padding: 3px 6px; font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--panel, #211a12); color: var(--accent, #cfa348);
+        border: 1px solid var(--line, rgba(236, 226, 205, 0.16));
+        padding: 3px 6px; font: inherit; font-family: var(--font-mono, ui-monospace, monospace);
         cursor: pointer;
       }
-      .experiment-switcher select:hover { border-color: rgba(100, 200, 255, 0.6); }
-      .experiment-switcher .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent, #6f9); box-shadow: 0 0 5px var(--accent, #6f9); }
+      .experiment-switcher select:hover { border-color: var(--accent, #cfa348); }
+      .experiment-switcher .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent, #cfa348); }
     `;
     document.head.appendChild(style);
   }
@@ -46,6 +46,17 @@
   }
 
   function render(target, payload) {
+    // Self-hosted guard: option URLs are built server-side from the
+    // PRODUCTION domain (WORMLET_DOMAIN), so on a local/self-hosted
+    // deployment none of them point at the host we're actually on and
+    // selecting one navigates OFF the site (observed: worms.droog.nz ->
+    // poetry-3.wordswordsworms.org). If no option resolves to this host,
+    // those sibling processes don't exist here — hide the switcher.
+    const here = window.location.host;
+    const anyHere = (payload.options || []).some((o) => {
+      try { return new URL(o.public_url).host === here; } catch (_e) { return false; }
+    });
+    if (!anyHere) return;
     injectStyles();
     const wrap = document.createElement("div");
     wrap.className = "experiment-switcher";

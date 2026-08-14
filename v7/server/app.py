@@ -223,7 +223,14 @@ def _focus_key(flask: str, worm: str) -> str:
 
 
 def _find_worm(flask: str, worm: str) -> Worm | None:
-    return WORM_BY_KEY.get((flask, worm))
+    """Exact name first, then the hyphen-slug form: the overview links
+    'dowager cixi' as /focus/flask_1/dowager-cixi so URLs carry no literal
+    spaces. Exact-first means a name that genuinely contains hyphens is
+    never mis-resolved."""
+    w = WORM_BY_KEY.get((flask, worm))
+    if w is None and "-" in worm:
+        w = WORM_BY_KEY.get((flask, worm.replace("-", " ")))
+    return w
 
 
 def _find_flask(name: str) -> WormGroup | None:
@@ -286,6 +293,10 @@ def _worm_overview_dict(w: Worm, flask_name: str) -> dict:
         "word_count": w.word_count,
         "recent_words": w.recent_words[-3:],
         "paused": w.world.paused,
+        # Optional-feature condition keys for the tray labels; absent on
+        # stock worlds so the payload is unchanged by default.
+        **({"satiety": round(w.world.satiety, 3), "dead": w.world.dead}
+           if getattr(w.world, "_hunger_on", False) else {}),
     }
 
 
@@ -361,6 +372,16 @@ def _build_snapshot(worm: Worm) -> dict:
                  "food_sense": w.stim_food_sense},
         "paused": w.paused,
         "neurons": neurons_active,
+        # The worm's chemosensory memory — the focus page's specimen card
+        # reads this (the inline snapshot predates the card; World state
+        # always had it).
+        "recent_eaten": list(w._recent_eaten),
+        # Optional-feature keys appear only when a World carries them, so
+        # stock payloads are unchanged.
+        **({"satiety": round(w.satiety, 3), "dead": w.dead}
+           if getattr(w, "_hunger_on", False) else {}),
+        **({"plasticity_delta": round(w.brain.delta_norm(), 2)}
+           if getattr(w, "_plasticity_on", False) else {}),
     }
 
 

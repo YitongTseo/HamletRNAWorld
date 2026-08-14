@@ -107,10 +107,10 @@ function drawNetCanvas(graph, neuronActivity, stimFlags) {
   // ── Header ──────────────────────────────────────────────────────────────
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  ctx.fillStyle = '#8f8';
+  ctx.fillStyle = '#e0c48f';
   ctx.font = 'bold 11px ui-monospace, monospace';
   ctx.fillText('● CONNECTOME (anatomical layout)', 8, 6);
-  ctx.fillStyle = '#9c9';
+  ctx.fillStyle = '#b3a789';
   ctx.font = '9px ui-monospace, monospace';
   ctx.textAlign = 'right';
   ctx.fillText("'x' → live body connectome", NET_W - 8, 19);
@@ -118,11 +118,11 @@ function drawNetCanvas(graph, neuronActivity, stimFlags) {
 
   drawNeuronLegend(ctx, 0, 36);
 
-  ctx.fillStyle = 'rgba(68,255,119,0.35)';
+  ctx.fillStyle = 'rgba(207,163,72,0.35)';
   ctx.font = '8px ui-monospace,monospace';
   ctx.fillText('[n] toggle panel  [m] motor labels' + (motorLabelsVisible ? '  ✓' : ''), 8, 48);
 
-  ctx.fillStyle = 'rgba(68,255,119,0.2)';
+  ctx.fillStyle = 'rgba(207,163,72,0.2)';
   ctx.fillText('← head', PAD, LEGEND_H - 2);
   ctx.fillText('tail →', NET_W - 40, LEGEND_H - 2);
   ctx.fillText('dorsal', PAD, NEURO_TOP + 10);
@@ -137,7 +137,7 @@ function drawNetCanvas(graph, neuronActivity, stimFlags) {
 
   // ── Edges: from firing neurons only ─────────────────────────────────────
   ctx.beginPath();
-  ctx.strokeStyle = 'rgba(68,255,119,0.15)';
+  ctx.strokeStyle = 'rgba(207,163,72,0.15)';
   ctx.lineWidth = 0.4;
   for (let pi = 0; pi < N; pi++) {
     if (activity[pi] <= fireThreshold) continue;
@@ -174,9 +174,9 @@ function drawNetCanvas(graph, neuronActivity, stimFlags) {
 
     let baseColor, fireColor, r, haloColor, hr;
     if (isChemo) {
-      baseColor  = `rgba(40,200,255,${(0.25 + t * 0.7).toFixed(2)})`;
-      fireColor  = 'rgba(40,255,255,0.95)';
-      haloColor  = 'rgba(40,220,255,0.22)';
+      baseColor  = `rgba(224,196,143,${(0.25 + t * 0.7).toFixed(2)})`;
+      fireColor  = 'rgba(224,196,143,0.95)';
+      haloColor  = 'rgba(224,196,143,0.22)';
       r = 1.8 + t;  hr = 7;
     } else if (isSensory) {
       baseColor  = `rgba(100,160,255,${(0.2 + t * 0.75).toFixed(2)})`;
@@ -195,20 +195,20 @@ function drawNetCanvas(graph, neuronActivity, stimFlags) {
       r = 1.2 + t * 0.8;  hr = 5;
     } else {
       baseColor  = `rgba(68,180,80,${(0.15 + t * 0.8).toFixed(2)})`;
-      fireColor  = '#44ff77';
-      haloColor  = 'rgba(68,255,119,0.18)';
+      fireColor  = '#cfa348';
+      haloColor  = 'rgba(207,163,72,0.18)';
       r = 1.3 + t * 0.9;  hr = 6;
     }
 
     const useCyan = stimulated && !firing;
-    const color = useCyan ? 'rgba(40,255,255,0.9)' : (firing ? fireColor : baseColor);
+    const color = useCyan ? 'rgba(224,196,143,0.9)' : (firing ? fireColor : baseColor);
     const halo  = (firing || stimulated || t > 0.5) ? haloColor : null;
     const haloR = (firing || stimulated) ? hr : hr * t;
 
     if (halo && haloR > 1) {
       ctx.beginPath();
       ctx.arc(x, y, haloR, 0, Math.PI * 2);
-      ctx.fillStyle = firing ? haloColor : (useCyan ? 'rgba(40,255,255,0.15)' : haloColor);
+      ctx.fillStyle = firing ? haloColor : (useCyan ? 'rgba(224,196,143,0.15)' : haloColor);
       ctx.fill();
     }
     ctx.beginPath();
@@ -228,7 +228,7 @@ function drawNetCanvas(graph, neuronActivity, stimFlags) {
   ctx.font = '6.5px ui-monospace,monospace';
   for (const {x, y, name, firing, isChemo, isSensory, isMotor} of pendingLabels) {
     let lc;
-    if (isChemo)   lc = firing ? 'rgba(40,255,255,0.95)' : 'rgba(40,200,255,0.65)';
+    if (isChemo)   lc = firing ? 'rgba(224,196,143,0.95)' : 'rgba(224,196,143,0.65)';
     else if (isSensory) lc = firing ? 'rgba(140,200,255,0.95)' : 'rgba(100,160,255,0.55)';
     else           lc = firing ? 'rgba(255,200,80,0.95)' : 'rgba(255,150,40,0.5)';
     ctx.fillStyle = lc;
