@@ -30,7 +30,7 @@ const flaskSections = new Map();  // flask_name -> { section, sectionGrid, heade
     .flask-section > h2 .gen { color: var(--ochre); font-size: 10.5px; letter-spacing: 0.2em; }
     .flask-section > .flask-grid {
       display: grid; gap: 26px 20px;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     }
     .cell { cursor: pointer; text-align: center; }
     .cell canvas { display: block; width: 100%; aspect-ratio: 1; }
@@ -137,7 +137,7 @@ function drawDish(entry, worm) {
       if (!f.word) continue;
       const d = Math.hypot(f.x - hx, f.y - hy);
       const near = dead ? 0 : Math.max(0, 1 - d / 300);
-      ctx.font = `${near > 0.4 ? 400 : 300} ${13 + 3 * near}px 'Fragment Mono', monospace`;
+      ctx.font = `${near > 0.4 ? 400 : 300} ${11.5 + 3 * near}px 'Fragment Mono', monospace`;
       ctx.fillStyle = `rgba(236,226,205,${0.5 + 0.45 * near})`;
       ctx.fillText(f.word, X(f.x), Y(f.y));
     }
