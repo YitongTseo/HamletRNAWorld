@@ -358,8 +358,11 @@ def _worm_overview_dict(w: Worm, flask_name: str) -> dict:
 
 def _corpus_title(flask_name: str) -> str | None:
     """Short display title for a non-hamlet flask corpus, else None."""
+    # Label every flask when WORMLET_FLASK_TEXTS is configured — including
+    # hamlet, so a mixed tray reads evenly. Unset (stock) → no labels,
+    # payload unchanged.
     c = corpus_for_flask_name(flask_name)
-    if not c or c == "hamlet":
+    if not c:
         return None
     from corpus import library
     # Short form: drop the translator parenthetical for the tray header.
@@ -1329,6 +1332,9 @@ def _worm_entry(w) -> dict:
     when the features are on — mirrors World.snapshot(), keeps the
     default-off payload unchanged, and feeds the metrics collector."""
     entry = {"name": w.name, "seed": w.seed, "word_count": w.word_count}
+    # Spin watch (task #9): always-on motion diagnostics, REST only — the
+    # WS snapshot payload stays untouched.
+    entry.update(w.world.motion_stats())
     entry.update(w.world.lifelike_payload())
     return entry
 
@@ -1592,6 +1598,12 @@ async def api_generations_index():
             "sigma_scheme": _gv_read_json(
                 d / f"gen-{nums[-1]:04d}" / "metadata.json", {}
             ).get("sigma_scheme") if nums else None,
+            # Corpus title for the page header. Local flasks resolve via env
+            # config; for gen>=1 the metadata.json provenance wins (works for
+            # sibling dirs too, where this process has no env knowledge).
+            "corpus": (_gv_read_json(
+                d / f"gen-{nums[-1]:04d}" / "metadata.json", {}
+            ).get("corpus") if nums else None) or _corpus_title(name),
         })
     return JSONResponse({"flasks": flasks})
 

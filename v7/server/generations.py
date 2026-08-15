@@ -478,6 +478,11 @@ def run_generation_rollover(
         # the openai backend or a fallback splice, "claude-haiku-4-5" would
         # be exactly the scoring-regime misattribution CLAUDE.md warns about.
         "judge_model": judge_description(),
+        # Corpus provenance (2026-08-15, multi-text flasks): a different text
+        # judged under a rubric naming that text is a DIFFERENT CRITIC —
+        # cross-flask fitness is never one comparable history.
+        "corpus": getattr(getattr(worms[0], "world", None), "corpus", None)
+                  or "hamlet",
         "sigma_used": state.sigma,
         "sigma_next": new_sigma,
         "sigma_scheme": ng.scheme,

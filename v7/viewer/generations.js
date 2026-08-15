@@ -600,7 +600,10 @@ async function init() {
     const gen = f.current_generation || f.n_generations;
     const sigma = (typeof f.sigma === 'number') ? `, σ=${f.sigma.toFixed(3)}` : '';
     const scheme = f.sigma_scheme ? ` ${f.sigma_scheme}` : '';
-    opt.textContent = `${f.label || f.name} (gen ${gen}${sigma}${scheme})`;
+    // Corpus title in the dropdown so three-text deployments read as
+    // "flask_2 - Tao Teh King" (textContent: safe sink).
+    const corpus = f.corpus ? ` \u00b7 ${f.corpus}` : '';
+    opt.textContent = `${f.label || f.name}${corpus} (gen ${gen}${sigma}${scheme})`;
     flaskSelect.appendChild(opt);
   }
   flaskSelect.addEventListener('change', e => loadFlask(e.target.value));

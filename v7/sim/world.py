@@ -118,6 +118,13 @@ class World:
     satiety: float = lifelike.SATIETY_START
     dead: bool = False
     _reward_accum: float = 0.0
+    # Motion tracking for the spin-from-birth watch (BEHAVIOUR-LOG.md
+    # 2026-08-15): per brain tick (2 Hz), |heading change| and position ride
+    # 60-second windows. A spinner shows high turns_min with drift_min under
+    # a body length; observability only — no sim behaviour reads these.
+    _turn_window: object = field(default_factory=lambda: __import__("collections").deque(maxlen=120))
+    _pos_window: object = field(default_factory=lambda: __import__("collections").deque(maxlen=120))
+    _last_facing: float | None = None
     # Habituation: per-neuron adapted baseline (EMA of recent pre-gain
     # chemosensory input). Response = input - baseline, so a static smell
     # fades and the worm moves on. Empty forever when the flag is off.
@@ -357,6 +364,13 @@ class World:
             if chemo:
                 self.brain.stimulate_weighted(chemo)
             self._brain_tick_count += 1
+            # Spin watch: wrapped heading delta + position, 2 Hz.
+            f = self.worm.facing_dir
+            if self._last_facing is not None:
+                self._turn_window.append(
+                    abs((f - self._last_facing + math.pi) % (2 * math.pi) - math.pi))
+            self._last_facing = f
+            self._pos_window.append((self.worm.target_x, self.worm.target_y))
             # Lifelike: consolidate rewards accumulated since the last brain
             # tick (traces are fresh — the brain fired within trace memory of
             # the meal), then decay traces/deltas. No-op when plasticity off.
@@ -549,6 +563,21 @@ class World:
         escapes its own patch. Keys are already sorted (see _chemo_pulse),
         so the sum is order-stable."""
         return {"habituation": round(sum(self._adapt.values()), 3)}
+
+    def motion_stats(self) -> dict:
+        """Spin diagnostics for /api/worms: revolutions and net drift over
+        the last sim-minute. Measured baseline (seed 3, stock): a normal
+        undulating worm shows turns_min ~14 (heading wobbles with the body
+        wave) and drift_min ~400. The spinner signature is DRIFT, not turns:
+        drift_min < ~50 world units while turns_min stays >= baseline =
+        rotating in place (dish is 1600x1000)."""
+        turns = sum(self._turn_window) / (2 * math.pi)
+        if len(self._pos_window) >= 2:
+            (x0, y0), (x1, y1) = self._pos_window[0], self._pos_window[-1]
+            drift = math.hypot(x1 - x0, y1 - y0)
+        else:
+            drift = 0.0
+        return {"turns_min": round(turns, 2), "drift_min": round(drift, 1)}
 
     def lifelike_payload(self) -> dict:
         """Every lifelike key a public payload carries, gated per feature —
