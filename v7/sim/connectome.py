@@ -133,6 +133,13 @@ class Connectome:
         self._plast: dict[str, float] = {}
         self._delta: dict[str, dict[str, float]] = {}
         self._trace: dict[tuple[str, str], float] = {}
+        # Memoised plasticity_stats(). The stats only change when
+        # plasticity_step mutates _delta/_trace (2 Hz), but the focus
+        # broadcast reads them at 60 Hz — on a saturated worm (~3k edges)
+        # that was a ~3k-iteration loop 60×/s for a value that moves twice a
+        # second. Any code that mutates _delta/_trace directly (not via
+        # plasticity_step) must reset this to None.
+        self._stats_cache: dict | None = None
         self._fired: set[str] = set()
 
     def enable_plasticity(self, params: dict[str, float]) -> None:
@@ -239,8 +246,9 @@ class Connectome:
             trace = self._trace
             # sorted: set iteration order varies with PYTHONHASHSEED across
             # processes; per-key arithmetic is order-safe, but insertion order
-            # feeds delta_norm()'s summation order and the checkpoint's JSON
-            # byte order — sorting keeps those reproducible across restarts.
+            # feeds the plasticity_stats() L1 summation order and the
+            # checkpoint's JSON byte order — sorting keeps those reproducible
+            # across restarts.
             for pre in sorted(fired):
                 targets = self.weights.get(pre)
                 if not targets:
@@ -282,27 +290,32 @@ class Connectome:
                 if kept:
                     new_delta[pre] = kept
             self._delta = new_delta
+        self._stats_cache = None
 
     def delta_norm(self) -> float:
-        """L1 size of current learned changes — observability for tests,
-        snapshots, and the metrics collector."""
-        return sum(abs(d) for posts in self._delta.values() for d in posts.values())
+        """L1 size of current learned changes — kept as the historical name;
+        the one implementation lives in plasticity_stats()."""
+        return self.plasticity_stats()["l1"]
 
     def plasticity_stats(self) -> dict:
         """Rollup of the learned layer for post-mortems and diagnostics.
-        delta_norm alone proved ambiguous in the field: three worms in one
+        The L1 alone proved ambiguous in the field: three worms in one
         flask all reported the identical L1 (29620.0 — 2,962 edges pinned at
         DELTA_CAP) and one thrived while two starved. The capped-edge count is
         what separates 'learned a lot' from 'every traced synapse slammed into
         the cap and the rule can no longer steer'."""
-        from sim.lifelike import DELTA_CAP
-        edges = capped = 0
-        l1 = 0.0
-        for posts in self._delta.values():
-            for d in posts.values():
-                edges += 1
-                l1 += abs(d)
-                if abs(d) >= DELTA_CAP - 1e-9:
-                    capped += 1
-        return {"edges": edges, "capped": capped, "l1": round(l1, 2),
-                "traces": len(self._trace)}
+        if self._stats_cache is None:
+            from sim.lifelike import DELTA_CAP
+            near_cap = DELTA_CAP - 1e-9
+            edges = capped = 0
+            l1 = 0.0
+            for posts in self._delta.values():
+                for d in posts.values():
+                    a = abs(d)
+                    edges += 1
+                    l1 += a
+                    if a >= near_cap:
+                        capped += 1
+            self._stats_cache = {"edges": edges, "capped": capped,
+                                 "l1": round(l1, 2), "traces": len(self._trace)}
+        return dict(self._stats_cache)

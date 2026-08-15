@@ -2,8 +2,9 @@
 
     WORMLET_PLASTICITY=1   reward-modulated Hebbian learning during life
     WORMLET_HUNGER=1       satiety state gating senses/motor + starvation
+    WORMLET_HABITUATION=1  chemosensory adaptation — repeated smells fade
 
-Both default OFF; with both flags off every code path is inert and the sim
+All default OFF; with every flag off every code path is inert and the sim
 is bit-identical to stock v7 (test_lifelike.py asserts this).
 
 Biology being imitated, and how loosely:
@@ -17,6 +18,17 @@ Biology being imitated, and how loosely:
     pushes toward higher chemosensory gain (starved worms smell harder —
     measured in real worms) and higher motor gain (roaming), with death at
     zero. Eating while starved consolidates plasticity more strongly.
+  * Habituation — the best-documented C. elegans learning: a repeated
+    stimulus with no payoff loses its response (Rankin tap-withdrawal;
+    Colbert & Bargmann olfactory adaptation), recovering once it stops,
+    and a salient event (food) restores it. Here: each amphid neuron keeps
+    an adapted baseline (EMA of its recent pre-gain input); the response is
+    input minus baseline, floored at 0. A worm parked in a static smell
+    field goes progressively nose-blind to it and leaves; fresh words
+    upfield smell at full strength. Eating clears part of the baseline
+    (dishabituation). Subtractive rather than divisive on purpose — the
+    point is behavioural (leave the patch), not receptor fidelity, and
+    subtraction makes departure decisive.
 
 Genome integration: the five evolvable rule parameters live in the genome
 dict under the reserved "_lifelike" pseudo-source, so evolution.py's
@@ -52,6 +64,13 @@ PARAM_SPEC: dict[str, tuple[float, float, float]] = {
     "baseline_pull": (0.02, 0.0, 0.5),   # learned deltas relax to genome
     "starve_gain":   (0.8,  0.0, 3.0),   # extra chemosensory gain at S=0
     "roam_gain":     (0.5,  0.0, 3.0),   # extra motor gain at S=0
+    # Habituation (WORMLET_HABITUATION). adapt_rate is the per-brain-tick EMA
+    # rate of the adapted baseline: at 0.05 a static smell fades with a ~20
+    # brain-tick (~10 s sim) time constant; 0 disables — evolution can switch
+    # habituation off. dishab_relief is the fraction of the baseline cleared
+    # per bite (1 = every meal fully resets the nose).
+    "adapt_rate":    (0.05, 0.0, 0.5),
+    "dishab_relief": (0.5,  0.0, 1.0),
 }
 
 # Hunger constants (fixed, not evolved — they define the environment, and an
@@ -74,6 +93,18 @@ def plasticity_enabled() -> bool:
 
 def hunger_enabled() -> bool:
     return os.environ.get("WORMLET_HUNGER", "0") == "1"
+
+
+def habituation_enabled() -> bool:
+    return os.environ.get("WORMLET_HABITUATION", "0") == "1"
+
+
+def any_enabled() -> bool:
+    """True when any lifelike feature is on — the gene-injection gate. Both
+    cold-start sites (app._load_initial_default_weights and
+    orchestrator._ensure_flask_worm_dir) call this, so adding a flag here is
+    the ONLY edit that keeps their flatten dimensions in lockstep."""
+    return plasticity_enabled() or hunger_enabled() or habituation_enabled()
 
 
 def ensure_params(weights: dict) -> dict:

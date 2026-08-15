@@ -163,6 +163,13 @@ if _ENV_NAMES:
     if any("/" in n for n in FLASK_WORM_NAMES):
         raise ValueError(
             f"WORMLET_FLASK_WORM_NAMES names must not contain '/': {_ENV_NAMES!r}")
+    # With '/' banned a name is a single path segment, so the only remaining
+    # traversal spellings are the segments '.' and '..' themselves ("wat..son"
+    # is harmless). '..' as a worm name would write poem/weights/checkpoint
+    # files into the flask dir's parent (2026-08-15 security audit).
+    if any(n in (".", "..") for n in FLASK_WORM_NAMES):
+        raise ValueError(
+            f"WORMLET_FLASK_WORM_NAMES names must not be '.' or '..': {_ENV_NAMES!r}")
 FLASKS_DIR = _DATA_ROOT / "flasks"
 
 
@@ -183,7 +190,7 @@ def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[
         # defaults instead. Must stay in lockstep with the cold-start
         # injection in app._load_initial_default_weights.
         weights = json.loads(DEFAULT_WEIGHTS.read_text())
-        if lifelike.plasticity_enabled() or lifelike.hunger_enabled():
+        if lifelike.any_enabled():
             lifelike.ensure_params(weights)
         weights_path.write_text(json.dumps(weights))
         return wdir, weights

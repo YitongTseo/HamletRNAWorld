@@ -114,6 +114,10 @@ class World:
     satiety: float = lifelike.SATIETY_START
     dead: bool = False
     _reward_accum: float = 0.0
+    # Habituation: per-neuron adapted baseline (EMA of recent pre-gain
+    # chemosensory input). Response = input - baseline, so a static smell
+    # fades and the worm moves on. Empty forever when the flag is off.
+    _adapt: dict = field(default_factory=dict)
     # Post-mortem bookkeeping. tick_count keeps advancing for a corpse (the
     # scroller must exhaust for rollover), so the death tick and the gap since
     # the last meal exist only at the moment of death — capture them then.
@@ -129,6 +133,7 @@ class World:
         # defaults) whether or not the genome carries the block.
         self._plasticity_on = lifelike.plasticity_enabled()
         self._hunger_on = lifelike.hunger_enabled()
+        self._habituation_on = lifelike.habituation_enabled()
         self.lifelike_params = lifelike.pop_params(self.weights)
         self.brain = Connectome(weights=self.weights, rng=self.rng)
         if self._plasticity_on:
@@ -262,6 +267,10 @@ class World:
                             self.satiety = min(1.0, self.satiety + lifelike.SATIETY_BITE)
                         elif self._plasticity_on:
                             self._reward_accum += 1.0
+                        # Habituation: food is the salient event that
+                        # restores a faded response (dishabituation).
+                        if self._habituation_on:
+                            self._dishabituate()
                     self.food.pop(i)
                     continue
             i += 1
@@ -382,7 +391,7 @@ class World:
         restart was mild amnesia plus a free meal — the worm forgot what it
         had learned this life and respawned fed. None when both features are
         off, so stock checkpoints don't grow a key."""
-        if not (self._hunger_on or self._plasticity_on):
+        if not (self._hunger_on or self._plasticity_on or self._habituation_on):
             return None
         out: dict = {}
         if self._hunger_on:
@@ -397,6 +406,9 @@ class World:
             out["delta"] = self.brain._delta
             out["trace"] = [[pre, post, v]
                             for (pre, post), v in self.brain._trace.items()]
+        if self._habituation_on:
+            # Without this a restart would dishabituate every nose for free.
+            out["adapt"] = self._adapt
         return out
 
     def restore_lifelike(self, data: dict | None) -> None:
@@ -415,6 +427,11 @@ class World:
                                  for pre, posts in data["delta"].items()}
             self.brain._trace = {(a, b): float(v)
                                  for a, b, v in data.get("trace", [])}
+            self.brain._stats_cache = None  # direct _delta mutation
+        if self._habituation_on and "adapt" in data:
+            # Sorted for the same hash-seed-independent order the EMA keeps.
+            self._adapt = {n: float(data["adapt"][n])
+                           for n in sorted(data["adapt"])}
 
     def drain_eaten_words(self) -> list[tuple[int, int, str]]:
         """Return and clear the buffer of words eaten since the last drain."""
@@ -434,14 +451,97 @@ class World:
         gain = 1.0
         if self._hunger_on:
             gain += self.lifelike_params["starve_gain"] * (1.0 - self.satiety)
+        if not self._habituation_on:
+            # Stock path, verbatim: accumulating v*gain directly is NOT the
+            # same floats as sum-then-multiply, and flags-off must stay
+            # bit-identical to v7 — so the habituated path below is a
+            # separate branch, not a refactor of this one.
+            for smell in self.sensed_smells.values():
+                for n, v in smell.get("neurons", {}).items():
+                    if v > 0:
+                        out[n] = out.get(n, 0.0) + v * gain
+            # Saturate at 1.0 per neuron.
+            for k in list(out.keys()):
+                if out[k] > 1.0:
+                    out[k] = 1.0
+            return out
+        # Habituation (called once per brain tick from tick(), so this is
+        # also the adaptation clock). Baselines track the PRE-gain input:
+        # adaptation is receptor-level, hunger gain is downstream — so a
+        # worm growing desperate partially "un-adapts", which is the real
+        # interplay (starvation re-sensitises chemotaxis).
+        raw: dict[str, float] = {}
         for smell in self.sensed_smells.values():
             for n, v in smell.get("neurons", {}).items():
                 if v > 0:
-                    out[n] = out.get(n, 0.0) + v * gain
-        # Saturate at 1.0 per neuron.
-        for k in list(out.keys()):
-            if out[k] > 1.0:
-                out[k] = 1.0
+                    raw[n] = raw.get(n, 0.0) + v
+        # EMA over the union: stimulated neurons adapt toward their input,
+        # silent ones relax toward 0 (recovery) at the same rate. Sorted so
+        # dict insertion order — and thus every downstream float sum — is
+        # independent of PYTHONHASHSEED (determinism contract).
+        rate = self.lifelike_params["adapt_rate"]
+        adapt = self._adapt
+        for n in sorted(set(adapt) | set(raw)):
+            a = adapt.get(n, 0.0) * (1.0 - rate) + raw.get(n, 0.0) * rate
+            if a > lifelike.PRUNE_EPS:
+                adapt[n] = a
+            else:
+                adapt.pop(n, None)
+        # Respond to input minus the (just-updated) baseline, floored at 0:
+        # a fully adapted channel goes silent. Gain after subtraction, cap
+        # at 1.0 as ever.
+        for n, v in raw.items():
+            e = (v - adapt.get(n, 0.0)) * gain
+            if e > 0.0:
+                out[n] = e if e < 1.0 else 1.0
+        return out
+
+    def _dishabituate(self) -> None:
+        """Eating clears dishab_relief of every adapted baseline — the meal
+        re-sensitises the nose (real dishabituation: a salient stimulus
+        restores a habituated response). At relief=1 one bite is a full
+        reset; at 0 evolution has switched dishabituation off."""
+        keep = 1.0 - self.lifelike_params["dishab_relief"]
+        for n in list(self._adapt):
+            a = self._adapt[n] * keep
+            if a > lifelike.PRUNE_EPS:
+                self._adapt[n] = a
+            else:
+                del self._adapt[n]
+
+    def _plasticity_snapshot(self) -> dict:
+        """Lifelike snapshot keys for the learned layer. One stats pass
+        covers all three fields (l1 == delta_norm)."""
+        st = self.brain.plasticity_stats()
+        return {"plasticity_delta": st["l1"],
+                "plasticity_capped": st["capped"],
+                "plasticity_edges": st["edges"]}
+
+    def _habituation_snapshot(self) -> dict:
+        """L1 of the adapted baselines — how nose-blind the worm currently
+        is. Stuck at 0 across a lineage means adapt_rate evolved to 0 (the
+        NES switched habituation off); ever-high means the worm never
+        escapes its own patch. Keys are already sorted (see _chemo_pulse),
+        so the sum is order-stable."""
+        return {"habituation": round(sum(self._adapt.values()), 3)}
+
+    def lifelike_payload(self) -> dict:
+        """Every lifelike key a public payload carries, gated per feature —
+        the ONE owner of which keys exist when. snapshot(), the focus
+        broadcast, and /api/worms all spread this verbatim; a feature wired
+        at only some sites would make the viewer and the REST API silently
+        disagree (habituation touched three call sites before this existed).
+        Empty dict with everything off, so default-off payloads are
+        unchanged byte for byte. (The overview tray deliberately carries
+        satiety/dead only — it doesn't use this.)"""
+        out: dict = {}
+        if self._hunger_on:
+            out["satiety"] = round(self.satiety, 3)
+            out["dead"] = self.dead
+        if self._plasticity_on:
+            out.update(self._plasticity_snapshot())
+        if self._habituation_on:
+            out.update(self._habituation_snapshot())
         return out
 
     def snapshot(self) -> dict:
@@ -493,10 +593,7 @@ class World:
                      "food_sense": self.stim_food_sense},
             "paused": self.paused,
             "neurons": neurons_active,
-            # Lifelike keys appear only when the features are on, so the
-            # default-off snapshot payload is unchanged byte for byte.
-            **({"satiety": round(self.satiety, 3), "dead": self.dead}
-               if self._hunger_on else {}),
-            **({"plasticity_delta": round(self.brain.delta_norm(), 2)}
-               if self._plasticity_on else {}),
+            # Lifelike keys appear only when the features are on; the
+            # per-feature gating has one owner (lifelike_payload).
+            **self.lifelike_payload(),
         }

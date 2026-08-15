@@ -45,7 +45,7 @@ from sim.connectome import (
     SENSORY_NEURONS, CHEMOSENSORY_NEURONS, MOTOR_NEURONS,
 )
 from corpus.hamlet import get_sentences
-from sim.world import World
+from sim.world import World, BODY_TICK_HZ
 
 from server.orchestrator import (
     load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm, Worm,
@@ -199,31 +199,33 @@ def _log_death(flask_name: str, worm) -> None:
     dupe if we die within a checkpoint interval of the worm)."""
     try:
         w = worm.world
-        gen = next((f.state.generation for f in FLASKS
-                    if f.name == flask_name and f.state), 0)
+        # The sim_loop guard guarantees death_record is present here.
+        dr = w.death_record
+        flask = _find_flask(flask_name)  # None in legacy mode -> gen 0
+        gen = flask.state.generation if flask and flask.state else 0
         rec = {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime()),
+            # UTC Z, same stamp format as gardener/board_publish/status.
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "flask": flask_name,
             "worm": worm.name,
             "generation": gen,
-            **{k: v for k, v in (w.death_record or {}).items() if k != "logged"},
-            # Sim runs 60 body ticks/s (SATIETY_DECAY empties 1.0 in 36000
-            # ticks = the documented ~10 sim-minutes).
-            "starved_s": round((w.death_record or {}).get("starved_ticks", 0) / 60.0, 1),
+            **{k: v for k, v in dr.items() if k != "logged"},
+            "starved_s": round(dr["starved_ticks"] / BODY_TICK_HZ, 1),
             "word_count": worm.word_count,
             "recent_eaten": list(w._recent_eaten[:10]),
             "lifelike_params": {k: round(v, 4) for k, v in w.lifelike_params.items()},
             "plasticity": w.brain.plasticity_stats(),
         }
+        # poem_path-relative rather than FLASKS_DIR/<name>: in legacy mode
+        # ("default") no flask dir exists, but the worm dir always does.
         deaths_path = worm.poem_path.parent.parent / "deaths.jsonl"
-        with open(deaths_path, "a") as f:
-            f.write(json.dumps(rec) + "\n")
-        if w.death_record is not None:
-            w.death_record["logged"] = True
+        with open(deaths_path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        dr["logged"] = True
         LOG.info(
             "death: %s/%s gen=%d tick=%s — starved %.0fs after last meal; "
             "words=%d, plasticity capped=%d/%d edges",
-            flask_name, worm.name, gen, rec.get("died_at_tick", "?"),
+            flask_name, worm.name, gen, rec["died_at_tick"],
             rec["starved_s"], worm.word_count,
             rec["plasticity"]["capped"], rec["plasticity"]["edges"])
     except Exception:
@@ -429,11 +431,9 @@ def _build_snapshot(worm: Worm) -> dict:
         # ingested" reads this (it was missing from this inline snapshot,
         # which predates the card; World.snapshot() always had it).
         "recent_eaten": list(w._recent_eaten),
-        # Lifelike keys only when the features are on (site-wide policy).
-        **({"satiety": round(w.satiety, 3), "dead": w.dead}
-           if getattr(w, "_hunger_on", False) else {}),
-        **({"plasticity_delta": round(w.brain.delta_norm(), 2)}
-           if getattr(w, "_plasticity_on", False) else {}),
+        # Lifelike keys only when the features are on (site-wide policy;
+        # the per-feature gating lives in World.lifelike_payload).
+        **w.lifelike_payload(),
     }
 
 
@@ -975,7 +975,7 @@ def _load_initial_default_weights() -> dict:
     from server.orchestrator import DEFAULT_WEIGHTS
     from sim import lifelike
     weights = json.loads(DEFAULT_WEIGHTS.read_text())
-    if lifelike.plasticity_enabled() or lifelike.hunger_enabled():
+    if lifelike.any_enabled():
         lifelike.ensure_params(weights)
     return weights
 
@@ -1311,12 +1311,7 @@ def _worm_entry(w) -> dict:
     when the features are on — mirrors World.snapshot(), keeps the
     default-off payload unchanged, and feeds the metrics collector."""
     entry = {"name": w.name, "seed": w.seed, "word_count": w.word_count}
-    world = w.world
-    if getattr(world, "_hunger_on", False):
-        entry["satiety"] = round(world.satiety, 3)
-        entry["dead"] = world.dead
-    if getattr(world, "_plasticity_on", False):
-        entry["plasticity_delta"] = round(world.brain.delta_norm(), 2)
+    entry.update(w.world.lifelike_payload())
     return entry
 
 

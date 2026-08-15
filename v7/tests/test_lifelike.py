@@ -1,6 +1,6 @@
-"""Tests for lifelike mode (sim/lifelike.py): plasticity, hunger, genome
-ride-along, determinism, and — most importantly — that with both flags OFF
-nothing changes. No network, no LLM."""
+"""Tests for lifelike mode (sim/lifelike.py): plasticity, hunger,
+habituation, genome ride-along, determinism, and — most importantly — that
+with all flags OFF nothing changes. No network, no LLM."""
 from __future__ import annotations
 
 import os
@@ -33,8 +33,12 @@ def _restore(old):
             os.environ[k] = v
 
 
-BOTH_OFF = dict(WORMLET_PLASTICITY=None, WORMLET_HUNGER=None)
-BOTH_ON = dict(WORMLET_PLASTICITY="1", WORMLET_HUNGER="1")
+ALL_OFF = dict(WORMLET_PLASTICITY=None, WORMLET_HUNGER=None,
+               WORMLET_HABITUATION=None)
+ALL_ON = dict(WORMLET_PLASTICITY="1", WORMLET_HUNGER="1",
+              WORMLET_HABITUATION="1")
+HAB_ONLY = dict(WORMLET_PLASTICITY=None, WORMLET_HUNGER=None,
+                WORMLET_HABITUATION="1")
 
 
 # --- params & genome ride-along --------------------------------------------
@@ -42,6 +46,7 @@ BOTH_ON = dict(WORMLET_PLASTICITY="1", WORMLET_HUNGER="1")
 def test_pop_params_defaults_and_clipping():
     p = lifelike.pop_params(None)
     assert p["eta"] == 0.05 and p["trace_decay"] == 0.85
+    assert p["adapt_rate"] == 0.05 and p["dishab_relief"] == 0.5
     w = {"_lifelike": {"eta": 99.0, "trace_decay": -3.0}, "AVAL": {"AVBL": 2}}
     p = lifelike.pop_params(w)
     assert p["eta"] == 0.5        # clipped to hi
@@ -118,7 +123,7 @@ def test_fresh_worm_dir_persists_lifelike_genes():
     import json as _json
     import tempfile
     import server.orchestrator as orch
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     real = orch.FLASKS_DIR
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -184,7 +189,7 @@ def test_plasticity_off_is_inert():
 # --- hunger ------------------------------------------------------------------
 
 def test_satiety_decays_and_death_freezes_worm():
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     try:
         w = World(seed=7)
         w.satiety = 3 * lifelike.SATIETY_DECAY_PER_TICK  # about to starve
@@ -205,7 +210,7 @@ def test_death_record_captures_facts_at_death_and_freezes():
     are only knowable at the moment of death — the record must capture them
     then and never change after (popat and dowager cixi died with nothing on
     disk but dead=true; this record is the post-mortem)."""
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     try:
         w = World(seed=7)
         assert w.death_record is None
@@ -229,7 +234,7 @@ def test_death_record_checkpoint_roundtrip_keeps_logged_flag():
     """A restart must neither lose the post-mortem nor re-log it: the record
     (with the server's 'logged' marker) and last_meal_tick ride the lifelike
     checkpoint."""
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     try:
         w = World(seed=9)
         w._last_meal_tick = 0                # ate at birth, then nothing
@@ -250,7 +255,7 @@ def test_death_record_checkpoint_roundtrip_keeps_logged_flag():
 
 
 def test_eating_replenishes_satiety_and_rewards_brain():
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     try:
         w = World(seed=7)
         w.satiety = 0.5
@@ -266,7 +271,7 @@ def test_eating_replenishes_satiety_and_rewards_brain():
 
 
 def test_starving_worm_smells_and_moves_harder():
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     try:
         w = World(seed=7)
         w.sensed_smells = {"k": {"neurons": {"ASEL": 0.2}}}
@@ -280,30 +285,95 @@ def test_starving_worm_smells_and_moves_harder():
         _restore(old)
 
 
+# --- habituation -------------------------------------------------------------
+
+def test_static_smell_fades_then_recovers():
+    """The core habituation loop: a constant smell loses its response (the
+    baseline adapts up to it), silence recovers (baseline decays out), and
+    the re-presented smell is back at full strength."""
+    old = _env(**HAB_ONLY)
+    try:
+        w = World(seed=7)
+        # Full smell shape — snapshot() below serialises it for the viewer.
+        SMELL = {"k": {"word": "king", "x": 0.0, "y": 0.0, "distance": 10.0,
+                       "pca": [0.0] * 12, "neurons": {"ASEL": 0.5}}}
+        w.sensed_smells = dict(SMELL)
+        first = w._chemo_pulse()["ASEL"]
+        assert 0.0 < first < 0.5          # adapting from the first sniff
+        for _ in range(300):              # (1-0.05)^300 ~ 2e-7: fully blind
+            resp = w._chemo_pulse().get("ASEL", 0.0)
+        assert resp < 0.01
+        assert w.snapshot()["habituation"] > 0.4   # observable in the viewer
+        w.sensed_smells = {}
+        for _ in range(300):              # silence: baseline decays to prune
+            w._chemo_pulse()
+        assert w._adapt == {}
+        w.sensed_smells = dict(SMELL)
+        assert w._chemo_pulse()["ASEL"] == first   # full recovery
+    finally:
+        _restore(old)
+
+
+def test_eating_dishabituates():
+    old = _env(**HAB_ONLY)
+    try:
+        w = World(seed=7)
+        w._adapt = {"ASEL": 0.4, "AWCL": 1e-5}
+        w._dishabituate()
+        assert abs(w._adapt["ASEL"] - 0.2) < 1e-12  # default relief = 0.5
+        assert "AWCL" not in w._adapt               # dust pruned
+        w.lifelike_params["dishab_relief"] = 1.0    # evolved to full reset
+        w._dishabituate()
+        assert w._adapt == {}
+    finally:
+        _restore(old)
+
+
+def test_habituation_stacks_under_starvation_gain():
+    """Adaptation is pre-gain (receptor level), hunger gain is downstream:
+    a starving worm partially un-adapts, but a fully adapted channel stays
+    silent no matter how hungry — gain multiplies (input - baseline), and
+    0 times anything is 0."""
+    old = _env(**ALL_ON)
+    try:
+        w = World(seed=7)
+        w.sensed_smells = {"k": {"neurons": {"ASEL": 0.5}}}
+        w.satiety = 1.0
+        for _ in range(300):
+            w._chemo_pulse()              # adapt fully while fed
+        w.satiety = 0.0                   # now desperate
+        assert w._chemo_pulse().get("ASEL", 0.0) < 0.01
+    finally:
+        _restore(old)
+
+
 # --- checkpoint round-trip ---------------------------------------------------
 
 def test_lifelike_checkpoint_roundtrip():
     """Restart must not cost the worm its within-life learning or its hunger:
     checkpoint -> fresh world -> restore == same satiety, deltas, traces."""
     import json
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     try:
         w = World(seed=9)
         w.satiety = 0.37
         w.brain._delta = {"AVAL": {"AVBL": 2.5, "AVBR": -1.25}}
         w.brain._trace = {("AVAL", "AVBL"): 0.6}
+        w._adapt = {"ASEL": 0.3, "AWCR": 0.05}
         ck = json.loads(json.dumps(w.lifelike_checkpoint()))  # via-JSON, like disk
         w2 = World(seed=9)
         w2.restore_lifelike(ck)
         assert w2.satiety == 0.37 and not w2.dead
         assert w2.brain._delta == {"AVAL": {"AVBL": 2.5, "AVBR": -1.25}}
         assert w2.brain._trace == {("AVAL", "AVBL"): 0.6}
+        # a restart must not dishabituate the nose for free
+        assert w2._adapt == {"ASEL": 0.3, "AWCR": 0.05}
     finally:
         _restore(old)
 
 
 def test_lifelike_checkpoint_none_when_off_and_v1_restore_tolerated():
-    old = _env(**BOTH_OFF)
+    old = _env(**ALL_OFF)
     try:
         w = World(seed=9)
         assert w.lifelike_checkpoint() is None  # stock checkpoints don't grow
@@ -325,21 +395,23 @@ def _run_world(ticks: int, seed: int = 11) -> tuple:
 
 
 def test_flags_off_no_lifelike_state_leaks():
-    old = _env(**BOTH_OFF)
+    old = _env(**ALL_OFF)
     try:
         w = World(seed=3)
         for _ in range(240):
             w.tick()
         assert w.brain._delta == {} and w.brain._trace == {}
+        assert w._adapt == {}
         assert not w.dead
         snap = w.snapshot()
         assert "satiety" not in snap and "plasticity_delta" not in snap
+        assert "habituation" not in snap
     finally:
         _restore(old)
 
 
 def test_deterministic_with_lifelike_on():
-    old = _env(**BOTH_ON)
+    old = _env(**ALL_ON)
     try:
         a = _run_world(400)
         b = _run_world(400)
@@ -349,7 +421,7 @@ def test_deterministic_with_lifelike_on():
 
 
 def test_deterministic_with_lifelike_off_matches_itself():
-    old = _env(**BOTH_OFF)
+    old = _env(**ALL_OFF)
     try:
         assert _run_world(400) == _run_world(400)
     finally:

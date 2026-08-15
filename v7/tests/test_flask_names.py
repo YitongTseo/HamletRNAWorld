@@ -37,6 +37,26 @@ def test_unset_env_keeps_default_twenty():
     assert orch.FLASK_WORM_NAMES[0] == "Alice"
 
 
+def test_traversal_and_slash_names_rejected_at_import():
+    """Names become directory names under FLASKS_DIR: '/' splits into extra
+    path segments and a bare '..' escapes the flask dir entirely, so both
+    must die at startup, not at first write. 'wat..son' stays legal — inside
+    a single segment the dots are just a name."""
+    for bad in ("swan,../evil", "swan,.", "swan/benc"):
+        try:
+            _reload_with(bad)
+            assert False, f"expected ValueError for {bad!r}"
+        except ValueError:
+            pass
+        finally:
+            _reload_with(None)
+    try:
+        _reload_with("wat..son,benc")
+        assert orch.FLASK_WORM_NAMES == ["wat..son", "benc"]
+    finally:
+        _reload_with(None)
+
+
 def test_short_list_still_raises_in_load_flasks():
     """The collision guard must apply to overridden lineups too."""
     try:

@@ -117,6 +117,25 @@ def test_fitness_higher_scores_still_win_per_window():
     assert better > worse
 
 
+def test_fitness_volume_beyond_floor_does_not_pay():
+    """Regime change 2026-08-15: fitness is a per-window MEAN (floored
+    divisor), not a sum. Doubling the window count at slightly lower quality
+    must now LOSE — under the old sum, 24 windows of 55 beat 12 of 60, which
+    let big eaters out-rank better poets (data-lifelike-2 gen 6)."""
+    quality = [ScoredWindow(i, ["x"], 60, 60) for i in range(12)]
+    volume = [ScoredWindow(i, ["x"], 55, 55) for i in range(24)]
+    assert fitness(quality) > fitness(volume)
+
+
+def test_fitness_floor_blocks_lucky_short_life():
+    """The divisor floor: a worm that died after 3 lucky windows must not
+    out-rank a full life of decent ones. An unfloored mean would score the
+    short life ~95 vs ~80; the floor dilutes it to 3·q95/12."""
+    short_lucky = [ScoredWindow(i, ["x"], 95, 95) for i in range(3)]
+    full_decent = [ScoredWindow(i, ["x"], 80, 80) for i in range(13)]
+    assert fitness(full_decent) > fitness(short_lucky)
+
+
 def test_fitness_emotional_weighted_above_coherence():
     """Same total, but flipping E↑/C↓ vs E↓/C↑ shouldn't be symmetric:
     the 1.5× emotional weight prefers high E."""

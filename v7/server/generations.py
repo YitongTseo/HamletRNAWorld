@@ -35,7 +35,7 @@ import numpy as np
 
 from corpus.hamlet import is_non_reactive  # punctuation set is in PUNCTUATION below
 from server.evolution import (
-    SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT, N_ELITES,
+    SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT, FITNESS_WINDOW_FLOOR, N_ELITES,
     evolve_generation, fitness, flatten_weights, unflatten_weights, WeightDict,
 )
 from server.gardener import maybe_write_log
@@ -166,6 +166,11 @@ def _write_worm_artifacts(
         "windows_scored": len(scored),
         "gamma": GAMMA,
         "emotional_weight": EMOTIONAL_WEIGHT,
+        # Scoring-regime provenance (2026-08-15): fitness is now the
+        # per-window mean with this divisor floor; generations whose
+        # fitness.json lacks the key were scored under the old volume-paying
+        # SUM and are not comparable.
+        "window_floor": FITNESS_WINDOW_FLOOR,
     }))
 
 

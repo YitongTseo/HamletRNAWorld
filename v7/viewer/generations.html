@@ -5,7 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="/static/palette.js?v=3"></script>
     <title>wormlet · generations</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- Vendored (2026-08-15 security audit): the CDN URL was jsdelivr's
+         ON-THE-FLY minification of chart.umd.js (no such file exists in the
+         npm package), so SRI would break whenever their minifier changed.
+         viewer/vendor/chart.umd.js is the npm 4.4.1 artifact, sha256
+         dEAdc43T4D7l37O2hBIQ/ixOrYqWDEARykugt4qf2PM= (registry tarball ==
+         jsdelivr's published hash), already minified. Self-hosted also means
+         the generations page now works offline like the rest of the site. -->
+    <script src="/static/vendor/chart.umd.js"></script>
     <style>
       :root { --bg:#000; --fg:#ece2cd; --accent:#cfa348; --dim:#8f8266; --warm:#cfa348; --hot:#cd5d4a; }
       html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--fg); }
