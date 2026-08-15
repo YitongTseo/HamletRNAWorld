@@ -276,7 +276,7 @@ async function initCorpusEmbeddings() {
     simEmbedding = (hz.embedding || 'pca').toLowerCase();
   } catch (_e) { /* fall back to pca */ }
   try {
-    const umap = await (await fetch('/api/corpus_umap')).json();
+    const umap = await (await fetch(`/api/corpus_umap?flask=${encodeURIComponent(FLASK_NAME)}`)).json();
     // Word order in the UMAP cache matches the PCA cache (same dedup pipeline).
     pcaData.pca = umap.umap2;
     pcaData.projection = 'umap';

@@ -90,6 +90,16 @@ function _radarLayout() {
 export function drawRadar(state) {
   if (!radarVisible || !state || !state.corpusPca) return;
   const { corpusPca, computeWordImpact } = state;
+  // No emotion data for this corpus (e.g. 道德經 — the NRC lexicon is
+  // English-only, so every vector is empty/zero): hide the compass rather
+  // than draw a dead instrument.
+  const _hasEmotion = corpusPca.emotion_keys && corpusPca.emotions &&
+    Object.values(corpusPca.emotions).some(v => Array.isArray(v) && v.some(x => x > 0));
+  if (!_hasEmotion) {
+    const panel = radarctx.canvas.closest('.panel') || radarctx.canvas.parentElement;
+    if (panel) panel.style.display = 'none';
+    return;
+  }
   if (!corpusPca.emotion_keys || !corpusPca.emotions) {
     // Corpus PCA cache predates the emotion fields — rebuild needed.
     radarctx.clearRect(0, 0, radarcanvas.width, radarcanvas.height);

@@ -1293,20 +1293,36 @@ async def corpus_pca():
 
 
 @app.get("/api/corpus_umap")
-async def corpus_umap():
+async def corpus_umap(flask: str | None = None):
     """Serves the precomputed Hamlet UMAP artifact (built once by
     scripts/build_corpus_umap.py). Same shape as /api/corpus_pca but with
     `umap12`/`umap12_sparse`/`umap2` instead of the `pca*` keys. The focus
     page reads `umap2` for the hover scatter; the sim still uses the PCA
     artifact for chemosensation (will swap when generational evolution
     starts)."""
-    global _CORPUS_UMAP_FILE_CACHE
-    if _CORPUS_UMAP_FILE_CACHE is None:
-        path = V6_ROOT / "cache" / "corpus_umap.json"
+    return _corpus_smell_payload(flask)
+
+
+_CORPUS_SMELL_CACHE: dict[str, dict] = {}
+
+
+def _corpus_smell_payload(flask: str | None) -> JSONResponse:
+    """Per-corpus smell-space artifact: hamlet keeps its UMAP file; other
+    corpora serve their Claude-axis caches (same shape — words/umap12/
+    emotion_keys/emotions, plus "axes" naming the channels). Before this,
+    every flask's focus page got Hamlet's file — radar and hover scatter
+    were garbage for non-hamlet flasks."""
+    corpus = (corpus_for_flask_name(flask) if flask else None) or "hamlet"
+    hit = _CORPUS_SMELL_CACHE.get(corpus)
+    if hit is None:
+        name = ("corpus_umap.json" if corpus == "hamlet"
+                else f"corpus_smell12_{corpus}.json")
+        path = V6_ROOT / "cache" / name
         if not path.exists():
-            raise HTTPException(503, "corpus_umap.json missing — run scripts/build_corpus_umap.py")
-        _CORPUS_UMAP_FILE_CACHE = json.loads(path.read_text())
-    return JSONResponse(_CORPUS_UMAP_FILE_CACHE)
+            raise HTTPException(503, f"{name} missing")
+        hit = json.loads(path.read_text())
+        _CORPUS_SMELL_CACHE[corpus] = hit
+    return JSONResponse(hit)
 
 
 _NEURON_BODY_CACHE: dict | None = None
