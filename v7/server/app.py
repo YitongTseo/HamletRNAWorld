@@ -1845,5 +1845,17 @@ app.mount("/static", StaticFiles(directory=str(VIEWER_DIR)), name="viewer")
 # the same shared dir, so any process can serve any other's subtree. The dir is
 # created here so the mount succeeds even before the first generation publishes.
 from server.board_publish import BOARD_PUBLISH_DIR  # noqa: E402
-BOARD_PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/board", StaticFiles(directory=str(BOARD_PUBLISH_DIR)), name="board")
+try:
+    BOARD_PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError:
+    # Dev boxes can't create the prod default under /home/web; the mount
+    # guard below just skips /board. Prod and the jail set their own dir.
+    pass
+# Guard: the publish dir may not exist or be readable (dev boxes; the jail
+# blocks board egress anyway). Serving without /board beats failing import —
+# this was the last blocker to running the route tests outside prod.
+try:
+    if BOARD_PUBLISH_DIR.is_dir():
+        app.mount("/board", StaticFiles(directory=str(BOARD_PUBLISH_DIR)), name="board")
+except PermissionError:
+    pass
