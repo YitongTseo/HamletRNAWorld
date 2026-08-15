@@ -60,7 +60,8 @@ def test_beowulf_line_numbers_and_brackets_never_tokenize():
 def test_library_dispatch_and_titles():
     h = library.get_sentences_with_flags("hamlet", "opening")
     assert h == hamlet.get_sentences_with_flags("opening")  # byte-identical
-    assert set(library.TITLES) == {"hamlet", "laozi", "beowulf"}
+    assert set(library.TITLES) == {"hamlet", "laozi", "beowulf", "daodejing"}
+    assert set(library.DISPLAY_TITLES) == set(library.TITLES)
     try:
         library.get_sentences_with_flags("iliad")
         assert False, "expected ValueError"
@@ -71,3 +72,16 @@ def test_library_dispatch_and_titles():
         assert False, "expected ValueError for non-full passage"
     except ValueError:
         pass
+
+
+def test_daodejing_character_atoms():
+    from corpus import daodejing
+    lines, flags = daodejing.get_sentences_with_flags("full")
+    toks = [t for ln in lines for t in ln]
+    assert 5000 < len(toks) < 7000
+    assert 700 < len({t for t in toks if t.isalpha()}) < 900  # ~810 chars
+    assert all(len(t) == 1 for t in toks)      # character atoms
+    assert not any("a" <= t.lower() <= "z" for t in toks)  # no Latin leaks
+    assert "道" in toks and "。" in toks       # text + CJK punct both present
+    # 81 chapter-marker lines out of 323 are inedible set-dressing:
+    assert 0.7 < sum(flags) / len(flags) < 0.85

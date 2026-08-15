@@ -7,18 +7,31 @@ labels, so a flask's critic and its dish header always name the same text.
 """
 from __future__ import annotations
 
-from corpus import beowulf, hamlet, laozi
+from corpus import beowulf, daodejing, hamlet, laozi
 
 TITLES = {
     "hamlet": "Shakespeare's Hamlet",
     "laozi": "the Tao Teh King of Lao-Tse (Legge translation)",
     "beowulf": "the Anglo-Saxon epic Beowulf (Hall translation)",
+    "daodejing": "the Daodejing of Laozi, in the original Classical Chinese",
+}
+
+# Short viewer labels. Decoupled from TITLES because TITLES feed the judge
+# rubric, and editing a live flask's rubric mid-lineage is a critic change
+# (regime rule) — display can modernise romanisation freely, the rubric
+# cannot.
+DISPLAY_TITLES = {
+    "hamlet": "Hamlet",
+    "laozi": "Tao Te Ching (Legge)",
+    "beowulf": "Beowulf (Hall)",
+    "daodejing": "道德經",
 }
 
 _LOADERS = {
     "hamlet": hamlet.get_sentences_with_flags,
     "laozi": laozi.get_sentences_with_flags,
     "beowulf": beowulf.get_sentences_with_flags,
+    "daodejing": daodejing.get_sentences_with_flags,
 }
 
 

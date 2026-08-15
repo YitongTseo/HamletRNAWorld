@@ -365,8 +365,7 @@ def _corpus_title(flask_name: str) -> str | None:
     if not c:
         return None
     from corpus import library
-    # Short form: drop the translator parenthetical for the tray header.
-    return library.TITLES[c].split(" (")[0]
+    return library.DISPLAY_TITLES.get(c, c)
 
 
 def _overview_payload() -> dict:

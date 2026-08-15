@@ -192,7 +192,10 @@ class World:
             self.text_scroller = TextScroller(sentences, loop=loop,
                                               edible_flags=edible_flags)
         else:
-            interval = min(7.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
+            # Clamp ceiling 25 s: the daodejing is only 323 lines, so
+            # equal-duration pacing means a sparse dish (~18 chars per
+            # line every ~21 s — still ~60x the starvation line).
+            interval = min(25.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
             self.text_scroller = TextScroller(sentences, loop=loop,
                                               edible_flags=edible_flags,
                                               spawn_interval=interval)

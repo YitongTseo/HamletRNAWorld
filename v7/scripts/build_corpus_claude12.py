@@ -131,8 +131,8 @@ def rate_batch(words: list[str], corpus_title: str, key: str) -> list[list[float
 
 def main() -> None:
     corpus = sys.argv[1] if len(sys.argv) > 1 else ""
-    if corpus not in ("laozi", "beowulf"):
-        sys.exit("usage: build_corpus_claude12.py {laozi|beowulf} "
+    if corpus not in ("laozi", "beowulf", "daodejing"):
+        sys.exit("usage: build_corpus_claude12.py {laozi|beowulf|daodejing} "
                  "(hamlet keeps its original UMAP space)")
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:

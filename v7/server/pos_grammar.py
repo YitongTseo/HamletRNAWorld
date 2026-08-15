@@ -118,9 +118,17 @@ class PosGrammar:
         self._tri_ctx: Counter = Counter()
         for (p2, p1, _t), c in tri.items():
             self._tri_ctx[(p2, p1)] += c
+        # Tag inventory is the MODEL'S, not the global TAGS constant: for
+        # the daodejing character grammar the "tags" are the 810 characters
+        # themselves, and iterating only the 12 universal POS tags would
+        # score every character 0 (dead PC11). Union with TAGS keeps hamlet
+        # byte-identical (its uni keys are a subset of TAGS, and unobserved
+        # tags scored ~0 anyway) while unseen-tag lookups stay safe.
+        self._tags: list[str] = sorted(set(TAGS) | set(uni.keys()))
         # fit() is called once per in-range word per brain tick; the number of
-        # distinct (p2,p1) contexts is tiny (~170), so memoising the whole
-        # normalised distribution per context makes it a dict lookup.
+        # distinct (p2,p1) contexts is tiny (~170 for POS; a few thousand for
+        # the character grammar), so memoising the whole normalised
+        # distribution per context makes it a dict lookup.
         self._dist_cache: dict[tuple[str, str], dict[str, float]] = {}
 
     # ---- estimation ----
@@ -137,7 +145,7 @@ class PosGrammar:
         l2 = n_bi / (n_bi + SMOOTHING)
 
         probs: dict[str, float] = {}
-        for t in TAGS:
+        for t in self._tags:
             p1_uni = self._uni.get(t, 0) / self._uni_total
             p2_bi = (self._bi.get((p1, t), 0) / n_bi) if n_bi else 0.0
             p3_tri = (self._tri.get((p2, p1, t), 0) / n_tri) if n_tri else 0.0
@@ -245,7 +253,15 @@ def build_and_cache(corpus: str = "hamlet", path: Path | None = None) -> "PosGra
     if path is None:
         path = _cache_path(corpus)
     lines = _corpus_tokens(corpus)
-    lexicon = build_lexicon(lines)
+    if corpus == "daodejing":
+        # Classical Chinese: no POS tagger exists here, and none is needed —
+        # characters ARE the grammar atoms. Identity lexicon makes the
+        # trigram a character model: PC11 = "how expected is this character
+        # after the last two", trained on the text itself. 810 distinct
+        # chars; the same Counter/smoothing machinery carries it.
+        lexicon = {t: t for line in lines for t in line}
+    else:
+        lexicon = build_lexicon(lines)
     uni, bi, tri = build_counts(lines, lexicon)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
