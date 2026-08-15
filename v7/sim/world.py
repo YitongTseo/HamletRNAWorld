@@ -196,9 +196,10 @@ class World:
             # equal-duration pacing means a sparse dish (~18 chars per
             # line every ~21 s — still ~60x the starvation line).
             interval = min(25.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
-            self.text_scroller = TextScroller(sentences, loop=loop,
-                                              edible_flags=edible_flags,
-                                              spawn_interval=interval)
+            self.text_scroller = TextScroller(
+                sentences, loop=loop, edible_flags=edible_flags,
+                spawn_interval=interval,
+                layout=library.LAYOUTS.get(self.corpus, "horizontal"))
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))

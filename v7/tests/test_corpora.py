@@ -85,3 +85,26 @@ def test_daodejing_character_atoms():
     assert "道" in toks and "。" in toks       # text + CJK punct both present
     # 81 chapter-marker lines out of 323 are inedible set-dressing:
     assert 0.7 < sum(flags) / len(flags) < 0.85
+
+
+def test_daodejing_vertical_column_layout():
+    """The scroll delivers reading order: char 0 topmost per column, columns
+    right-to-left, siblings sharing one x. Latin corpora stay horizontal."""
+    from sim.world import World
+    w = World(seed=1, corpus="daodejing")
+    for _ in range(60 * 60):
+        w.tick()
+    cols = {}
+    for f in w.food:
+        cols.setdefault(round(f.x), []).append((f.word_idx, f.y))
+    assert len(cols) >= 2                      # multiple columns on field
+    for chars in cols.values():
+        chars.sort()
+        ys = [y for _, y in chars]
+        assert ys == sorted(ys)                # idx order == top-to-bottom
+    h = World(seed=1, corpus="laozi")
+    for _ in range(60 * 30):
+        h.tick()
+    ys = {round(f.y) for f in h.food}
+    xs = {round(f.x) for f in h.food}
+    assert len(xs) > len(ys)                   # horizontal: many x, few y

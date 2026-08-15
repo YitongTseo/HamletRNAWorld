@@ -27,6 +27,10 @@ DISPLAY_TITLES = {
     "daodejing": "道德經",
 }
 
+# Spatial layout per corpus: "vertical" = column layout (CJK reading
+# order delivered by the scroll); default horizontal.
+LAYOUTS = {"daodejing": "vertical"}
+
 _LOADERS = {
     "hamlet": hamlet.get_sentences_with_flags,
     "laozi": laozi.get_sentences_with_flags,
