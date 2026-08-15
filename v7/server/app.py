@@ -248,35 +248,81 @@ def _reset_worm_poem(worm) -> None:
     worm.recent_words = []
 
 
-def _restore_or_reset_worm(worm, generation: int) -> None:
-    """Startup recovery for one worm. If a checkpoint from THIS generation
-    exists, restore the scroll position and keep the existing poem (resume
-    mid-sentence). Otherwise the partial poem is discarded and the generation
-    restarts cleanly — the same behavior as before checkpoints existed, which
-    is the safe fallback for a missing/corrupt/stale-generation checkpoint."""
+def _usable_checkpoint(worm, generation: int) -> dict | None:
+    """This worm's checkpoint if it can resume from it, else None.
+
+    Reads and validates only — nothing is mutated, because the decision is
+    taken for the whole process at once (see _restore_or_reset_all)."""
     # Window-per-generation corpora (corpus.library.EPOCH_LINES) need the
     # generation before anything else: load_flasks built the world without
     # it (GenerationState loads later), and the checkpoint's sentence index
     # is relative to this generation's window.
     worm.world.set_corpus_epoch(generation)
     path = _checkpoint_path(worm)
-    if path.exists():
-        try:
-            data = json.loads(path.read_text())
-            if data.get("generation") == generation and "scroller" in data:
-                worm.world.text_scroller.restore(data["scroller"])
-                worm.world.restore_lifelike(data.get("lifelike"))
-                LOG.info("restored mid-gen checkpoint: %s (gen=%d, words=%d)",
-                         worm.poem_path.parent, generation, worm.word_count)
-                return
-            LOG.info("discarding stale checkpoint for %s (ckpt gen=%r, now gen=%d)",
-                     worm.poem_path.parent, data.get("generation"), generation)
-        except Exception:
-            LOG.exception("checkpoint restore failed for %s; starting gen fresh",
-                          worm.poem_path.parent)
-    # No usable checkpoint → fresh generation.
-    _reset_worm_poem(worm)
-    _delete_checkpoint(worm)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        LOG.exception("checkpoint unreadable for %s", worm.poem_path.parent)
+        return None
+    if data.get("generation") != generation or "scroller" not in data:
+        LOG.info("stale checkpoint for %s (ckpt gen=%r, now gen=%d)",
+                 worm.poem_path.parent, data.get("generation"), generation)
+        return None
+    if not worm.world.text_scroller.can_restore(data["scroller"]):
+        LOG.info("checkpoint for %s predates the current corpus window",
+                 worm.poem_path.parent)
+        return None
+    return data
+
+
+def _restore_or_reset_all(flasks) -> None:
+    """Startup recovery for EVERY worm in this process, all or nothing.
+
+    Per worm the rule is the old one: a checkpoint from THIS generation
+    resumes the scroll position and keeps the poem; anything else discards
+    the partial poem and restarts the generation cleanly.
+
+    The all-or-nothing part is what stops flasks desyncing. Rollover is a
+    JOINT barrier across the flasks in a process, so they only roll over when
+    the last one exhausts its corpus. A flask that restarts its pass while
+    its siblings resume theirs at 95% leaves those siblings sitting on an
+    empty dish for the remaining hour-and-a-half — and with hunger on, an
+    empty dish is death in ~13 minutes (SATIETY_DECAY_PER_TICK).
+
+    That is not hypothetical: on 2026-08-16 the beowulf flask correctly
+    rejected a checkpoint written against the pre-window corpus, restarted
+    its pass alone, and killed four worms in the hamlet and daodejing flasks
+    before the barrier came round. Restarting all three costs the partial
+    poems of one generation; desyncing costs the worms."""
+    pairs = [(w, f.state.generation if f.state else 0)
+             for f in flasks for w in f.worms]
+    usable = {id(w): _usable_checkpoint(w, gen) for w, gen in pairs}
+    if all(usable.values()) and pairs:
+        for w, gen in pairs:
+            try:
+                w.world.text_scroller.restore(usable[id(w)]["scroller"])
+                w.world.restore_lifelike(usable[id(w)].get("lifelike"))
+            except Exception:
+                # A restore that throws AFTER others succeeded would leave the
+                # process half-resumed — the desync this function exists to
+                # prevent. Drop everyone back to a fresh generation instead.
+                LOG.exception("checkpoint restore failed for %s; restarting the "
+                              "generation for every flask", w.poem_path.parent)
+                break
+        else:
+            LOG.info("restored mid-gen checkpoints for all %d worms", len(pairs))
+            return
+    else:
+        n_missing = sum(1 for v in usable.values() if v is None)
+        LOG.info("%d/%d worms have no usable checkpoint; restarting the "
+                 "generation for every flask (joint rollover barrier)",
+                 n_missing, len(pairs))
+    for w, _ in pairs:
+        w.world.restart_pass()      # dish back to line 0, like the poem
+        _reset_worm_poem(w)
+        _delete_checkpoint(w)
 
 
 def _focus_key(flask: str, worm: str) -> str:
@@ -1051,8 +1097,6 @@ async def lifespan(app: FastAPI):
             emb_model = flask_emb.build_model(
                 emb_state, corpus=corpus_for_flask_name(flask_name) or "hamlet")
             attach_flask_model(worms, emb_model)
-            for w in worms:
-                _restore_or_reset_worm(w, state.generation)
             FLASKS.append(WormGroup(
                 name=flask_name,
                 display=flask_display,
@@ -1065,6 +1109,9 @@ async def lifespan(app: FastAPI):
             WORMS.extend(worms)
             for w in worms:
                 WORM_BY_KEY[(flask_name, w.name)] = w
+        # After every flask exists: the resume decision is process-wide, not
+        # per flask (joint rollover barrier — see _restore_or_reset_all).
+        _restore_or_reset_all(FLASKS)
         if EXPERIMENT is not None:
             LOG.info("experiment mode %r: loaded %d flask(s) × %d worms",
                      EXPERIMENT.mode, len(FLASKS),

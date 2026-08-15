@@ -179,20 +179,30 @@ class TextScroller:
             ],
         }
 
+    def can_restore(self, state: dict) -> bool:
+        """Whether snapshot `state` belongs to the line list this scroller was
+        built from.
+
+        A one-pass snapshot from a DIFFERENT corpus window is not restorable:
+        its sentence index is relative to the line list that produced it. This
+        bites exactly once per corpus that gains a window (beowulf, 4286 lines
+        → 1500 per generation), where an old checkpoint at line 3000 would
+        otherwise land past the end of the new window and report the corpus
+        exhausted the moment it loaded.
+
+        Separate from restore() so the caller can decide BEFORE it mutates
+        anything: the server checks every worm in the process first, because
+        one flask resuming while its siblings restart is the desync that
+        starves the siblings (server/app.py _restore_or_reset_all)."""
+        return self.loop or int(state["sent_idx"]) <= len(self.sentences)
+
     def restore(self, state: dict) -> None:
         """Overwrite scroll state from a snapshot() dict. Safe to call right
-        after construction; replaces all mutable progress fields in place."""
+        after construction; replaces all mutable progress fields in place.
+        Raises ValueError, leaving the scroller untouched, for a snapshot this
+        scroller can't restore (see can_restore)."""
         sent_idx = int(state["sent_idx"])
-        # A one-pass snapshot from a DIFFERENT corpus window is not restorable:
-        # its sentence index is relative to the line list that produced it. This
-        # bites exactly once per corpus that gains a window (beowulf, 4286 lines
-        # → 1500 per generation), where an old checkpoint at line 3000 would
-        # otherwise land past the end of the new window and report the corpus
-        # exhausted the moment it loaded — parking the flask on an empty dish,
-        # with hunger on, until its sibling finished. Validate before mutating
-        # anything so the caller's fallback (start the generation fresh) gets an
-        # untouched scroller.
-        if not self.loop and sent_idx > len(self.sentences):
+        if not self.can_restore(state):
             raise ValueError(
                 f"checkpoint sent_idx={sent_idx} exceeds the {len(self.sentences)}-line "
                 f"corpus window; snapshot predates the current window")

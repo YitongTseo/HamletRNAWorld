@@ -239,6 +239,17 @@ class World:
                 spawn_interval=interval,
                 layout=library.LAYOUTS.get(self.corpus, "horizontal"))
 
+    def restart_pass(self) -> None:
+        """Rewind this world's corpus pass to line 0, discarding all scroll
+        state and every word on the dish.
+
+        Used when the server restarts a generation instead of resuming it, so
+        that "no usable checkpoint" means the same thing for the dish as it
+        already meant for the poem. Without it the reset was only true by
+        accident — it relied on the caller happening to hold a freshly built
+        world (server/app.py _restore_or_reset_all)."""
+        self._build_text_scroller()
+
     def set_corpus_epoch(self, epoch: int) -> None:
         """Point this world at generation `epoch`'s window of the corpus.
 
@@ -463,7 +474,16 @@ class World:
             self.stim_food_sense = False
 
         # Hunger: metabolism runs every body tick; hitting zero is death.
-        if self._hunger_on and not self.dead:
+        # EXCEPT once this flask's corpus pass is spent. Rollover is a joint
+        # barrier across the flasks in a process, so a flask that finishes
+        # first waits on an empty dish — no line will ever spawn again this
+        # generation — until the slowest sibling finishes. Starving there
+        # selects for nothing: the poem is already written, the judge never
+        # sees the wait, and the worm cannot eat however well it evolved.
+        # Measured 2026-08-16, when a restart desynced the flasks: 13 minutes
+        # of empty dish, four worms dead, and the fastest flask had another
+        # 90 minutes to run. Waiting worms idle; they do not starve.
+        if self._hunger_on and not self.dead and not self.text_scroller.corpus_exhausted:
             self.satiety -= lifelike.SATIETY_DECAY_PER_TICK
             if self.satiety <= 0.0:
                 self.satiety = 0.0
