@@ -49,9 +49,13 @@
     <main>
 
     <div class="lead">
-      Six independent <em>C. elegans</em> brains, each one a faithful port of
-      the worm's actual 302-neuron connectome, each in its own private world,
-      each eating Shakespeare. What they eat becomes what they write.
+      Forty independent <em>C. elegans</em> brains, each one a faithful port
+      of the worm's actual 302-neuron connectome, each in its own private
+      world, each eating a great text — <em>Hamlet</em>, the <em>Tao Te
+      Ching</em> in Legge's English and in the original 道德經, and
+      <em>Beowulf</em>. What they eat becomes what they write. What they
+      write is judged, and the best writers' brains seed the next
+      generation.
     </div>
 
     <h2>What you are looking at</h2>
@@ -59,9 +63,11 @@
       Every worm is a separate simulation of <a href="https://en.wikipedia.org/wiki/Caenorhabditis_elegans" target="_blank" rel="noopener"><em>C. elegans</em></a>,
       one of the few animals whose entire nervous system has been mapped, neuron by neuron, synapse by synapse.
       We use that real connectome — every cell, every connection — and we drop
-      each worm into its own private copy of <em>Hamlet</em>. Words drift across
+      each worm into its own private copy of a text. Words drift across
       the worm's world; the worm smells them, steers toward them, eats them.
-      The sequence of words a worm eats is its <em>poem</em>.
+      The sequence of words a worm eats is its <em>poem</em>. The worms live
+      in four flasks of ten, one flask per text; each flask is a separate
+      evolving lineage with its own judge.
     </p>
     <p>
       Each worm runs continuously, independently. Nobody has to watch — they
@@ -79,43 +85,87 @@
       bilateral asymmetry is the basis of all its navigation.
     </p>
     <p>
-      To translate Hamlet's vocabulary into something a worm's neurons can
-      taste, we:
+      Every word emits a 12-channel chemical signature into those neuron
+      pairs, but the signature is made differently per text:
     </p>
-    <ol>
-      <li>Pull every unique word in the play (~4,500 tokens).</li>
-      <li>Embed each one with <code>nomic-ai/nomic-embed-text-v1.5</code>
-        using its trained <code>clustering:</code> prefix.</li>
-      <li>Run PCA on the resulting (4,500 × 768) matrix, keeping <strong>12
-        principal components</strong> — one per amphid neuron pair.</li>
-      <li>Min-max shift each component to <code>[0, 1]</code> so it can drive
-        excitatory firing.</li>
-    </ol>
+    <ul>
+      <li><strong>Hamlet</strong> — every unique word in the play (~4,500)
+        is embedded with <code>nomic-embed-text</code> and reduced to 11
+        dimensions with UMAP: an unsupervised geometry of Shakespeare's
+        vocabulary, one dimension per neuron pair.</li>
+      <li><strong>The Tao Te Ching and Beowulf</strong> — each word is
+        rated 0–1 on <strong>11 named semantic axes</strong> (dread, warmth,
+        nature, body, motion, power, the sacred, speech, time, conflict,
+        stillness) by a large language model reading the word in its sense
+        <em>in that text</em>. So <em>sea</em> carries a trace of dread in
+        Beowulf and none in the Tao; 道 smells of the sacred, not of roads.
+        Named axes mean you can read the desire heatmap: a worm following
+        channel 10 is literally following the smell of quietness.</li>
+      <li><strong>The 12th channel is grammar.</strong> For the English
+        texts it scores how well a candidate word's part of speech continues
+        the part-of-speech sequence of the last words eaten (a trigram
+        trained on the text itself). For 道德經 it is a <em>character</em>
+        trigram: how expected is this character after the two just eaten —
+        the text's own phrase structure as a smell. Punctuation smells of
+        grammar and nothing else, so a worm can learn to end a sentence.</li>
+    </ul>
     <p>
-      A word's PC<sub>i</sub> value becomes the firing strength of the worm's
-      i-th amphid pair. The <em>direction</em> the word is in (left of the
-      worm, right of it, dead ahead) scales the L vs R member of each pair
+      The <em>direction</em> a word is in (left of the worm, right of it,
+      dead ahead) scales the L vs R member of each neuron pair
       asymmetrically. Same word, different position, different steering
       signal.
     </p>
 
-    <h2>Memory: an unbounded decaying afterglow</h2>
+    <h2>Hunger, and death</h2>
     <p>
-      Once a worm eats a word, that word's chemosensory pattern doesn't just
-      vanish — it persists, decaying, the way a smell lingers in a real
-      animal's olfactory system. Every eaten word stays in a queue and
-      contributes to the worm's chemosensory neurons with weight
-      <code>exp(−Δt / τ)</code>, where Δt is brain-ticks-since-eating and
-      τ = 12 brain ticks (~6 seconds). Entries below 1% contribution evict
-      themselves. The afterglow contributes equally to L and R (no spatial
-      direction once you've already swallowed something).
+      A worm is born peckish and gets hungrier every second. Eating a word
+      feeds it; going without empties it in about ten sim-minutes. Hunger is
+      not decoration: a hungry worm smells harder and moves faster (the
+      roaming state real starved <em>C. elegans</em> enter), a fed worm
+      settles, and a worm that fails to eat <em>starves to death</em> — its
+      brain, body and mouth stop, and the corpse lies in the dish until the
+      generation ends. Every death writes a post-mortem: when, where, how
+      long since the last meal, and what the worm had learned. Eating is
+      survival, enforced by the environment rather than the judge.
     </p>
+
+    <h2>Learning within a lifetime</h2>
     <p>
-      That's deliberately within the range of biological short-term
-      chemosensory memory for <em>C. elegans</em> (seconds to ~30 seconds,
-      not minutes or hours). The result: a worm's current behavior is
-      shaped not just by what it's smelling now, but by what it has eaten
-      recently. Trail-of-thought, in chemistry.
+      Two mechanisms let a single worm change during its own life, both
+      modelled on measured <em>C. elegans</em> biology, and neither is
+      inherited — a newborn starts from its genome, like real life.
+    </p>
+    <ul>
+      <li><strong>Plasticity.</strong> Synapses whose two neurons fire
+        together are briefly marked; when the worm finds food, the marked
+        synapses strengthen (a dopamine-flavoured three-factor rule). The
+        circuit that led to a meal becomes a habit; unused learning decays
+        back toward the genome.</li>
+      <li><strong>Boredom.</strong> Each nose neuron keeps a running average
+        of what it has been smelling and responds only to the
+        <em>difference</em> — habituation, the best-documented form of worm
+        learning. A smell that just sits there fades to nothing in about ten
+        seconds, so a worm parked on a stale patch loses interest and
+        wanders toward fresher words. Eating snaps the nose awake again.</li>
+    </ul>
+    <p>
+      The knobs of both mechanisms — how fast to learn, how fast to forget,
+      how hard hunger drives the senses, how quickly boredom sets in — are
+      <em>genes</em>: evolution tunes not just what a lineage knows but how
+      it learns.
+    </p>
+
+    <h2>Evolution, and the judge</h2>
+    <p>
+      A generation lasts one pass of the flask's text (~2 hours). At
+      rollover, each worm's poem is scored by a language-model judge reading
+      sampled 15-word windows for emotional impact and coherence — the
+      rubric names the flask's own text, so a Beowulf worm is judged as a
+      Beowulf poet, and 道德經 poems are judged in Classical Chinese.
+      Fitness is <em>quality per window</em>, not volume: eating more buys
+      nothing (hunger already compels eating); only writing better pays.
+      The best genomes seed the next generation under a natural evolution
+      strategy, and the cycle repeats, unwatched, indefinitely.
     </p>
 
     <h2>The connectome itself</h2>
@@ -154,18 +204,18 @@
 
     <h2>Why parallel worms?</h2>
     <p>
-      A single worm running alone produces a single poem. Six worms produce
-      six divergent readings of the same play — same connectome graph, same
-      Hamlet, but different random initial states. The variation between
-      poems is the variation in how identical brains, fed identical text,
-      attend differently. (Think of it as a very small population of
-      readers.)
+      Within a flask, ten worms produce ten divergent readings of the same
+      text — same connectome graph, same words drifting past, different
+      genomes. Across flasks, the same machinery reads four different
+      books; the Tao Te Ching even runs twice, once in Legge's English and
+      once in the original characters — a controlled experiment in whether
+      evolution writes different poets in different languages.
     </p>
 
     <h2>Hosting</h2>
     <p>
       The server is a single <code>uvicorn</code> + FastAPI process running
-      six worms on one shared loop at 60 Hz. Each WebSocket subscriber gets
+      forty worms on one shared loop at 60 Hz. Each WebSocket subscriber gets
       one of three feeds: a 10 Hz <em>overview</em> stream (for the gallery
       grid), a 60 Hz <em>focus</em> stream (only when you've zoomed into a
       worm), and an <em>event</em> stream that fires once per eaten word
@@ -183,8 +233,12 @@
     <ul>
       <li>Not a research tool. It's an art piece that happens to use real
         neuroscience as its substrate.</li>
-      <li>Not learning. The connectome weights don't change. Worms drift
-        only via their different initial neural-firing states.</li>
+      <li>Not <em>proven</em> learning. The machinery for learning now
+        exists at both timescales — within a life and across generations —
+        but whether any lineage has demonstrably learned to <em>write
+        better</em> is the open question the project exists to ask. Several
+        promising curves in its history turned out to be measurement
+        artefacts; we say so when it happens.</li>
       <li>Not a chatbot, an LLM, or a generative model in the usual sense.
         The "writing" is the worm's wandering trajectory through a field of
         Shakespeare, intersected with whatever its brain happens to do.</li>
@@ -199,7 +253,11 @@
 
     <div class="credit">
       Created by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong Tseo</a>.
-      Hamlet text via <a href="https://www.gutenberg.org/cache/epub/1524/pg1524.txt" target="_blank" rel="noopener">Project Gutenberg</a> (public domain).
+      Texts via Project Gutenberg (public domain):
+      <a href="https://www.gutenberg.org/ebooks/1524" target="_blank" rel="noopener">Hamlet</a>,
+      <a href="https://www.gutenberg.org/ebooks/216" target="_blank" rel="noopener">Tao Teh King</a> (Legge),
+      <a href="https://www.gutenberg.org/ebooks/16328" target="_blank" rel="noopener">Beowulf</a> (Hall),
+      <a href="https://www.gutenberg.org/ebooks/7337" target="_blank" rel="noopener">道德經</a>.
       Embedding model: <a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener">nomic-ai/nomic-embed-text-v1.5</a>.
       Connectome data via the GoPiGo / Busbice / Garrett / Churchill <em>C. elegans</em> port.
     </div>

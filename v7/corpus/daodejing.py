@@ -52,7 +52,13 @@ def _load() -> tuple[list[list[str]], list[bool]]:
         if not toks:
             continue  # pure-Latin apparatus lines vanish entirely
         lines.append(toks)
-        flags.append(not _HEADING_RE.match(rawln.strip()))
+        # Inedible: regex-matched heading lines, plus short lines made only
+        # of title/chapter apparatus (老子道德經, 第 N 章 markers inline in
+        # this edition — observed leaking into gen-0 poems as eaten 第/章).
+        _MARKER = set("第章老子道德經一二三四五六七八九十百")
+        apparatus = (len(toks) <= 8 and
+                     all(t in _MARKER or not t.isalpha() for t in toks))
+        flags.append(not _HEADING_RE.match(rawln.strip()) and not apparatus)
     _CACHE = (lines, flags)
     return _CACHE
 
