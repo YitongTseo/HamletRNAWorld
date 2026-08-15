@@ -200,19 +200,20 @@ class EmbeddingModel:
     cached and the cache is cleared whenever params change."""
 
     def __init__(self, params: EmbeddingParams, nomic: dict[str, np.ndarray] | None = None,
-                 mode: str | None = None):
+                 mode: str | None = None, corpus: str = "hamlet"):
         self.mode = mode or encoder_mode()
+        self.corpus = corpus
         self.params = params
         # In UMAP mode the frozen 11-dim coordinates ARE the encoder, so the
         # 512-dim nomic table is never consulted and isn't loaded (it's a 39 MB
         # blob). `_nomic` stays populated only on the learned path.
         if self.mode == ENCODER_UMAP:
             self._nomic = {}
-            self._umap = _load_umap()
+            self._umap = _load_umap(corpus)
         else:
             self._nomic = nomic if nomic is not None else _load_nomic()
             self._umap = {}
-        self._grammar = pos_grammar.get_grammar()
+        self._grammar = pos_grammar.get_grammar(corpus)
         self._enc_cache: dict[str, np.ndarray] = {}
         # Precompute tables (shared across every worm in a flask; rebuilt when
         # params change). Populated lazily by prime().
@@ -408,10 +409,19 @@ class EmbeddingModel:
 
 # --- frozen UMAP table ------------------------------------------------------
 
-_UMAP_CACHE: dict[str, np.ndarray] | None = None
+_UMAP_CACHES: dict[str, dict[str, np.ndarray]] = {}
 
 
-def _load_umap() -> dict[str, np.ndarray]:
+def _umap_path(corpus: str):
+    """hamlet keeps the historical UMAP artifact; other corpora use the
+    Claude-axis caches (scripts/build_corpus_claude12.py, 2026-08-15) —
+    same file shape, key still "umap12", 12th column filler."""
+    if corpus == "hamlet":
+        return _UMAP_PATH
+    return _UMAP_PATH.parent / f"corpus_smell12_{corpus}.json"
+
+
+def _load_umap(corpus: str = "hamlet") -> dict[str, np.ndarray]:
     """{lowercased_word: np.array(11)} from cache/corpus_umap.json.
 
     The artifact holds 12 UMAP dimensions; we take the FIRST 11 as PC0..PC10
@@ -422,20 +432,20 @@ def _load_umap() -> dict[str, np.ndarray]:
 
     Missing file -> empty map (chemosensation goes silent; smoke tests run
     without it), matching _load_nomic's behaviour."""
-    global _UMAP_CACHE
-    if _UMAP_CACHE is not None:
-        return _UMAP_CACHE
-    if not _UMAP_PATH.exists():
-        _UMAP_CACHE = {}
-        return _UMAP_CACHE
-    data = json.loads(_UMAP_PATH.read_text())
-    words = data["words"]
-    coords = data["umap12"]
-    _UMAP_CACHE = {
+    cached = _UMAP_CACHES.get(corpus)
+    if cached is not None:
+        return cached
+    path = _umap_path(corpus)
+    if not path.exists():
+        _UMAP_CACHES[corpus] = {}
+        return _UMAP_CACHES[corpus]
+    data = json.loads(path.read_text())
+    table = {
         _norm(w): np.asarray(c[:D_EMB], dtype=np.float64)
-        for w, c in zip(words, coords)
+        for w, c in zip(data["words"], data["umap12"])
     }
-    return _UMAP_CACHE
+    _UMAP_CACHES[corpus] = table
+    return table
 
 
 # --- frozen nomic table -----------------------------------------------------

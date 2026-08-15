@@ -28,7 +28,8 @@ class WordState:
 
 class TextScroller:
     def __init__(self, sentences: list[list[str]], loop: bool = True,
-                 edible_flags: list[bool] | None = None):
+                 edible_flags: list[bool] | None = None,
+                 spawn_interval: float = SPAWN_INTERVAL):
         """If loop=False, stop spawning new lines after one full pass; the
         `corpus_exhausted` property goes True once the last line has scrolled
         off the screen. Generation mode passes loop=False.
@@ -40,6 +41,7 @@ class TextScroller:
         self.sentences = sentences
         self.edible_flags = edible_flags or []
         self.loop = loop
+        self.spawn_interval = spawn_interval
         self._sent_idx = 0
         self._line_id = 0
         self._active: list[list[WordState]] = []
@@ -75,7 +77,7 @@ class TextScroller:
         if self._elapsed >= self._next_spawn:
             if self.loop or self._sent_idx < len(self.sentences):
                 self._spawn()
-            self._next_spawn = self._elapsed + SPAWN_INTERVAL
+            self._next_spawn = self._elapsed + self.spawn_interval
 
     def _spawn(self) -> None:
         """Create a new line of words from the next sentence."""

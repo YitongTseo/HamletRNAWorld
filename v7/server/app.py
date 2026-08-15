@@ -48,7 +48,8 @@ from corpus.hamlet import get_sentences
 from sim.world import World, BODY_TICK_HZ
 
 from server.orchestrator import (
-    load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm, Worm,
+    load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm,
+    corpus_for_flask_name, Worm,
 )
 from server.worm_group import WormGroup
 from server import flask_embedder as flask_emb
@@ -192,7 +193,7 @@ def _log_death(flask_name: str, worm) -> None:
     position) in death_record; everything else a diagnosis needs — poem size,
     last meals, the evolved learning-rule genes, and how much of the
     plasticity budget was saturated — is frozen on the corpse and read here.
-    Motivating case: popat and dowager cixi died with nothing on disk but
+    Motivating case: two worms starved with nothing on disk but
     dead=true, and the process log is root-only. Best-effort like checkpoints:
     never breaks the sim loop. The 'logged' flag rides the death_record into
     the checkpoint so a restart doesn't duplicate the entry (worst case: one
@@ -355,6 +356,16 @@ def _worm_overview_dict(w: Worm, flask_name: str) -> dict:
     }
 
 
+def _corpus_title(flask_name: str) -> str | None:
+    """Short display title for a non-hamlet flask corpus, else None."""
+    c = corpus_for_flask_name(flask_name)
+    if not c or c == "hamlet":
+        return None
+    from corpus import library
+    # Short form: drop the translator parenthetical for the tray header.
+    return library.TITLES[c].split(" (")[0]
+
+
 def _overview_payload() -> dict:
     """When generations are enabled, broadcast the per-flask structure so
     the frontend can render 4 sections side by side. In legacy mode, wrap
@@ -369,6 +380,11 @@ def _overview_payload() -> dict:
                 {
                     "name": f.name,
                     "display": f.display,
+                    # Corpus label for the flask header ("Flask 2 · Tao Teh
+                    # King..."); absent key = hamlet, so pre-multi-corpus
+                    # clients and payloads are unchanged.
+                    **({"corpus": _corpus_title(f.name)}
+                       if _corpus_title(f.name) else {}),
                     "generation": f.state.generation if f.state else 0,
                     "worms": [_worm_overview_dict(w, f.name) for w in f.worms],
                 }
@@ -510,7 +526,8 @@ def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
             w.poem_file.close()
         except Exception:
             pass
-        w.world = World(seed=w.seed, weights=wt, embedding_model=flask.embedding_model)
+        w.world = World(seed=w.seed, weights=wt, embedding_model=flask.embedding_model,
+                        corpus=corpus_for_flask_name(flask.name))
         w.poem_path.write_text("")  # truncate previous-generation poem
         w.poem_file = open(w.poem_path, "a", buffering=1)
         w.word_count = 0
@@ -1020,7 +1037,8 @@ async def lifespan(app: FastAPI):
             emb_seed = EMBEDDING_SEED + fi
             emb_state = flask_emb.FlaskEmbedderState.load_or_init(
                 _embedder_path(flask_name), flask_name, seed=emb_seed)
-            emb_model = flask_emb.build_model(emb_state)
+            emb_model = flask_emb.build_model(
+                emb_state, corpus=corpus_for_flask_name(flask_name) or "hamlet")
             attach_flask_model(worms, emb_model)
             for w in worms:
                 _restore_or_reset_worm(w, state.generation)

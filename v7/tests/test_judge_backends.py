@@ -64,7 +64,8 @@ def test_openai_payload_shape():
         assert p["max_tokens"] == judge.MAX_OUTPUT_TOKENS
         assert p["stream"] is False
         assert p["messages"][0]["role"] == "system"
-        assert p["messages"][0]["content"] == judge.JUDGE_SYSTEM_PROMPT
+        assert p["messages"][0]["content"] == judge.judge_system_prompt("hamlet")
+        assert "Hamlet" in p["messages"][0]["content"]
         assert p["messages"][1] == {"role": "user", "content": "0: to be or not"}
     finally:
         _restore_env(old)
@@ -267,7 +268,7 @@ def test_fallback_to_anthropic_when_openai_dies():
     real_anth = judge._complete_anthropic
     judge._http_post_json = dead
     judge.time.sleep = lambda s: None
-    judge._complete_anthropic = lambda prompt, worm: "0,60,40"
+    judge._complete_anthropic = lambda prompt, worm, corpus="hamlet": "0,60,40"
     try:
         out = judge.judge_poem(["word"] * judge.WINDOW_SIZE, "wormy", seed=1)
         assert out and out[0].emotional == 60 and out[0].coherence == 40

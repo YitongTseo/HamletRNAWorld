@@ -356,7 +356,11 @@ def run_generation_rollover(
             # otherwise one worm might get its good windows sampled and another
             # not, making the cross-worm fitness comparison (i.e. selection)
             # unfair. Seed varies per generation for audit-trail variety.
-            scored = judge_poem(clean, worm_name=w.name, seed=state.generation)
+            scored = judge_poem(clean, worm_name=w.name, seed=state.generation,
+                                # getattr chain: rollover test doubles are poem-only worms
+                                # with no World; default hamlet.
+                                corpus=getattr(getattr(w, "world", None),
+                                               "corpus", None) or "hamlet")
         except Exception as e:
             print(f"[GENERATIONS] judge failed for {w.name}: {e}", flush=True)
             scored = []

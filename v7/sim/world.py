@@ -86,6 +86,10 @@ class World:
     # per generation and reused across the whole flask. None → the process-wide
     # default model (used by tests / legacy / single-worm paths).
     embedding_model: "embedding.EmbeddingModel | None" = None
+    # Which text this world scrolls (WORMLET_FLASK_TEXTS, per flask). None →
+    # legacy env-passage hamlet, so every pre-multi-corpus caller is
+    # unchanged. Non-hamlet corpora always scroll their full text.
+    corpus: str | None = None
     body_kind: str = "ik"
     brain: Connectome = field(init=False)
     worm: WormBody | MuscleBody = field(init=False)
@@ -160,10 +164,31 @@ class World:
         # When generational evolution is enabled, scroll the full play once
         # per generation; otherwise loop the opening passage forever (legacy
         # v6 behavior).
-        passage = os.environ.get("WORMLET_PASSAGE", "opening")
         loop = os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") != "1"
-        sentences, edible_flags = get_sentences_with_flags(passage)
-        self.text_scroller = TextScroller(sentences, loop=loop, edible_flags=edible_flags)
+        if self.corpus is None or self.corpus == "hamlet":
+            # Legacy/default path, byte-identical to stock v7: hamlet with
+            # the env-selected passage.
+            passage = os.environ.get("WORMLET_PASSAGE", "opening")
+            sentences, edible_flags = get_sentences_with_flags(passage)
+        else:
+            from corpus import library
+            sentences, edible_flags = library.get_sentences_with_flags(
+                self.corpus, "full")
+        # Pace non-hamlet corpora so every flask's generation lasts about as
+        # long as hamlet act1 (~1500 lines at 4.5 s): the rollover is a JOINT
+        # barrier across flasks, and with hunger on a short-corpus flask
+        # would starve on an empty dish for hours waiting for a long one
+        # (beowulf full = 4286 lines). Denser/sparser dishes change feeding
+        # economics — recorded in the fidelity ledger. Hamlet keeps 4.5 s,
+        # byte-identical to stock.
+        if self.corpus is None or self.corpus == "hamlet":
+            self.text_scroller = TextScroller(sentences, loop=loop,
+                                              edible_flags=edible_flags)
+        else:
+            interval = min(7.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
+            self.text_scroller = TextScroller(sentences, loop=loop,
+                                              edible_flags=edible_flags,
+                                              spawn_interval=interval)
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))

@@ -55,7 +55,7 @@ def _make_worms(root: Path) -> list[FakeWorm]:
     return worms
 
 
-def _fake_judge(tokens, worm_name, seed=None):
+def _fake_judge(tokens, worm_name, seed=None, corpus="hamlet"):
     """W0 is clearly the best, W1 second, rest mediocre — a stable ranking."""
     score = {"W0": 90, "W1": 75}.get(worm_name, 25)
     return [ScoredWindow(0, tokens[:3], score, score)]

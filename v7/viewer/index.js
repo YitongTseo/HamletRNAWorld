@@ -45,21 +45,26 @@ const flaskSections = new Map();  // flask_name -> { section, sectionGrid, heade
   document.head.appendChild(s);
 })();
 
-function ensureFlaskSection(flaskName, display, generation) {
+function ensureFlaskSection(flaskName, display, generation, corpus) {
   let entry = flaskSections.get(flaskName);
   if (!entry) {
     const section = document.createElement('div');
     section.className = 'flask-section';
-    section.innerHTML = `<h2><span class="who">${display}</span><span class="gen"></span></h2><div class="flask-grid"></div>`;
+    section.dataset.flask = flaskName;
+    section.innerHTML = `<h2><span class="who"></span><span class="gen"></span></h2><div class="flask-grid"></div>`;
     grid.appendChild(section);
     entry = {
       section,
       sectionGrid: section.querySelector('.flask-grid'),
       headerGen: section.querySelector('.gen'),
+      headerWho: section.querySelector('.who'),
     };
     flaskSections.set(flaskName, entry);
   }
   entry.headerGen.textContent = (generation !== undefined && generation > 0) ? `generation ${generation}` : '';
+  // textContent (never innerHTML): display/corpus are server config, but
+  // the safe-sink policy is site-wide.
+  if (entry.headerWho) entry.headerWho.textContent = corpus ? `${display} \u00b7 ${corpus}` : display;
   return entry;
 }
 
@@ -235,7 +240,7 @@ function connect() {
     if (msg.type !== 'overview') return;
     const flasks = msg.flasks || [{ name: 'default', display: 'Worms', generation: 0, worms: msg.worms || [] }];
     for (const flask of flasks) {
-      ensureFlaskSection(flask.name, flask.display || flask.name, flask.generation || 0);
+      ensureFlaskSection(flask.name, flask.display || flask.name, flask.generation || 0, flask.corpus);
       for (const worm of flask.worms) {
         const entry = ensureCard(flask.name, worm.name);
         if (!entry) continue;
@@ -246,6 +251,38 @@ function connect() {
   };
 }
 connect();
+
+// --- Flask cycling ----------------------------------------------------------
+// With 3+ flasks x 10 dishes the tray outgrows one screen. '[' / ']' cycle
+// focus through single-flask views; 'a' returns to the all-flasks tray.
+// Pure presentation: sections are hidden, never disconnected.
+(function setupFlaskCycling() {
+  let focus = null; // null = show all
+  function apply() {
+    const sections = document.querySelectorAll('.flask-section');
+    sections.forEach((sec) => {
+      sec.style.display = (focus === null || sec.dataset.flask === focus)
+        ? '' : 'none';
+    });
+  }
+  function cycle(dir) {
+    const names = [...document.querySelectorAll('.flask-section')]
+      .map((s) => s.dataset.flask);
+    if (!names.length) return;
+    const i = focus === null ? (dir > 0 ? -1 : 0) : names.indexOf(focus);
+    const next = i + dir;
+    focus = (next < 0 || next >= names.length) ? null : names[next];
+    apply();
+  }
+  document.addEventListener('keydown', (ev) => {
+    if (ev.target && /INPUT|TEXTAREA/.test(ev.target.tagName)) return;
+    if (ev.key === ']') cycle(1);
+    else if (ev.key === '[') cycle(-1);
+    else if (ev.key === 'a') { focus = null; apply(); }
+  });
+  // Re-apply after new sections appear (first overview frame).
+  new MutationObserver(apply).observe(document.body, {childList: true, subtree: true});
+})();
 
 // --- Generation rollover overlay --------------------------------------------
 // Polls /api/generation_status every 500ms; restyled to the observation-log

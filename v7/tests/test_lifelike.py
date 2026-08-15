@@ -208,7 +208,7 @@ def test_satiety_decays_and_death_freezes_worm():
 def test_death_record_captures_facts_at_death_and_freezes():
     """tick_count keeps advancing for a corpse, so the death tick / meal gap
     are only knowable at the moment of death — the record must capture them
-    then and never change after (popat and dowager cixi died with nothing on
+    then and never change after (two worms starved with nothing on
     disk but dead=true; this record is the post-mortem)."""
     old = _env(**ALL_ON)
     try:

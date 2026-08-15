@@ -107,7 +107,7 @@ def _judge_model(backend: str | None = None) -> str:
     )
 
 
-def _openai_payload(user_prompt: str) -> dict:
+def _openai_payload(user_prompt: str, corpus: str = "hamlet") -> dict:
     """Request body for /chat/completions. No cache_control — OpenAI-compatible
     servers don't speak it, and local models don't bill input anyway."""
     return {
@@ -116,7 +116,7 @@ def _openai_payload(user_prompt: str) -> dict:
         "temperature": JUDGE_TEMPERATURE,
         "stream": False,
         "messages": [
-            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+            {"role": "system", "content": judge_system_prompt(corpus)},
             {"role": "user", "content": user_prompt},
         ],
     }
@@ -145,7 +145,7 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: float) -> dict
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _complete_openai(user_prompt: str) -> str:
+def _complete_openai(user_prompt: str, corpus: str = "hamlet") -> str:
     base = os.environ.get("WORMLET_JUDGE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
     headers: dict[str, str] = {}
     key = os.environ.get("WORMLET_JUDGE_API_KEY")
@@ -166,7 +166,7 @@ def _complete_openai(user_prompt: str) -> str:
             time.sleep(delay)
         try:
             payload = _http_post_json(
-                base + "/chat/completions", _openai_payload(user_prompt),
+                base + "/chat/completions", _openai_payload(user_prompt, corpus),
                 headers, timeout,
             )
             break
@@ -183,7 +183,10 @@ def _complete_openai(user_prompt: str) -> str:
             f"unexpected /chat/completions response shape from {base}: {e!r}"
         ) from e
 
-JUDGE_SYSTEM_PROMPT = """You are a careful judge of poetry produced by an artificial worm-like neural agent that has been eating words from Shakespeare's Hamlet. The worm's eaten-word sequence forms a found poem — most fragments will be partly nonsensical, but some may surprise you with rhythm, emotional resonance, or accidental coherence.
+# {corpus_title} is filled per flask (corpus/library.TITLES). Three variants
+# means three prompt-cache entries — ~350 tokens each, negligible; within one
+# flask's generation the prompt stays byte-identical so caching still works.
+JUDGE_SYSTEM_PROMPT_TEMPLATE = """You are a careful judge of poetry produced by an artificial worm-like neural agent that has been eating words from {corpus_title}. The worm's eaten-word sequence forms a found poem — most fragments will be partly nonsensical, but some may surprise you with rhythm, emotional resonance, or accidental coherence.
 
 For each numbered 15-token window in the user message, output exactly one line of the form:
 
@@ -306,7 +309,8 @@ def _client() -> anthropic.Anthropic:
     return _CLIENT
 
 
-def _complete_anthropic(user_prompt: str, worm_name: str) -> str:
+def _complete_anthropic(user_prompt: str, worm_name: str,
+                        corpus: str = "hamlet") -> str:
     client = _client()
     response = client.messages.create(
         model=_judge_model("anthropic"),
@@ -315,7 +319,7 @@ def _complete_anthropic(user_prompt: str, worm_name: str) -> str:
         system=[
             {
                 "type": "text",
-                "text": JUDGE_SYSTEM_PROMPT,
+                "text": judge_system_prompt(corpus),
                 # Cache the rubric — identical across every worm in every
                 # generation, so after the first call this is ~$0/MTok.
                 "cache_control": {"type": "ephemeral"},
@@ -328,7 +332,8 @@ def _complete_anthropic(user_prompt: str, worm_name: str) -> str:
 
 
 def judge_poem(tokens: list[str], worm_name: str,
-               seed: int | None = None) -> list[ScoredWindow]:
+               seed: int | None = None,
+               corpus: str = "hamlet") -> list[ScoredWindow]:
     """Score a worm's poem by sampling 10% of its 15-token windows and
     sending them to Claude in one prompt-cached call.
 
@@ -358,9 +363,9 @@ def judge_poem(tokens: list[str], worm_name: str,
     for be in backends:
         try:
             if be == "anthropic":
-                text = _complete_anthropic(user_prompt, worm_name)
+                text = _complete_anthropic(user_prompt, worm_name, corpus)
             elif be == "openai":
-                text = _complete_openai(user_prompt)
+                text = _complete_openai(user_prompt, corpus)
             else:
                 raise RuntimeError(
                     f"unknown judge backend {be!r} — use 'anthropic' or 'openai'"
@@ -402,3 +407,12 @@ def judge_poem(tokens: list[str], worm_name: str,
             e, c = scores[i]
             out.append(ScoredWindow(idx=idx, tokens=toks, emotional=e, coherence=c))
     return out
+
+
+def judge_system_prompt(corpus: str = "hamlet") -> str:
+    """The rubric with the flask's text named. Corpus-neutral otherwise —
+    same axes, banding, and CSV protocol for every flask."""
+    from corpus import library
+    return JUDGE_SYSTEM_PROMPT_TEMPLATE.format(
+        corpus_title=library.TITLES.get(corpus or "hamlet",
+                                        library.TITLES["hamlet"]))

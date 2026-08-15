@@ -24,8 +24,8 @@ def _reload_with(names: str | None):
 
 def test_env_override_replaces_lineup():
     try:
-        _reload_with(" swan, benc ,mikey,dowager cixi ")
-        assert orch.FLASK_WORM_NAMES == ["swan", "benc", "mikey", "dowager cixi"]
+        _reload_with(" anne, bede ,cato,dowager cixi ")
+        assert orch.FLASK_WORM_NAMES == ["anne", "bede", "cato", "dowager cixi"]
     finally:
         _reload_with(None)
     assert orch.FLASK_WORM_NAMES[0] == "Alice"  # default restored for later tests
@@ -42,7 +42,7 @@ def test_traversal_and_slash_names_rejected_at_import():
     path segments and a bare '..' escapes the flask dir entirely, so both
     must die at startup, not at first write. 'wat..son' stays legal — inside
     a single segment the dots are just a name."""
-    for bad in ("swan,../evil", "swan,.", "swan/benc"):
+    for bad in ("anne,../evil", "anne,.", "anne/bede"):
         try:
             _reload_with(bad)
             assert False, f"expected ValueError for {bad!r}"
@@ -51,8 +51,8 @@ def test_traversal_and_slash_names_rejected_at_import():
         finally:
             _reload_with(None)
     try:
-        _reload_with("wat..son,benc")
-        assert orch.FLASK_WORM_NAMES == ["wat..son", "benc"]
+        _reload_with("wat..son,bede")
+        assert orch.FLASK_WORM_NAMES == ["wat..son", "bede"]
     finally:
         _reload_with(None)
 
