@@ -483,6 +483,13 @@ def run_generation_rollover(
         # cross-flask fitness is never one comparable history.
         "corpus": getattr(getattr(worms[0], "world", None), "corpus", None)
                   or "hamlet",
+        # Which [start, stop) lines this generation read. Absent for corpora
+        # that show their whole text every generation; present for beowulf,
+        # where consecutive generations read DIFFERENT windows and a fitness
+        # trend across them is a trend across two texts, not two connectomes.
+        **({"corpus_window": list(win)}
+           if (win := getattr(getattr(worms[0], "world", None),
+                              "corpus_window", None)) else {}),
         "sigma_used": state.sigma,
         "sigma_next": new_sigma,
         "sigma_scheme": ng.scheme,

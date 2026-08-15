@@ -182,7 +182,21 @@ class TextScroller:
     def restore(self, state: dict) -> None:
         """Overwrite scroll state from a snapshot() dict. Safe to call right
         after construction; replaces all mutable progress fields in place."""
-        self._sent_idx = int(state["sent_idx"])
+        sent_idx = int(state["sent_idx"])
+        # A one-pass snapshot from a DIFFERENT corpus window is not restorable:
+        # its sentence index is relative to the line list that produced it. This
+        # bites exactly once per corpus that gains a window (beowulf, 4286 lines
+        # → 1500 per generation), where an old checkpoint at line 3000 would
+        # otherwise land past the end of the new window and report the corpus
+        # exhausted the moment it loaded — parking the flask on an empty dish,
+        # with hunger on, until its sibling finished. Validate before mutating
+        # anything so the caller's fallback (start the generation fresh) gets an
+        # untouched scroller.
+        if not self.loop and sent_idx > len(self.sentences):
+            raise ValueError(
+                f"checkpoint sent_idx={sent_idx} exceeds the {len(self.sentences)}-line "
+                f"corpus window; snapshot predates the current window")
+        self._sent_idx = sent_idx
         self._line_id = int(state["line_id"])
         self._elapsed = float(state["elapsed"])
         self._next_spawn = float(state["next_spawn"])

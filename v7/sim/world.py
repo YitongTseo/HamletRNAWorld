@@ -23,7 +23,7 @@ from pathlib import Path
 from sim.connectome import Connectome
 from sim.muscle_body import MuscleBody
 from sim.worm import WormBody
-from sim.text_scroller import TextScroller
+from sim.text_scroller import TextScroller, SPAWN_INTERVAL
 from sim import lifelike
 from corpus.hamlet import get_sentences_with_flags
 from sim.chemosensory_mapping import (
@@ -88,9 +88,22 @@ class World:
     embedding_model: "embedding.EmbeddingModel | None" = None
     # Which text this world scrolls (WORMLET_FLASK_TEXTS, per flask). None →
     # legacy env-passage hamlet, so every pre-multi-corpus caller is
-    # unchanged. Non-hamlet corpora always scroll their full text.
+    # unchanged. Non-hamlet corpora scroll their full text, except those
+    # capped by corpus.library.EPOCH_LINES (beowulf), which read one window
+    # per generation.
     corpus: str | None = None
+    # Which generation this world is living, for corpora that read a window
+    # per generation (corpus.library.EPOCH_LINES). Set from the flask's
+    # generation counter at startup and at respawn; irrelevant for every
+    # other corpus. Callers that don't know it (tests, the debug door) get
+    # window 0.
+    corpus_epoch: int = 0
     body_kind: str = "ik"
+    # [start, stop) lines of the corpus this world actually scrolls, or None
+    # for "the whole text" (every corpus but beowulf). Written into each
+    # generation's metadata.json: two beowulf generations read DIFFERENT
+    # 1500-line windows, so comparing their fitness compares two texts.
+    corpus_window: tuple[int, int] | None = field(init=False, default=None)
     brain: Connectome = field(init=False)
     worm: WormBody | MuscleBody = field(init=False)
     food: list[Food] = field(default_factory=list)
@@ -168,6 +181,14 @@ class World:
         else:
             raise ValueError(f"unknown body_kind: {self.body_kind!r}")
         self.brain.rand_excite()
+        self._build_text_scroller()
+
+    def _build_text_scroller(self) -> None:
+        """Load this world's text and hand it to a fresh TextScroller.
+
+        Split out of __post_init__ so `set_corpus_epoch` can rebuild the dish
+        once the caller knows which generation this world is living (the
+        flask's GenerationState loads after the worlds are built)."""
         # When generational evolution is enabled, scroll the full play once
         # per generation; otherwise loop the opening passage forever (legacy
         # v6 behavior).
@@ -189,17 +210,50 @@ class World:
         # economics — recorded in the fidelity ledger. Hamlet keeps 4.5 s,
         # byte-identical to stock.
         if self.corpus is None or self.corpus == "hamlet":
+            self.corpus_window = None
             self.text_scroller = TextScroller(sentences, loop=loop,
                                               edible_flags=edible_flags)
         else:
-            # Clamp ceiling 25 s: the daodejing is only 323 lines, so
-            # equal-duration pacing means a sparse dish (~18 chars per
-            # line every ~21 s — still ~60x the starvation line).
-            interval = min(25.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
+            start, stop = library.epoch_slice(self.corpus, len(sentences),
+                                              self.corpus_epoch)
+            self.corpus_window = None
+            if (start, stop) != (0, len(sentences)):
+                self.corpus_window = (start, stop)
+                # Long corpus (beowulf): read a window per generation at
+                # hamlet's 4.5 s instead of compressing the whole text into
+                # one epoch. Compression is what crushed the vertical pitch —
+                # 4286 lines in one epoch is a line every 1.57 s, 23.6 world
+                # units apart against 18px glyphs. A window restores the
+                # 67.5-unit pitch the hamlet flasks have always had, at the
+                # cost of reading the epic across three generations.
+                sentences = sentences[start:stop]
+                edible_flags = edible_flags[start:stop]
+                interval = SPAWN_INTERVAL
+            else:
+                # Clamp ceiling 25 s: the daodejing is only 323 lines, so
+                # equal-duration pacing means a sparse dish (~18 chars per
+                # line every ~21 s — still ~60x the starvation line).
+                interval = min(25.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
             self.text_scroller = TextScroller(
                 sentences, loop=loop, edible_flags=edible_flags,
                 spawn_interval=interval,
                 layout=library.LAYOUTS.get(self.corpus, "horizontal"))
+
+    def set_corpus_epoch(self, epoch: int) -> None:
+        """Point this world at generation `epoch`'s window of the corpus.
+
+        No-op unless the window actually moves, so the common case (every
+        corpus but beowulf) keeps the scroller built in __post_init__ —
+        including any scroll position already restored into it. Call BEFORE
+        restoring a mid-generation checkpoint: the checkpoint's sentence
+        index is relative to the window, and rebuilding would drop it."""
+        if epoch == self.corpus_epoch:
+            return
+        self.corpus_epoch = epoch
+        if self.corpus and self.corpus != "hamlet":
+            from corpus import library
+            if self.corpus in library.EPOCH_LINES:
+                self._build_text_scroller()
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))

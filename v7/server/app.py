@@ -254,6 +254,11 @@ def _restore_or_reset_worm(worm, generation: int) -> None:
     mid-sentence). Otherwise the partial poem is discarded and the generation
     restarts cleanly — the same behavior as before checkpoints existed, which
     is the safe fallback for a missing/corrupt/stale-generation checkpoint."""
+    # Window-per-generation corpora (corpus.library.EPOCH_LINES) need the
+    # generation before anything else: load_flasks built the world without
+    # it (GenerationState loads later), and the checkpoint's sentence index
+    # is relative to this generation's window.
+    worm.world.set_corpus_epoch(generation)
     path = _checkpoint_path(worm)
     if path.exists():
         try:
@@ -528,8 +533,12 @@ def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
             w.poem_file.close()
         except Exception:
             pass
+        # state.generation was already incremented by the rollover, so it is
+        # the generation this new world will live — and therefore which
+        # window of a long corpus it reads (corpus.library.EPOCH_LINES).
         w.world = World(seed=w.seed, weights=wt, embedding_model=flask.embedding_model,
-                        corpus=corpus_for_flask_name(flask.name))
+                        corpus=corpus_for_flask_name(flask.name),
+                        corpus_epoch=(flask.state.generation if flask.state else 0))
         w.poem_path.write_text("")  # truncate previous-generation poem
         w.poem_file = open(w.poem_path, "a", buffering=1)
         w.word_count = 0
@@ -1146,6 +1155,15 @@ async def poems_page():
 @app.get("/about")
 async def about_page():
     return FileResponse(VIEWER_DIR / "about.html")
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Browsers (and feed readers, and link unfurlers) request /favicon.ico
+    at the site root whatever the pages declare. Serve the one SVG mark —
+    modern browsers honour the content type over the extension; the rest get
+    the <link> that viewer/palette.js injects into every page."""
+    return FileResponse(VIEWER_DIR / "favicon.svg", media_type="image/svg+xml")
 
 
 @app.get("/healthz")

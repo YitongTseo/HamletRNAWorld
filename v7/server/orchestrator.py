@@ -311,6 +311,9 @@ def reset_worm(worm: Worm, archive_poem: bool = True) -> None:
     weights = json.loads((worm.poem_path.parent / "weights.json").read_text())
     # Flask dir layout: .../flasks/<flask_name>/<worm_name>/poem.txt
     worm.world = World(seed=worm.seed, weights=weights,
-                       corpus=corpus_for_flask_name(worm.poem_path.parent.parent.name))
+                       corpus=corpus_for_flask_name(worm.poem_path.parent.parent.name),
+                       # Keep the corpus window this worm was already
+                       # reading — a debug reset is not a new generation.
+                       corpus_epoch=worm.world.corpus_epoch)
     worm.word_count = 0
     worm.recent_words = []
