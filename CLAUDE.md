@@ -97,6 +97,17 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   an amplifier, not learning. **It did, at gen 3 of `data-trio-3`** (five of
   ten beowulf worms, `eta` +0.047 → +0.330 in one generation), and the
   worms crawled in circles.
+- **The lifelike genes are LOG-SCALED time constants since 2026-08-16**, and
+  every lineage was cold-started for it (`data-trio-4`). Before that they
+  were linear numbers sharing the NES's single additive σ with the synapse
+  weights: at σ=0.149 against a `baseline_pull` default of 0.02, **54% of
+  all worm-generations sat pinned at zero forgetting and 33% at zero
+  plasticity, from generation 1 in all three flasks** — the rule genes were
+  never under selection, they were noise. Now the genome stores log(rate),
+  so one σ is a ~16% change whatever the units (mutational effects on rates
+  are multiplicative in nature), and zero is unreachable. Measured pinning
+  after the change: 0%. Phenotype defaults are unchanged (`tau_forget_s`
+  40 s = the STM equivalent for a 112-minute life).
 - **The delta cap is PROPORTIONAL since 2026-08-16:**
   `|delta| <= min(DELTA_CAP, DELTA_CAP_FRAC * |w|)`, so a synapse may at
   most double and learning can't reorder the connectome. The old flat +10

@@ -43,24 +43,87 @@ HAB_ONLY = dict(WORMLET_PLASTICITY=None, WORMLET_HUNGER=None,
 
 # --- params & genome ride-along --------------------------------------------
 
-def test_pop_params_defaults_and_clipping():
+def test_pop_params_defaults_match_the_hand_tuned_phenotype():
+    """The genes are log-scaled time constants now, but the animal they
+    describe is the same one: the derived per-tick rates must land on the
+    values that were hardcoded before the reparameterisation."""
     p = lifelike.pop_params(None)
-    assert p["eta"] == 0.05 and p["trace_decay"] == 0.85
-    assert p["adapt_rate"] == 0.05 and p["dishab_relief"] == 0.5
-    w = {"_lifelike": {"eta": 99.0, "trace_decay": -3.0}, "AVAL": {"AVBL": 2}}
+    assert p["eta"] == 0.05
+    assert abs(p["trace_decay"] - 0.85) < 0.01      # tau_trace 3 s
+    assert abs(p["baseline_pull"] - 0.0124) < 1e-3  # tau_forget 40 s (was 0.02)
+    assert abs(p["adapt_rate"] - 0.05) < 0.01       # tau_adapt 10 s
+    assert p["starve_gain"] == 0.8 and p["roam_gain"] == 0.5
+    assert p["dishab_relief"] == 0.5
+
+
+def test_pop_params_pops_the_block_and_survives_wild_genes():
+    w = {"_lifelike": {"eta": 99.0, "tau_forget_s": -300.0}, "AVAL": {"AVBL": 2}}
     p = lifelike.pop_params(w)
-    assert p["eta"] == 0.5        # clipped to hi
-    assert p["trace_decay"] == 0.0  # clipped to lo
     assert "_lifelike" not in w   # popped — Connectome never sees it
     assert "AVAL" in w
+    # Far-field rails keep the phenotype finite without ever being where the
+    # population sits: exp(99) clamps to the eta ceiling, exp(-300) to the
+    # fastest allowed forgetting.
+    assert p["eta"] == lifelike.GENE_SPEC["eta"][3]
+    assert 0.0 < p["baseline_pull"] <= 1.0
+
+
+def test_a_gene_is_never_pinned_by_a_single_mutation():
+    """The failure this reparameterisation exists to remove. Measured over 90
+    worm-generations of the old linear genes at sigma 0.149: baseline_pull sat
+    at its floor in 54% of worms and eta in 33% — from generation 1, in all
+    three flasks. They were not evolving, they were being re-randomised and
+    clipped. In log space one sigma is a ~16% change in the rate, whatever
+    the rate's units, so a bound is many mutations away."""
+    import random
+    rng = random.Random(11)
+    sigma = 0.149
+    for name, (_kind, default, lo, hi) in lifelike.GENE_SPEC.items():
+        g0 = lifelike._to_gene(name, default)
+        vals = [lifelike._from_gene(name, g0 + sigma * rng.gauss(0, 1))
+                for _ in range(2000)]
+        pinned = sum(1 for v in vals if v <= lo or v >= hi)
+        assert pinned == 0, f"{name}: {pinned}/2000 mutants pinned at a bound"
+        # and it does move — a gene that can't be pinned but can't explore
+        # either would be worse than what it replaced
+        assert max(vals) > 1.10 * default and min(vals) < 0.91 * default
+
+
+def test_forgetting_can_never_reach_zero():
+    """No wild-type animal keeps a potentiated synapse indefinitely: in C.
+    elegans forgetting is an ACTIVE, gene-regulated process (TIR-1/JNK,
+    MSI-1/Arp2/3, dopamine via DOP-2/DOP-3). Under the old linear gene,
+    'never forgets' was a 54% event; exp() cannot return 0, so it is now
+    unreachable however the NES pushes."""
+    for g in (-1e3, -50.0, 0.0, 50.0, 1e3):
+        p = lifelike.pop_params({"_lifelike": {"tau_forget_s": g}})
+        assert p["baseline_pull"] > 0.0
+        assert p["eta"] > 0.0
+
+
+def test_legacy_gene_block_is_ignored_not_misread():
+    """A pre-2026-08-16 block stores LINEAR values under different key names.
+    Reading its baseline_pull of 0.02 as log(tau) would give a 1-second
+    memory; the keys were renamed so such a block is detectable, and it falls
+    back to the defaults instead."""
+    legacy = {"_lifelike": {"eta": 0.05, "trace_decay": 0.85,
+                            "baseline_pull": 0.02, "adapt_rate": 0.05}}
+    p = lifelike.pop_params(legacy)
+    fresh = lifelike.pop_params(None)
+    assert p == fresh
 
 
 def test_params_flatten_through_evolution_unchanged():
     w = lifelike.ensure_params({"AVAL": {"AVBL": 2.0, "AVBR": -3.0}})
     vec, keys = flatten_weights(w)
     assert ("_lifelike", "eta") in keys  # rules are genes now
+    assert ("_lifelike", "tau_forget_s") in keys
     back = unflatten_weights(vec, keys)
-    assert back["_lifelike"]["eta"] == 0.05
+    # The genome carries the LOG of the rate — that is the coordinate the NES
+    # walks, and what makes its additive step a multiplicative mutation.
+    import math
+    assert abs(back["_lifelike"]["eta"] - math.log(0.05)) < 1e-9
+    assert abs(lifelike.pop_params(back)["eta"] - 0.05) < 1e-9
     assert back["AVAL"]["AVBR"] == -3.0
 
 
