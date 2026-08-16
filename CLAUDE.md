@@ -108,6 +108,21 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   are multiplicative in nature), and zero is unreachable. Measured pinning
   after the change: 0%. Phenotype defaults are unchanged (`tau_forget_s`
   40 s = the STM equivalent for a 112-minute life).
+- **Mutations are heavy-tailed since 2026-08-16** (`MUTATION_DF=3`,
+  `server/evolution.py`): children are drawn from a Student-t, not a
+  Gaussian, because measured mutational-effect distributions are L-shaped —
+  mostly tiny, with a rare large tail — and a Gaussian makes neither, it
+  makes middling changes to every coordinate every time. Same σ, same
+  variance; P(|ε|>5σ) goes 0.000% → 0.285%. This is safe ONLY because the
+  update now uses the sampling law's score function (`mutation_score`), not
+  the raw perturbation: for a Gaussian the two are identical, for the t the
+  score REDESCENDS, so a 10σ child informs the step a fifth as much as a 1σ
+  one. `MUTATION_DF=inf` restores the Gaussian exactly and is how the A/B is
+  written. **What is NOT modelled:** real mutations are also SPARSE (a
+  handful of loci per genome per generation); dense perturbation of all
+  ~3,700 dimensions every generation is a deliberate compression of
+  evolutionary time — at ~2 mutations per genome we would need thousands of
+  generations to move a 3,689-weight connectome, and we get ~100.
 - **The delta cap is PROPORTIONAL since 2026-08-16:**
   `|delta| <= min(DELTA_CAP, DELTA_CAP_FRAC * |w|)`, so a synapse may at
   most double and learning can't reorder the connectome. The old flat +10
