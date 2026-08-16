@@ -1204,6 +1204,11 @@ async def about_page():
     return FileResponse(VIEWER_DIR / "about.html")
 
 
+@app.get("/graveyard")
+async def graveyard_page():
+    return FileResponse(VIEWER_DIR / "graveyard.html")
+
+
 @app.get("/favicon.ico")
 async def favicon():
     """Browsers (and feed readers, and link unfurlers) request /favicon.ico
@@ -1583,6 +1588,171 @@ def _gv_dir(flask: str) -> Path:
     non-existent path and every endpoint already 404s on that."""
     hit = _gv_flask_map().get(flask)
     return hit if hit is not None else _GV_ROOT / "__unknown__"
+
+
+# --- Graveyard -------------------------------------------------------------
+#
+# Every worm that has starved is recorded in deaths.jsonl (one JSON object per
+# death, written post-mortem by _log_death). The graveyard pairs each record
+# with the best thing that worm ever wrote, so a death reads as an obituary
+# rather than a row in a log.
+
+def _gv_flask_roots() -> list[tuple[str, Path, Path]]:
+    """(flask name, generations dir, live flask dir) for every flask this
+    process can see, its own and its siblings'.
+
+    deaths.jsonl lives in the LIVE tree (<data>/flasks/<flask>) while the
+    judged poems live in the generations tree (<data>/generations/<flask>) —
+    hence both paths. The union of the two trees, not just the generations
+    map: a flask can have deaths before it has ever completed a generation,
+    and burying those worms unnamed would be the wrong way round."""
+    out: dict[str, tuple[Path, Path]] = {}
+    for name, gen_dir in _gv_flask_map().items():
+        # <data>/generations/<flask> -> <data>/flasks/<flask>
+        out[name] = (gen_dir, gen_dir.parent.parent / "flasks" / gen_dir.name)
+    live_root = _GV_ROOT.parent / "flasks"
+    if live_root.is_dir():
+        for d in live_root.iterdir():
+            if d.is_dir() and d.name not in out:
+                out[d.name] = (_GV_ROOT / d.name, d)
+    return [(k, v[0], v[1]) for k, v in sorted(out.items())]
+
+
+def _best_window(gen_dir: Path, worm: str, generation: int) -> dict | None:
+    """The judge's favourite passage from this worm's poem in `generation`.
+
+    scores.jsonl carries every scored window with its emotional and coherence
+    ratings, so "most poetic" needs no new judgement from us — it is the one
+    the critic already rated highest."""
+    path = gen_dir / f"gen-{generation:04d}" / worm / "scores.jsonl"
+    best = None
+    try:
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            score = (rec.get("emotional", 0) or 0) + (rec.get("coherence", 0) or 0)
+            if best is None or score > best[0]:
+                best = (score, rec)
+    except OSError:
+        return None
+    if best is None:
+        return None
+    _, rec = best
+    return {
+        "tokens": rec.get("tokens", []),
+        "emotional": rec.get("emotional", 0),
+        "coherence": rec.get("coherence", 0),
+        "generation": generation,
+    }
+
+
+# Words to show when nothing this worm wrote was ever judged.
+_FINAL_LINES_WORDS = 24
+
+
+def _epitaph(gen_dir: Path, live_dir: Path, worm: str, generation: int) -> dict | None:
+    """The best lines this worm ever wrote, by the judge where possible.
+
+    Most deaths happen in the generation currently running, which the judge
+    only scores at rollover — so the obvious lookup finds nothing for exactly
+    the worms whose graves are newest. Hence the chain:
+
+      1. the judge's favourite window from the generation it died in;
+      2. its favourite from the most recent EARLIER generation this worm was
+         scored in (a fond line, honestly labelled with when it wrote it);
+      3. the tail of the poem it was writing when it died — unjudged, but it
+         always exists and it is the last thing the worm did.
+
+    `source` says which, so the page can never imply the critic praised lines
+    it never saw."""
+    hit = _best_window(gen_dir, worm, generation)
+    if hit:
+        return dict(hit, source="judged")
+    for n in sorted(_gv_gen_nums(gen_dir), reverse=True):
+        if n >= generation:
+            continue
+        hit = _best_window(gen_dir, worm, n)
+        if hit:
+            return dict(hit, source="judged-earlier")
+    try:
+        words = (live_dir / worm / "poem.txt").read_text().split()
+    except OSError:
+        return None
+    if not words:
+        return None
+    return {"tokens": words[-_FINAL_LINES_WORDS:], "emotional": None,
+            "coherence": None, "generation": generation, "source": "final-lines"}
+
+
+def _grave_corpus(gen_dir: Path, generation: int, local_flask: str) -> str:
+    """Which text this worm was eating.
+
+    metadata.json for the generation it died in is the authority, but the
+    CURRENT generation has none — it is only written at rollover, and that is
+    where the newest deaths are. So: that generation, then the most recent
+    generation that does have metadata, then this process's env (which knows
+    its own flasks only), then hamlet."""
+    for n in [generation] + sorted(_gv_gen_nums(gen_dir), reverse=True):
+        meta = _gv_read_json(gen_dir / f"gen-{n:04d}" / "metadata.json", {}) or {}
+        if meta.get("corpus"):
+            return meta["corpus"]
+    return _corpus_title(local_flask) or "hamlet"
+
+
+@app.get("/api/graveyard")
+async def api_graveyard(limit: int = 200):
+    """Every recorded death, newest first, with an epitaph.
+
+    Reads only files that already exist — deaths.jsonl for the record and
+    scores.jsonl for the lines — so it costs nothing to the sim and works for
+    lineages that ended long ago."""
+    graves = []
+    for name, gen_dir, live_dir in _gv_flask_roots():
+        deaths = live_dir / "deaths.jsonl"
+        try:
+            lines = deaths.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            gen = rec.get("generation", 0)
+            worm = rec.get("worm", "?")
+            plast = rec.get("plasticity") or {}
+            graves.append({
+                "flask": name,
+                "flask_label": _gv_label(name),
+                "corpus": _grave_corpus(gen_dir, gen, rec.get("flask") or ""),
+                "worm": worm,
+                "generation": gen,
+                "died_at": rec.get("ts"),
+                "cause": rec.get("cause", "starvation"),
+                "words_eaten": rec.get("word_count", 0),
+                # Sim seconds, not wallclock: how long the fast lasted.
+                "starved_s": rec.get("starved_s"),
+                "lived_ticks": rec.get("died_at_tick"),
+                "where": [rec.get("x"), rec.get("y")],
+                # The last five words it ever ate. Straight from the record —
+                # present even for a death the judge never scored.
+                "last_words": rec.get("recent_eaten") or [],
+                "epitaph": _epitaph(gen_dir, live_dir, worm, gen),
+                # Carried because it is the readable half of the spin story:
+                # a worm with every plastic edge pinned at the cap was not
+                # steering by the time it died.
+                "plasticity_capped": plast.get("capped"),
+                "plasticity_edges": plast.get("edges"),
+            })
+    # Newest first; records without a timestamp sort last rather than crash.
+    graves.sort(key=lambda g: g.get("died_at") or "", reverse=True)
+    return JSONResponse({"total": len(graves), "graves": graves[:max(0, limit)]})
 
 
 def _gv_summary(flask: str, n: int) -> dict | None:
