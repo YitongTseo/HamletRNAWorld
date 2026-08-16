@@ -216,17 +216,37 @@ INF = float("inf")
 def test_heavy_tail_keeps_the_variance_but_not_the_shape():
     """Same sigma must still mean the same sampling radius — the sigma
     controllers and the trust region both assume it — while genuinely large
-    mutations become possible."""
+    mutations become possible. Measured per coordinate, across children."""
     rng = np.random.default_rng(4)
-    n = 200_000
-    g = ev.sample_eps((n,), rng, df=INF)
-    t = ev.sample_eps((n,), rng)
-    assert abs(g.std() - 1.0) < 0.02 and abs(t.std() - 1.0) < 0.02
-    # Rare large mutations: >5 sigma is essentially impossible under the
-    # Gaussian and happens about once in 350 draws under the t.
+    g = np.concatenate([ev.sample_eps((200,), rng, df=INF) for _ in range(1000)])
+    t = np.concatenate([ev.sample_eps((200,), rng) for _ in range(1000)])
+    assert abs(g.std() - 1.0) < 0.05 and abs(t.std() - 1.0) < 0.15
     assert np.mean(np.abs(g) > 5) < 1e-4
     assert np.mean(np.abs(t) > 5) > 1e-3
     assert np.abs(t).max() > 3 * np.abs(g).max()
+
+
+def test_mutation_size_varies_between_children_not_just_within_them():
+    """The property that per-coordinate tails DON'T give you, and the reason
+    the sampler draws one chi-square scale per child rather than one per
+    weight. Concentration of measure: sum 3,696 independent heavy-tailed
+    coordinates and every child comes out the same size, which is the
+    middling-change-everywhere behaviour the Gaussian was rejected for.
+
+    Measured at d=3696, per-child ||eps||/sqrt(d): Gaussian spans 0.98-1.04
+    from p05 to max; independent-t 0.91-2.90; shared-scale t 0.35-29.5."""
+    rng = np.random.default_rng(6)
+    d = 512
+    def sizes(**kw):
+        return np.array([np.linalg.norm(ev.sample_eps((d,), rng, **kw)) / np.sqrt(d)
+                         for _ in range(2000)])
+    g, t = sizes(df=INF), sizes()
+    # A Gaussian gives every child the same-sized mutation at this dimension.
+    assert np.percentile(g, 99) / np.median(g) < 1.15
+    # The t gives most children a quiet genome and a few a large-effect one.
+    assert np.percentile(t, 99) / np.median(t) > 2.0
+    assert np.mean(t > 1.5 * np.median(t)) > 0.05
+    assert np.mean(t < 0.7 * np.median(t)) > 0.05
 
 
 def test_mutation_score_redescends_so_a_freak_child_cannot_hijack_the_step():

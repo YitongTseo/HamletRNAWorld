@@ -118,11 +118,19 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   the raw perturbation: for a Gaussian the two are identical, for the t the
   score REDESCENDS, so a 10σ child informs the step a fifth as much as a 1σ
   one. `MUTATION_DF=inf` restores the Gaussian exactly and is how the A/B is
-  written. **What is NOT modelled:** real mutations are also SPARSE (a
-  handful of loci per genome per generation); dense perturbation of all
-  ~3,700 dimensions every generation is a deliberate compression of
-  evolutionary time — at ~2 mutations per genome we would need thousands of
-  generations to move a 3,689-weight connectome, and we get ~100.
+  written. The t is MULTIVARIATE — one chi-square scale per child, not per
+  coordinate — because at d=3,696 per-coordinate tails vanish into
+  concentration of measure: per-child ||ε||/√d spans 0.98-1.04 under a
+  Gaussian, 0.91-2.90 under independent t, and 0.35-29.5 with a shared
+  scale. The L-shape is a fact about individuals, not coordinates.
+  **What is NOT modelled:** real mutations are also SPARSE (a handful of
+  loci per genome per generation); dense perturbation of all ~3,700
+  dimensions every generation is a deliberate compression of evolutionary
+  time. Do not "fix" this: at a realistic few loci per child and ~6 fresh
+  children a generation, each of the 3,689 weights would be touched well
+  under once across a 100-generation run — the search would not move at
+  all. Real evolution buys sparsity with population sizes of 10⁴-10⁶ and
+  thousands of generations; this experiment has 10 worms and ~100.
 - **The delta cap is PROPORTIONAL since 2026-08-16:**
   `|delta| <= min(DELTA_CAP, DELTA_CAP_FRAC * |w|)`, so a synapse may at
   most double and learning can't reorder the connectome. The old flat +10
