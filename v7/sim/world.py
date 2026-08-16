@@ -57,6 +57,13 @@ STIM_LINGER_TICKS = int(2.0 * BODY_TICK_HZ)  # 2 seconds
 HISTORY_LEN = embedding.HISTORY  # number of eaten words used as chemosensory context
 
 
+def _clamp_delta(brain, pre: str, post: str, d: float) -> float:
+    """Bound a restored learned delta by the synapse it modifies. Shared by
+    restore_lifelike; the live accumulation clamps in plasticity_step."""
+    cap = lifelike.delta_cap_for(brain.weights.get(pre, {}).get(post, 0.0))
+    return cap if d > cap else (-cap if d < -cap else d)
+
+
 @dataclass
 class Food:
     x: float
@@ -540,8 +547,18 @@ class World:
             self._last_meal_tick = int(data.get("last_meal_tick", -1))
             self.death_record = data.get("death_record")
         if self._plasticity_on and "delta" in data:
-            self.brain._delta = {pre: {post: float(v) for post, v in posts.items()}
-                                 for pre, posts in data["delta"].items()}
+            # Clamp on the way in. Deltas are bounded per-synapse now
+            # (lifelike.delta_cap_for), and every checkpoint written before
+            # 2026-08-16 carries deltas bounded only by the old flat cap — a
+            # +10 on a |w|=1 synapse. Without this the restored brain runs
+            # out of bounds until decay and the next reinforcement pull it
+            # back, which is exactly the flattened, circling phenotype the
+            # bound exists to prevent.
+            self.brain._delta = {
+                pre: {post: _clamp_delta(self.brain, pre, post, float(v))
+                      for post, v in posts.items()}
+                for pre, posts in data["delta"].items()
+            }
             self.brain._trace = {(a, b): float(v)
                                  for a, b, v in data.get("trace", [])}
             self.brain._stats_cache = None  # direct _delta mutation

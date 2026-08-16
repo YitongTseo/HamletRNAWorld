@@ -93,8 +93,19 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
 - **Plasticity saturation is observable:** `plasticity_capped`/
   `plasticity_edges` in worm snapshots and `wormlet_plasticity_capped` in
   VictoriaMetrics. If capped/edges trends toward 1 across generations, the
-  NES has discovered "pin everything at DELTA_CAP" as a strategy and
-  plasticity is a blanket amplifier, not learning.
+  NES has found "pin everything at the cap" as a strategy and plasticity is
+  an amplifier, not learning. **It did, at gen 3 of `data-trio-3`** (five of
+  ten beowulf worms, `eta` +0.047 → +0.330 in one generation), and the
+  worms crawled in circles.
+- **The delta cap is PROPORTIONAL since 2026-08-16:**
+  `|delta| <= min(DELTA_CAP, DELTA_CAP_FRAC * |w|)`, so a synapse may at
+  most double and learning can't reorder the connectome. The old flat +10
+  amplified the median synapse (|w| 2.0) 6x and the weakest 11x while the
+  strongest moved 2.7x — saturation flattened every weight to magnitude
+  ~10-12 and erased the structure. Measured at full saturation, same seed:
+  drift/min 204 (flat) vs 985 (proportional), i.e. spinning on the spot
+  versus travelling. `DELTA_CAP_FRAC = inf` restores the old rule exactly
+  and is how the A/B is written in `tests/test_lifelike.py`.
 - **Habituation exists but is OFF everywhere** (`WORMLET_HABITUATION=1` to
   enable): per-neuron chemosensory adaptation — a static smell fades
   (subtractive EMA baseline, `adapt_rate` gene), silence recovers it, eating

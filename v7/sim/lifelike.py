@@ -80,9 +80,39 @@ SATIETY_BITE = 0.12            # one word ~ one meal unit
 SATIETY_DECAY_PER_TICK = 1.0 / 36000.0  # full -> starved in ~10 min sim time
 REWARD_BASE = 0.5              # eating reward = REWARD_BASE + (1 - satiety)
 
-# Learned deltas are bounded so plasticity can retune, not rewrite: |delta|
-# stays within DELTA_CAP of the genome weight (genome weights are ~1..30).
+# Learned deltas are bounded so plasticity can retune, not rewrite. TWO
+# bounds, and the proportional one is the load-bearing half:
+#
+#   |delta| <= min(DELTA_CAP, DELTA_CAP_FRAC * |genome weight|)
+#
+# The absolute cap alone was a blanket amplifier. Measured on the real
+# connectome (3,689 edges): median |w| is 2.0 and p90 is 6.0, so a uniform
+# +10 multiplies the median synapse by 6 and the weakest by 11 while the
+# strongest moves by 2.7. Every traced synapse lands at magnitude ~10-12
+# whatever the biology said — the connectome's weight STRUCTURE is erased
+# even though each delta keeps its synapse's sign. Observed in the field on
+# 2026-08-16: five of ten worms in the beowulf flask had all 2,962 plastic
+# edges pinned at the cap and crawled in tight circles. Sustained circling
+# is not something a healthy C. elegans does; it is the published phenotype
+# of ablating the D-class GABAergic motor neurons, i.e. of destroying the
+# dorsoventral balance — which is what flattening every weight to the same
+# magnitude amounts to.
+#
+# The proportional bound is also the more faithful rule: real synaptic
+# plasticity scales a synapse's strength (LTP/LTD, synaptic scaling), it
+# does not promote a weak synapse to the strongest in the circuit. At
+# FRAC=1.0 a synapse may at most double, and the connectome's relative
+# structure survives learning.
+#
+# DELTA_CAP_FRAC = inf reproduces the old absolute-only rule exactly, which
+# is how the A/B in tests/test_lifelike.py is written.
 DELTA_CAP = 10.0
+DELTA_CAP_FRAC = 1.0
+
+
+def delta_cap_for(weight: float) -> float:
+    """Largest |delta| this synapse may accumulate."""
+    return min(DELTA_CAP, DELTA_CAP_FRAC * abs(weight))
 # Traces/deltas below this are dropped to keep the sparse dicts sparse.
 PRUNE_EPS = 1e-4
 
