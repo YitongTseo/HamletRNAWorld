@@ -11,21 +11,6 @@
              margin: 0; padding: 0; }
       /* header runs full-bleed like every other page; the prose narrows */
       main { max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
-      header {
-        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
-        padding: 22px 0 16px; margin-bottom: 18px; border-bottom: 1px solid #3a3226;
-      }
-      header h1 { margin: 0; font-family: var(--font-serif, serif); font-style: italic;
-                  font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--fg); }
-      header h1 b { font-weight: 400; color: var(--accent); }
-      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
-                        color: var(--dim); margin-left: 14px; font-style: normal; }
-      header h1 small a { color: var(--dim); }
-      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
-                   font-family: var(--font-mono, monospace); }
-      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
-      header nav a:hover { color: var(--accent); }
-      header nav a.here { color: var(--accent); }
       h2 { color: var(--fg, #ece2cd); font-family: ui-monospace, monospace; font-size: 15px; margin: 28px 0 6px; border-left: 3px solid var(--accent, #cfa348); padding-left: 8px; }
       h3 { color: var(--accent, #9ec); font-family: ui-monospace, monospace; font-size: 13px; margin: 18px 0 4px; }
       p { margin: 6px 0 12px; opacity: 0.88; }
@@ -38,13 +23,8 @@
       .credit { opacity: 0.55; font-size: 11px; font-family: ui-monospace, monospace; margin-top: 40px; padding-top: 10px; border-top: 1px solid rgba(207, 163, 72, 0.14); }
     </style>
   </head>
-  <body>
-    <header>
-      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
-        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
-      <nav><a href="/">worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about" class="here">about</a></nav>
-      <div id="experiment-switcher"></div>
-    </header>
+  <body data-page="about">
+    <script src="/static/header.js?v=1"></script>
     <script src="/static/experiment_dropdown.js?v=2"></script>
     <main>
 

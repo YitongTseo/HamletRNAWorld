@@ -41,25 +41,19 @@
         display: none;
       }
       #radarpanel canvas { display: block; width: 100%; height: 100%; }
-      /* Wrapper for #wormtitle + #nav so a single panelEl toggles both via
-         panel-chrome. The wrap itself ignores pointer events (pointer-events:
-         none) — children opt back in with pointer-events: auto so links and
-         hovers still work even when the wrap covers the top strip. */
+      /* Wrapper for #wormtitle so panel-chrome can toggle it with one panelEl.
+         The wrap itself ignores pointer events (pointer-events: none) —
+         children opt back in with pointer-events: auto so links and hovers
+         still work even when the wrap covers the top strip. */
       #title-nav-wrap {
         position: fixed; top: 0; left: 0; right: 0;
         pointer-events: none;
         z-index: 20;
       }
-      #nav {
-        position: fixed; top: 8px; right: 12px;
-        font: 12px ui-monospace, monospace; color: #cfa348; opacity: 0.85;
-        z-index: 20;
-        pointer-events: auto;
-      }
-      #nav a { color: #cfa348; text-decoration: none; padding: 4px 8px; }
-      #nav a:hover { background: rgba(100, 200, 255, 0.15); }
+      /* No #nav here any more: the chrome is the shared #site-header
+         (viewer/header.js) in overlay mode. The title clears it. */
       #wormtitle {
-        position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+        position: fixed; top: 42px; left: 50%; transform: translateX(-50%);
         font: 14px ui-monospace, monospace; color: #afa; opacity: 0.8;
         text-shadow: none; z-index: 20;
         pointer-events: auto;
@@ -133,14 +127,10 @@
 #chemosensoryPanel.panel--mobile { width: 90vw; max-height: 58vh; }
 
 @media (max-width: 768px) {
-  /* #9: stack the top-right nav vertically instead of one long overlapping
-     row, and shrink the worm title so it doesn't collide. */
-  #nav {
-    display: flex; flex-direction: column; align-items: flex-end;
-    top: 6px; right: 8px; gap: 1px; font-size: 11px;
-  }
-  #nav a { padding: 2px 6px; }
-  #wormtitle { font-size: 12px; }
+  /* #9: shrink the worm title so it doesn't collide with the header bar.
+     (The nav itself is the shared header now and carries its own mobile
+     rules — see viewer/header.js.) */
+  #wormtitle { font-size: 12px; top: 38px; }
   .toggle-btn { font-size: 11px; padding: 6px 10px; }
 }
 
@@ -187,8 +177,6 @@
 html, body { background: #08090b; }
 #hud { color: #ece2cd; opacity: 0.55; text-shadow: none;
        font-family: 'Fragment Mono', ui-monospace, monospace; }
-#nav, #nav a { color: #8f8266; font-family: 'Fragment Mono', ui-monospace, monospace; }
-#nav a:hover { background: none; color: #cfa348; }
 #wormtitle { font-family: 'Instrument Serif', serif !important;
              font-weight: 300 !important; letter-spacing: 0.05em;
              color: #ece2cd !important; }

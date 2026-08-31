@@ -62,6 +62,17 @@
   root.style.setProperty("--font-serif", '"Instrument Serif", serif');
   root.style.setProperty("--font-mono", '"Fragment Mono", ui-monospace, monospace');
 
+  // Favicon. Injected here for the same reason the fonts are: this is the one
+  // file every page loads in <head>, so the tab mark arrives without editing
+  // six HTML files (and the next page can't forget it). Browsers that ignore
+  // SVG icons fall back to /favicon.ico, which the server answers with the
+  // same file.
+  var icon = document.createElement("link");
+  icon.rel = "icon";
+  icon.type = "image/svg+xml";
+  icon.href = "/static/favicon.svg?v=1";
+  document.head.appendChild(icon);
+
   // Expose for other scripts (e.g. the worm canvas reads --accent/--stage).
   window.__paletteMode = mode;
   window.__palettes = PALETTES;

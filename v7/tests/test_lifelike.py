@@ -43,24 +43,87 @@ HAB_ONLY = dict(WORMLET_PLASTICITY=None, WORMLET_HUNGER=None,
 
 # --- params & genome ride-along --------------------------------------------
 
-def test_pop_params_defaults_and_clipping():
+def test_pop_params_defaults_match_the_hand_tuned_phenotype():
+    """The genes are log-scaled time constants now, but the animal they
+    describe is the same one: the derived per-tick rates must land on the
+    values that were hardcoded before the reparameterisation."""
     p = lifelike.pop_params(None)
-    assert p["eta"] == 0.05 and p["trace_decay"] == 0.85
-    assert p["adapt_rate"] == 0.05 and p["dishab_relief"] == 0.5
-    w = {"_lifelike": {"eta": 99.0, "trace_decay": -3.0}, "AVAL": {"AVBL": 2}}
+    assert p["eta"] == 0.05
+    assert abs(p["trace_decay"] - 0.85) < 0.01      # tau_trace 3 s
+    assert abs(p["baseline_pull"] - 0.0124) < 1e-3  # tau_forget 40 s (was 0.02)
+    assert abs(p["adapt_rate"] - 0.05) < 0.01       # tau_adapt 10 s
+    assert p["starve_gain"] == 0.8 and p["roam_gain"] == 0.5
+    assert p["dishab_relief"] == 0.5
+
+
+def test_pop_params_pops_the_block_and_survives_wild_genes():
+    w = {"_lifelike": {"eta": 99.0, "tau_forget_s": -300.0}, "AVAL": {"AVBL": 2}}
     p = lifelike.pop_params(w)
-    assert p["eta"] == 0.5        # clipped to hi
-    assert p["trace_decay"] == 0.0  # clipped to lo
     assert "_lifelike" not in w   # popped — Connectome never sees it
     assert "AVAL" in w
+    # Far-field rails keep the phenotype finite without ever being where the
+    # population sits: exp(99) clamps to the eta ceiling, exp(-300) to the
+    # fastest allowed forgetting.
+    assert p["eta"] == lifelike.GENE_SPEC["eta"][3]
+    assert 0.0 < p["baseline_pull"] <= 1.0
+
+
+def test_a_gene_is_never_pinned_by_a_single_mutation():
+    """The failure this reparameterisation exists to remove. Measured over 90
+    worm-generations of the old linear genes at sigma 0.149: baseline_pull sat
+    at its floor in 54% of worms and eta in 33% — from generation 1, in all
+    three flasks. They were not evolving, they were being re-randomised and
+    clipped. In log space one sigma is a ~16% change in the rate, whatever
+    the rate's units, so a bound is many mutations away."""
+    import random
+    rng = random.Random(11)
+    sigma = 0.149
+    for name, (_kind, default, lo, hi) in lifelike.GENE_SPEC.items():
+        g0 = lifelike._to_gene(name, default)
+        vals = [lifelike._from_gene(name, g0 + sigma * rng.gauss(0, 1))
+                for _ in range(2000)]
+        pinned = sum(1 for v in vals if v <= lo or v >= hi)
+        assert pinned == 0, f"{name}: {pinned}/2000 mutants pinned at a bound"
+        # and it does move — a gene that can't be pinned but can't explore
+        # either would be worse than what it replaced
+        assert max(vals) > 1.10 * default and min(vals) < 0.91 * default
+
+
+def test_forgetting_can_never_reach_zero():
+    """No wild-type animal keeps a potentiated synapse indefinitely: in C.
+    elegans forgetting is an ACTIVE, gene-regulated process (TIR-1/JNK,
+    MSI-1/Arp2/3, dopamine via DOP-2/DOP-3). Under the old linear gene,
+    'never forgets' was a 54% event; exp() cannot return 0, so it is now
+    unreachable however the NES pushes."""
+    for g in (-1e3, -50.0, 0.0, 50.0, 1e3):
+        p = lifelike.pop_params({"_lifelike": {"tau_forget_s": g}})
+        assert p["baseline_pull"] > 0.0
+        assert p["eta"] > 0.0
+
+
+def test_legacy_gene_block_is_ignored_not_misread():
+    """A pre-2026-08-16 block stores LINEAR values under different key names.
+    Reading its baseline_pull of 0.02 as log(tau) would give a 1-second
+    memory; the keys were renamed so such a block is detectable, and it falls
+    back to the defaults instead."""
+    legacy = {"_lifelike": {"eta": 0.05, "trace_decay": 0.85,
+                            "baseline_pull": 0.02, "adapt_rate": 0.05}}
+    p = lifelike.pop_params(legacy)
+    fresh = lifelike.pop_params(None)
+    assert p == fresh
 
 
 def test_params_flatten_through_evolution_unchanged():
     w = lifelike.ensure_params({"AVAL": {"AVBL": 2.0, "AVBR": -3.0}})
     vec, keys = flatten_weights(w)
     assert ("_lifelike", "eta") in keys  # rules are genes now
+    assert ("_lifelike", "tau_forget_s") in keys
     back = unflatten_weights(vec, keys)
-    assert back["_lifelike"]["eta"] == 0.05
+    # The genome carries the LOG of the rate — that is the coordinate the NES
+    # walks, and what makes its additive step a multiplicative mutation.
+    import math
+    assert abs(back["_lifelike"]["eta"] - math.log(0.05)) < 1e-9
+    assert abs(lifelike.pop_params(back)["eta"] - 0.05) < 1e-9
     assert back["AVAL"]["AVBR"] == -3.0
 
 
@@ -166,7 +229,11 @@ def test_plasticity_stats_separates_learning_from_saturation():
         c.plasticity_step(reward=100.0)        # slam into the cap
     s = c.plasticity_stats()
     assert s["edges"] == 2 and s["capped"] == 2
-    assert abs(s["l1"] - 2 * lifelike.DELTA_CAP) < 1e-6  # saturated: l1 == capped×CAP
+    # Saturated l1 is the sum of the two edges' OWN caps, not 2xDELTA_CAP:
+    # the bound is proportional now, so A->B (genome 40) may move by the
+    # absolute ceiling 10 while B->A (genome 1.0) may move by 1.0.
+    assert abs(s["l1"] - (lifelike.delta_cap_for(40.0)
+                          + lifelike.delta_cap_for(1.0))) < 1e-6
 
 
 def test_effective_weight_is_genome_plus_delta_and_genome_untouched():
@@ -357,15 +424,21 @@ def test_lifelike_checkpoint_roundtrip():
     try:
         w = World(seed=9)
         w.satiety = 0.37
-        w.brain._delta = {"AVAL": {"AVBL": 2.5, "AVBR": -1.25}}
-        w.brain._trace = {("AVAL", "AVBL"): 0.6}
+        # Real synapses, deltas inside their per-edge bound (AVAL->DA6 is 21,
+        # AVAL->VA8 is 19): restore clamps to lifelike.delta_cap_for now, so
+        # a test fixture on a synapse that doesn't exist — the old
+        # AVAL->AVBL — would clamp to zero and read as a lost checkpoint.
+        # That clamp is deliberate: plasticity retunes wiring, it cannot
+        # invent a synapse the connectome doesn't have.
+        w.brain._delta = {"AVAL": {"DA6": 2.5, "VA8": -1.25}}
+        w.brain._trace = {("AVAL", "DA6"): 0.6}
         w._adapt = {"ASEL": 0.3, "AWCR": 0.05}
         ck = json.loads(json.dumps(w.lifelike_checkpoint()))  # via-JSON, like disk
         w2 = World(seed=9)
         w2.restore_lifelike(ck)
         assert w2.satiety == 0.37 and not w2.dead
-        assert w2.brain._delta == {"AVAL": {"AVBL": 2.5, "AVBR": -1.25}}
-        assert w2.brain._trace == {("AVAL", "AVBL"): 0.6}
+        assert w2.brain._delta == {"AVAL": {"DA6": 2.5, "VA8": -1.25}}
+        assert w2.brain._trace == {("AVAL", "DA6"): 0.6}
         # a restart must not dishabituate the nose for free
         assert w2._adapt == {"ASEL": 0.3, "AWCR": 0.05}
     finally:
@@ -424,5 +497,111 @@ def test_deterministic_with_lifelike_off_matches_itself():
     old = _env(**ALL_OFF)
     try:
         assert _run_world(400) == _run_world(400)
+    finally:
+        _restore(old)
+
+
+# --- proportional delta cap -------------------------------------------------
+#
+# The flat DELTA_CAP was a blanket amplifier. Measured on the real connectome
+# (3,689 edges, median |w| 2.0, p90 6.0): a uniform +10 multiplies the median
+# synapse by 6 and the weakest by 11 while the strongest moves by 2.7, so a
+# saturated worm's weights all end up at magnitude ~10-12 and the connectome
+# stops carrying information. In the field (2026-08-16) five of ten worms in
+# the beowulf flask had every plastic edge pinned and crawled in tight
+# circles. Sustained circling is not wild-type C. elegans behaviour — it is
+# the published phenotype of ablating the D-class GABAergic motor neurons,
+# i.e. of wrecking the dorsoventral balance, which is what flattening every
+# weight to one magnitude amounts to.
+
+def _saturate(c: Connectome, reward=100.0, steps=500):
+    for _ in range(steps):
+        c.fire_neuron("A"); c.fire_neuron("B")
+        c.plasticity_step(reward=reward)
+
+
+def _eff(c: Connectome, pre: str, post: str) -> float:
+    """Effective weight = genome + learned delta (Connectome applies the sum
+    at dendrite_accumulate; there is no accessor, so spell it out here)."""
+    return c.weights[pre][post] + c._delta.get(pre, {}).get(post, 0.0)
+
+
+def _plastic(weights: dict) -> Connectome:
+    c = Connectome(weights=weights)
+    c.enable_plasticity({"eta": 0.05, "trace_decay": 0.85, "baseline_pull": 0.0,
+                         "starve_gain": 0.8, "roam_gain": 0.5})
+    return c
+
+
+def test_a_synapse_can_at_most_double():
+    """The proportional bound, stated as the thing it guarantees: learning
+    scales a synapse, it never promotes a weak one into a strong one."""
+    c = _plastic({"A": {"B": 1.5}, "B": {"A": 2.0}})
+    _saturate(c)
+    for pre, post, genome in (("A", "B", 1.5), ("B", "A", 2.0)):
+        eff = abs(_eff(c, pre, post))
+        assert eff <= 2 * genome + 1e-9, f"{pre}->{post} grew past double"
+        assert eff > genome, "a reinforced synapse should still strengthen"
+
+
+def test_saturation_preserves_the_connectomes_rank_order():
+    """The failure mode in one assertion. Under the old flat cap a 1.0
+    synapse saturated to 11.0 and a 30.0 synapse to 40.0 — a 30x difference
+    compressed to under 4x, with the weak edge gaining more absolute drive
+    than the strong one. Rank order has to survive learning."""
+    c = _plastic({"A": {"B": 1.0}, "B": {"A": 30.0}})
+    _saturate(c)
+    weak = abs(_eff(c, "A", "B"))
+    strong = abs(_eff(c, "B", "A"))
+    assert strong / weak >= 15, f"weight structure flattened: {strong / weak:.1f}x"
+
+
+def test_old_flat_cap_is_recoverable_and_is_the_thing_that_flattens():
+    """Pins the A/B: DELTA_CAP_FRAC = inf IS the old rule. Kept executable so
+    the claim above stays checkable rather than becoming folklore."""
+    saved = lifelike.DELTA_CAP_FRAC
+    try:
+        lifelike.DELTA_CAP_FRAC = float("inf")
+        c = _plastic({"A": {"B": 1.0}, "B": {"A": 30.0}})
+        _saturate(c)
+        weak = abs(_eff(c, "A", "B"))
+        strong = abs(_eff(c, "B", "A"))
+        assert abs(weak - 11.0) < 1e-6 and abs(strong - 40.0) < 1e-6
+        assert strong / weak < 4, "the old rule flattened 30x down to under 4x"
+    finally:
+        lifelike.DELTA_CAP_FRAC = saved
+
+
+def test_capped_metric_still_fires_under_the_proportional_bound():
+    """plasticity_capped is the instrument that exposed the exploit. Compared
+    against a flat DELTA_CAP it would now read 0 on a fully saturated worm —
+    the metric would have gone blind exactly when it was needed."""
+    c = _plastic({"A": {"B": 1.0}, "B": {"A": 2.0}})
+    _saturate(c)
+    s = c.plasticity_stats()
+    assert s["edges"] == 2 and s["capped"] == 2
+    assert s["l1"] < 2 * lifelike.DELTA_CAP, "l1 should be well under the flat cap"
+
+
+def test_inhibition_still_deepens_and_never_flips():
+    """Unchanged property, re-pinned next to the new bound: the delta carries
+    the synapse's sign, so an inhibitory edge deepens and cannot cross zero."""
+    c = _plastic({"A": {"B": -4.0}, "B": {"A": 1.0}})
+    _saturate(c)
+    assert _eff(c, "A", "B") < -4.0
+
+
+def test_restored_checkpoint_deltas_are_clamped_to_the_new_bound():
+    """Every checkpoint written before the proportional bound carries deltas
+    clipped only by the old flat cap — a +10 on a |w|=1 synapse. Restoring
+    one unclamped would put the brain straight back into the flattened,
+    circling state until decay pulled it in."""
+    old = _env(**ALL_ON)
+    try:
+        w = World(seed=3, weights={"A": {"B": 1.0}, "B": {"A": 30.0}})
+        w.restore_lifelike({"delta": {"A": {"B": 10.0}, "B": {"A": 10.0}},
+                            "trace": []})
+        assert w.brain._delta["A"]["B"] == lifelike.delta_cap_for(1.0) == 1.0
+        assert w.brain._delta["B"]["A"] == 10.0     # |w|=30: absolute ceiling
     finally:
         _restore(old)

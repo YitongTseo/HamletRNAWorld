@@ -248,30 +248,81 @@ def _reset_worm_poem(worm) -> None:
     worm.recent_words = []
 
 
-def _restore_or_reset_worm(worm, generation: int) -> None:
-    """Startup recovery for one worm. If a checkpoint from THIS generation
-    exists, restore the scroll position and keep the existing poem (resume
-    mid-sentence). Otherwise the partial poem is discarded and the generation
-    restarts cleanly — the same behavior as before checkpoints existed, which
-    is the safe fallback for a missing/corrupt/stale-generation checkpoint."""
+def _usable_checkpoint(worm, generation: int) -> dict | None:
+    """This worm's checkpoint if it can resume from it, else None.
+
+    Reads and validates only — nothing is mutated, because the decision is
+    taken for the whole process at once (see _restore_or_reset_all)."""
+    # Window-per-generation corpora (corpus.library.EPOCH_LINES) need the
+    # generation before anything else: load_flasks built the world without
+    # it (GenerationState loads later), and the checkpoint's sentence index
+    # is relative to this generation's window.
+    worm.world.set_corpus_epoch(generation)
     path = _checkpoint_path(worm)
-    if path.exists():
-        try:
-            data = json.loads(path.read_text())
-            if data.get("generation") == generation and "scroller" in data:
-                worm.world.text_scroller.restore(data["scroller"])
-                worm.world.restore_lifelike(data.get("lifelike"))
-                LOG.info("restored mid-gen checkpoint: %s (gen=%d, words=%d)",
-                         worm.poem_path.parent, generation, worm.word_count)
-                return
-            LOG.info("discarding stale checkpoint for %s (ckpt gen=%r, now gen=%d)",
-                     worm.poem_path.parent, data.get("generation"), generation)
-        except Exception:
-            LOG.exception("checkpoint restore failed for %s; starting gen fresh",
-                          worm.poem_path.parent)
-    # No usable checkpoint → fresh generation.
-    _reset_worm_poem(worm)
-    _delete_checkpoint(worm)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        LOG.exception("checkpoint unreadable for %s", worm.poem_path.parent)
+        return None
+    if data.get("generation") != generation or "scroller" not in data:
+        LOG.info("stale checkpoint for %s (ckpt gen=%r, now gen=%d)",
+                 worm.poem_path.parent, data.get("generation"), generation)
+        return None
+    if not worm.world.text_scroller.can_restore(data["scroller"]):
+        LOG.info("checkpoint for %s predates the current corpus window",
+                 worm.poem_path.parent)
+        return None
+    return data
+
+
+def _restore_or_reset_all(flasks) -> None:
+    """Startup recovery for EVERY worm in this process, all or nothing.
+
+    Per worm the rule is the old one: a checkpoint from THIS generation
+    resumes the scroll position and keeps the poem; anything else discards
+    the partial poem and restarts the generation cleanly.
+
+    The all-or-nothing part is what stops flasks desyncing. Rollover is a
+    JOINT barrier across the flasks in a process, so they only roll over when
+    the last one exhausts its corpus. A flask that restarts its pass while
+    its siblings resume theirs at 95% leaves those siblings sitting on an
+    empty dish for the remaining hour-and-a-half — and with hunger on, an
+    empty dish is death in ~13 minutes (SATIETY_DECAY_PER_TICK).
+
+    That is not hypothetical: on 2026-08-16 the beowulf flask correctly
+    rejected a checkpoint written against the pre-window corpus, restarted
+    its pass alone, and killed four worms in the hamlet and daodejing flasks
+    before the barrier came round. Restarting all three costs the partial
+    poems of one generation; desyncing costs the worms."""
+    pairs = [(w, f.state.generation if f.state else 0)
+             for f in flasks for w in f.worms]
+    usable = {id(w): _usable_checkpoint(w, gen) for w, gen in pairs}
+    if all(usable.values()) and pairs:
+        for w, gen in pairs:
+            try:
+                w.world.text_scroller.restore(usable[id(w)]["scroller"])
+                w.world.restore_lifelike(usable[id(w)].get("lifelike"))
+            except Exception:
+                # A restore that throws AFTER others succeeded would leave the
+                # process half-resumed — the desync this function exists to
+                # prevent. Drop everyone back to a fresh generation instead.
+                LOG.exception("checkpoint restore failed for %s; restarting the "
+                              "generation for every flask", w.poem_path.parent)
+                break
+        else:
+            LOG.info("restored mid-gen checkpoints for all %d worms", len(pairs))
+            return
+    else:
+        n_missing = sum(1 for v in usable.values() if v is None)
+        LOG.info("%d/%d worms have no usable checkpoint; restarting the "
+                 "generation for every flask (joint rollover barrier)",
+                 n_missing, len(pairs))
+    for w, _ in pairs:
+        w.world.restart_pass()      # dish back to line 0, like the poem
+        _reset_worm_poem(w)
+        _delete_checkpoint(w)
 
 
 def _focus_key(flask: str, worm: str) -> str:
@@ -502,24 +553,55 @@ def _mutate_seed(s: int) -> int:
     return (s * 1664525 + 1013904223) & 0x7FFFFFFF
 
 
+# Common random numbers (2026-09-01). The seed's ENTIRE influence on a life is
+# `Connectome.rand_excite()` — one draw of 40 random neurons kicked at birth —
+# plus the body's initial pose. The text scroller takes no rng at all, so every
+# worm in a flask already reads an identical word stream. Giving each worm its
+# OWN seed therefore did nothing except hand each genome a different random kick
+# into a chaotic 300-neuron network, and that draw was confounded with the
+# genome in every fitness comparison the NES made.
+#
+# Measured on data-trio-4 gens 1-153 (3 flasks, 459 generation-observations)
+# BEFORE this change: a top-5 genome carried over VERBATIM as an elite beat a
+# brand-new random mutant by Cohen's d = -0.009, 95% CI [-0.080, +0.061]. Zero,
+# bounded tight. Consecutive-generation rank correlation ~0; the top-ranked worm
+# changed in ~90% of generations though 5 of 7 genomes were unchanged. The same
+# null holds for tokens eaten (d = +0.068), a purely behavioural measure the
+# judge never touches — so this was never only judge noise.
+#
+# One shared seed per flask per generation is the standard ES fix (common random
+# numbers): every worm in a generation faces the identical world AND the
+# identical birth kick, so a within-generation fitness difference is
+# attributable to the genome alone. The seed still changes every generation, so
+# nothing overfits to one draw. Elites do NOT become twins — the N_ELITES
+# carried genomes are N DIFFERENT worms' genomes, never copies of one.
+# WORMLET_COMMON_SEED=0 restores the old per-worm chains exactly (A/B).
+COMMON_SEED = os.environ.get("WORMLET_COMMON_SEED", "1") not in ("0", "false", "")
+
+
 def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
-    """Install new per-worm weights + mutate per-worm seeds for the next
-    generation, and reset poem state. Caller has already persisted the
-    previous gen's artifacts (including pre-mutation seed.txt) to disk, and has
-    already stepped + rebuilt the flask's shared embedding model (v7.1), so the
-    new Worlds pick up the flask's next-generation embedder by reference."""
+    """Install new per-worm weights + step the seed for the next generation,
+    and reset poem state. Caller has already persisted the previous gen's
+    artifacts (including pre-step seed.txt) to disk, and has already stepped +
+    rebuilt the flask's shared embedding model (v7.1), so the new Worlds pick up
+    the flask's next-generation embedder by reference."""
+    # Under COMMON_SEED the whole flask advances ONE chain, anchored to the
+    # first worm's current seed so a running lineage keeps its reproducibility
+    # from (base_seed, gen_count) instead of restarting the sequence.
+    shared_seed = (_mutate_seed(flask.worms[0].seed)
+                   if COMMON_SEED and flask.worms else None)
     for w in flask.worms:
         wt = new_weights.get(w.name)
         if wt is None:
             continue
-        # Mutate this worm's seed for the new generation. Persist atomically
-        # so a crash mid-respawn leaves either the OLD or NEW seed on disk,
-        # never a partial. The per-generation snapshot in
+        # Step the seed for the new generation. Persist atomically so a crash
+        # mid-respawn leaves either the OLD or NEW seed on disk, never a
+        # partial. The per-generation snapshot in
         # data/generations/<flask>/gen-NNNN/<worm>/seed.txt records which
         # seed was used FOR THAT generation (it was already written by
         # run_generation_rollover BEFORE this respawn, capturing w.seed at
         # the moment the previous generation ran).
-        w.seed = _mutate_seed(w.seed)
+        w.seed = shared_seed if shared_seed is not None else _mutate_seed(w.seed)
         tmp = w.poem_path.parent / "seed.txt.tmp"
         tmp.write_text(str(w.seed))
         tmp.replace(w.poem_path.parent / "seed.txt")
@@ -528,8 +610,12 @@ def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
             w.poem_file.close()
         except Exception:
             pass
+        # state.generation was already incremented by the rollover, so it is
+        # the generation this new world will live — and therefore which
+        # window of a long corpus it reads (corpus.library.EPOCH_LINES).
         w.world = World(seed=w.seed, weights=wt, embedding_model=flask.embedding_model,
-                        corpus=corpus_for_flask_name(flask.name))
+                        corpus=corpus_for_flask_name(flask.name),
+                        corpus_epoch=(flask.state.generation if flask.state else 0))
         w.poem_path.write_text("")  # truncate previous-generation poem
         w.poem_file = open(w.poem_path, "a", buffering=1)
         w.word_count = 0
@@ -1042,8 +1128,6 @@ async def lifespan(app: FastAPI):
             emb_model = flask_emb.build_model(
                 emb_state, corpus=corpus_for_flask_name(flask_name) or "hamlet")
             attach_flask_model(worms, emb_model)
-            for w in worms:
-                _restore_or_reset_worm(w, state.generation)
             FLASKS.append(WormGroup(
                 name=flask_name,
                 display=flask_display,
@@ -1056,6 +1140,9 @@ async def lifespan(app: FastAPI):
             WORMS.extend(worms)
             for w in worms:
                 WORM_BY_KEY[(flask_name, w.name)] = w
+        # After every flask exists: the resume decision is process-wide, not
+        # per flask (joint rollover barrier — see _restore_or_reset_all).
+        _restore_or_reset_all(FLASKS)
         if EXPERIMENT is not None:
             LOG.info("experiment mode %r: loaded %d flask(s) × %d worms",
                      EXPERIMENT.mode, len(FLASKS),
@@ -1146,6 +1233,20 @@ async def poems_page():
 @app.get("/about")
 async def about_page():
     return FileResponse(VIEWER_DIR / "about.html")
+
+
+@app.get("/graveyard")
+async def graveyard_page():
+    return FileResponse(VIEWER_DIR / "graveyard.html")
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Browsers (and feed readers, and link unfurlers) request /favicon.ico
+    at the site root whatever the pages declare. Serve the one SVG mark —
+    modern browsers honour the content type over the extension; the rest get
+    the <link> that viewer/palette.js injects into every page."""
+    return FileResponse(VIEWER_DIR / "favicon.svg", media_type="image/svg+xml")
 
 
 @app.get("/healthz")
@@ -1518,6 +1619,171 @@ def _gv_dir(flask: str) -> Path:
     non-existent path and every endpoint already 404s on that."""
     hit = _gv_flask_map().get(flask)
     return hit if hit is not None else _GV_ROOT / "__unknown__"
+
+
+# --- Graveyard -------------------------------------------------------------
+#
+# Every worm that has starved is recorded in deaths.jsonl (one JSON object per
+# death, written post-mortem by _log_death). The graveyard pairs each record
+# with the best thing that worm ever wrote, so a death reads as an obituary
+# rather than a row in a log.
+
+def _gv_flask_roots() -> list[tuple[str, Path, Path]]:
+    """(flask name, generations dir, live flask dir) for every flask this
+    process can see, its own and its siblings'.
+
+    deaths.jsonl lives in the LIVE tree (<data>/flasks/<flask>) while the
+    judged poems live in the generations tree (<data>/generations/<flask>) —
+    hence both paths. The union of the two trees, not just the generations
+    map: a flask can have deaths before it has ever completed a generation,
+    and burying those worms unnamed would be the wrong way round."""
+    out: dict[str, tuple[Path, Path]] = {}
+    for name, gen_dir in _gv_flask_map().items():
+        # <data>/generations/<flask> -> <data>/flasks/<flask>
+        out[name] = (gen_dir, gen_dir.parent.parent / "flasks" / gen_dir.name)
+    live_root = _GV_ROOT.parent / "flasks"
+    if live_root.is_dir():
+        for d in live_root.iterdir():
+            if d.is_dir() and d.name not in out:
+                out[d.name] = (_GV_ROOT / d.name, d)
+    return [(k, v[0], v[1]) for k, v in sorted(out.items())]
+
+
+def _best_window(gen_dir: Path, worm: str, generation: int) -> dict | None:
+    """The judge's favourite passage from this worm's poem in `generation`.
+
+    scores.jsonl carries every scored window with its emotional and coherence
+    ratings, so "most poetic" needs no new judgement from us — it is the one
+    the critic already rated highest."""
+    path = gen_dir / f"gen-{generation:04d}" / worm / "scores.jsonl"
+    best = None
+    try:
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            score = (rec.get("emotional", 0) or 0) + (rec.get("coherence", 0) or 0)
+            if best is None or score > best[0]:
+                best = (score, rec)
+    except OSError:
+        return None
+    if best is None:
+        return None
+    _, rec = best
+    return {
+        "tokens": rec.get("tokens", []),
+        "emotional": rec.get("emotional", 0),
+        "coherence": rec.get("coherence", 0),
+        "generation": generation,
+    }
+
+
+# Words to show when nothing this worm wrote was ever judged.
+_FINAL_LINES_WORDS = 24
+
+
+def _epitaph(gen_dir: Path, live_dir: Path, worm: str, generation: int) -> dict | None:
+    """The best lines this worm ever wrote, by the judge where possible.
+
+    Most deaths happen in the generation currently running, which the judge
+    only scores at rollover — so the obvious lookup finds nothing for exactly
+    the worms whose graves are newest. Hence the chain:
+
+      1. the judge's favourite window from the generation it died in;
+      2. its favourite from the most recent EARLIER generation this worm was
+         scored in (a fond line, honestly labelled with when it wrote it);
+      3. the tail of the poem it was writing when it died — unjudged, but it
+         always exists and it is the last thing the worm did.
+
+    `source` says which, so the page can never imply the critic praised lines
+    it never saw."""
+    hit = _best_window(gen_dir, worm, generation)
+    if hit:
+        return dict(hit, source="judged")
+    for n in sorted(_gv_gen_nums(gen_dir), reverse=True):
+        if n >= generation:
+            continue
+        hit = _best_window(gen_dir, worm, n)
+        if hit:
+            return dict(hit, source="judged-earlier")
+    try:
+        words = (live_dir / worm / "poem.txt").read_text().split()
+    except OSError:
+        return None
+    if not words:
+        return None
+    return {"tokens": words[-_FINAL_LINES_WORDS:], "emotional": None,
+            "coherence": None, "generation": generation, "source": "final-lines"}
+
+
+def _grave_corpus(gen_dir: Path, generation: int, local_flask: str) -> str:
+    """Which text this worm was eating.
+
+    metadata.json for the generation it died in is the authority, but the
+    CURRENT generation has none — it is only written at rollover, and that is
+    where the newest deaths are. So: that generation, then the most recent
+    generation that does have metadata, then this process's env (which knows
+    its own flasks only), then hamlet."""
+    for n in [generation] + sorted(_gv_gen_nums(gen_dir), reverse=True):
+        meta = _gv_read_json(gen_dir / f"gen-{n:04d}" / "metadata.json", {}) or {}
+        if meta.get("corpus"):
+            return meta["corpus"]
+    return _corpus_title(local_flask) or "hamlet"
+
+
+@app.get("/api/graveyard")
+async def api_graveyard(limit: int = 200):
+    """Every recorded death, newest first, with an epitaph.
+
+    Reads only files that already exist — deaths.jsonl for the record and
+    scores.jsonl for the lines — so it costs nothing to the sim and works for
+    lineages that ended long ago."""
+    graves = []
+    for name, gen_dir, live_dir in _gv_flask_roots():
+        deaths = live_dir / "deaths.jsonl"
+        try:
+            lines = deaths.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            gen = rec.get("generation", 0)
+            worm = rec.get("worm", "?")
+            plast = rec.get("plasticity") or {}
+            graves.append({
+                "flask": name,
+                "flask_label": _gv_label(name),
+                "corpus": _grave_corpus(gen_dir, gen, rec.get("flask") or ""),
+                "worm": worm,
+                "generation": gen,
+                "died_at": rec.get("ts"),
+                "cause": rec.get("cause", "starvation"),
+                "words_eaten": rec.get("word_count", 0),
+                # Sim seconds, not wallclock: how long the fast lasted.
+                "starved_s": rec.get("starved_s"),
+                "lived_ticks": rec.get("died_at_tick"),
+                "where": [rec.get("x"), rec.get("y")],
+                # The last five words it ever ate. Straight from the record —
+                # present even for a death the judge never scored.
+                "last_words": rec.get("recent_eaten") or [],
+                "epitaph": _epitaph(gen_dir, live_dir, worm, gen),
+                # Carried because it is the readable half of the spin story:
+                # a worm with every plastic edge pinned at the cap was not
+                # steering by the time it died.
+                "plasticity_capped": plast.get("capped"),
+                "plasticity_edges": plast.get("edges"),
+            })
+    # Newest first; records without a timestamp sort last rather than crash.
+    graves.sort(key=lambda g: g.get("died_at") or "", reverse=True)
+    return JSONResponse({"total": len(graves), "graves": graves[:max(0, limit)]})
 
 
 def _gv_summary(flask: str, n: int) -> dict | None:

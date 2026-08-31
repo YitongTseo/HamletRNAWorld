@@ -23,7 +23,7 @@ from pathlib import Path
 from sim.connectome import Connectome
 from sim.muscle_body import MuscleBody
 from sim.worm import WormBody
-from sim.text_scroller import TextScroller
+from sim.text_scroller import TextScroller, SPAWN_INTERVAL
 from sim import lifelike
 from corpus.hamlet import get_sentences_with_flags
 from sim.chemosensory_mapping import (
@@ -57,6 +57,13 @@ STIM_LINGER_TICKS = int(2.0 * BODY_TICK_HZ)  # 2 seconds
 HISTORY_LEN = embedding.HISTORY  # number of eaten words used as chemosensory context
 
 
+def _clamp_delta(brain, pre: str, post: str, d: float) -> float:
+    """Bound a restored learned delta by the synapse it modifies. Shared by
+    restore_lifelike; the live accumulation clamps in plasticity_step."""
+    cap = lifelike.delta_cap_for(brain.weights.get(pre, {}).get(post, 0.0))
+    return cap if d > cap else (-cap if d < -cap else d)
+
+
 @dataclass
 class Food:
     x: float
@@ -88,9 +95,22 @@ class World:
     embedding_model: "embedding.EmbeddingModel | None" = None
     # Which text this world scrolls (WORMLET_FLASK_TEXTS, per flask). None →
     # legacy env-passage hamlet, so every pre-multi-corpus caller is
-    # unchanged. Non-hamlet corpora always scroll their full text.
+    # unchanged. Non-hamlet corpora scroll their full text, except those
+    # capped by corpus.library.EPOCH_LINES (beowulf), which read one window
+    # per generation.
     corpus: str | None = None
+    # Which generation this world is living, for corpora that read a window
+    # per generation (corpus.library.EPOCH_LINES). Set from the flask's
+    # generation counter at startup and at respawn; irrelevant for every
+    # other corpus. Callers that don't know it (tests, the debug door) get
+    # window 0.
+    corpus_epoch: int = 0
     body_kind: str = "ik"
+    # [start, stop) lines of the corpus this world actually scrolls, or None
+    # for "the whole text" (every corpus but beowulf). Written into each
+    # generation's metadata.json: two beowulf generations read DIFFERENT
+    # 1500-line windows, so comparing their fitness compares two texts.
+    corpus_window: tuple[int, int] | None = field(init=False, default=None)
     brain: Connectome = field(init=False)
     worm: WormBody | MuscleBody = field(init=False)
     food: list[Food] = field(default_factory=list)
@@ -168,6 +188,14 @@ class World:
         else:
             raise ValueError(f"unknown body_kind: {self.body_kind!r}")
         self.brain.rand_excite()
+        self._build_text_scroller()
+
+    def _build_text_scroller(self) -> None:
+        """Load this world's text and hand it to a fresh TextScroller.
+
+        Split out of __post_init__ so `set_corpus_epoch` can rebuild the dish
+        once the caller knows which generation this world is living (the
+        flask's GenerationState loads after the worlds are built)."""
         # When generational evolution is enabled, scroll the full play once
         # per generation; otherwise loop the opening passage forever (legacy
         # v6 behavior).
@@ -189,17 +217,61 @@ class World:
         # economics — recorded in the fidelity ledger. Hamlet keeps 4.5 s,
         # byte-identical to stock.
         if self.corpus is None or self.corpus == "hamlet":
+            self.corpus_window = None
             self.text_scroller = TextScroller(sentences, loop=loop,
                                               edible_flags=edible_flags)
         else:
-            # Clamp ceiling 25 s: the daodejing is only 323 lines, so
-            # equal-duration pacing means a sparse dish (~18 chars per
-            # line every ~21 s — still ~60x the starvation line).
-            interval = min(25.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
+            start, stop = library.epoch_slice(self.corpus, len(sentences),
+                                              self.corpus_epoch)
+            self.corpus_window = None
+            if (start, stop) != (0, len(sentences)):
+                self.corpus_window = (start, stop)
+                # Long corpus (beowulf): read a window per generation at
+                # hamlet's 4.5 s instead of compressing the whole text into
+                # one epoch. Compression is what crushed the vertical pitch —
+                # 4286 lines in one epoch is a line every 1.57 s, 23.6 world
+                # units apart against 18px glyphs. A window restores the
+                # 67.5-unit pitch the hamlet flasks have always had, at the
+                # cost of reading the epic across three generations.
+                sentences = sentences[start:stop]
+                edible_flags = edible_flags[start:stop]
+                interval = SPAWN_INTERVAL
+            else:
+                # Clamp ceiling 25 s: the daodejing is only 323 lines, so
+                # equal-duration pacing means a sparse dish (~18 chars per
+                # line every ~21 s — still ~60x the starvation line).
+                interval = min(25.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
             self.text_scroller = TextScroller(
                 sentences, loop=loop, edible_flags=edible_flags,
                 spawn_interval=interval,
                 layout=library.LAYOUTS.get(self.corpus, "horizontal"))
+
+    def restart_pass(self) -> None:
+        """Rewind this world's corpus pass to line 0, discarding all scroll
+        state and every word on the dish.
+
+        Used when the server restarts a generation instead of resuming it, so
+        that "no usable checkpoint" means the same thing for the dish as it
+        already meant for the poem. Without it the reset was only true by
+        accident — it relied on the caller happening to hold a freshly built
+        world (server/app.py _restore_or_reset_all)."""
+        self._build_text_scroller()
+
+    def set_corpus_epoch(self, epoch: int) -> None:
+        """Point this world at generation `epoch`'s window of the corpus.
+
+        No-op unless the window actually moves, so the common case (every
+        corpus but beowulf) keeps the scroller built in __post_init__ —
+        including any scroll position already restored into it. Call BEFORE
+        restoring a mid-generation checkpoint: the checkpoint's sentence
+        index is relative to the window, and rebuilding would drop it."""
+        if epoch == self.corpus_epoch:
+            return
+        self.corpus_epoch = epoch
+        if self.corpus and self.corpus != "hamlet":
+            from corpus import library
+            if self.corpus in library.EPOCH_LINES:
+                self._build_text_scroller()
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))
@@ -409,7 +481,16 @@ class World:
             self.stim_food_sense = False
 
         # Hunger: metabolism runs every body tick; hitting zero is death.
-        if self._hunger_on and not self.dead:
+        # EXCEPT once this flask's corpus pass is spent. Rollover is a joint
+        # barrier across the flasks in a process, so a flask that finishes
+        # first waits on an empty dish — no line will ever spawn again this
+        # generation — until the slowest sibling finishes. Starving there
+        # selects for nothing: the poem is already written, the judge never
+        # sees the wait, and the worm cannot eat however well it evolved.
+        # Measured 2026-08-16, when a restart desynced the flasks: 13 minutes
+        # of empty dish, four worms dead, and the fastest flask had another
+        # 90 minutes to run. Waiting worms idle; they do not starve.
+        if self._hunger_on and not self.dead and not self.text_scroller.corpus_exhausted:
             self.satiety -= lifelike.SATIETY_DECAY_PER_TICK
             if self.satiety <= 0.0:
                 self.satiety = 0.0
@@ -466,8 +547,18 @@ class World:
             self._last_meal_tick = int(data.get("last_meal_tick", -1))
             self.death_record = data.get("death_record")
         if self._plasticity_on and "delta" in data:
-            self.brain._delta = {pre: {post: float(v) for post, v in posts.items()}
-                                 for pre, posts in data["delta"].items()}
+            # Clamp on the way in. Deltas are bounded per-synapse now
+            # (lifelike.delta_cap_for), and every checkpoint written before
+            # 2026-08-16 carries deltas bounded only by the old flat cap — a
+            # +10 on a |w|=1 synapse. Without this the restored brain runs
+            # out of bounds until decay and the next reinforcement pull it
+            # back, which is exactly the flattened, circling phenotype the
+            # bound exists to prevent.
+            self.brain._delta = {
+                pre: {post: _clamp_delta(self.brain, pre, post, float(v))
+                      for post, v in posts.items()}
+                for pre, posts in data["delta"].items()
+            }
             self.brain._trace = {(a, b): float(v)
                                  for a, b, v in data.get("trace", [])}
             self.brain._stats_cache = None  # direct _delta mutation

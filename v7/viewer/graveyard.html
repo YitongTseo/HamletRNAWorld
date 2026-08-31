@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=3"></script>
+    <title>wormlet — graveyard</title>
+    <style>
+      html, body { margin: 0; padding: 0; min-height: 100%;
+                   background: var(--bg, #292118); color: var(--fg, #ece2cd); }
+      body { font-family: var(--font-mono, ui-monospace, monospace); font-size: 13px; }
+
+      #intro { padding: 18px 34px 6px; color: var(--dim); max-width: 62ch;
+               line-height: 1.7; font-size: 12px; }
+      #intro b { color: var(--fg); font-weight: 400; }
+      #count { padding: 0 34px 10px; color: var(--dim); font-size: 10.5px;
+               letter-spacing: 0.14em; text-transform: uppercase; }
+
+      #plots { display: grid; gap: 18px; padding: 8px 34px 60px;
+               grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
+
+      /* A plot: the stone on the left, the record and the lines on the right.
+         Deliberately quiet — no card borders, just a hairline between plots,
+         so the page reads as a register and not a dashboard. */
+      .plot { display: grid; grid-template-columns: 74px 1fr; gap: 14px;
+              padding: 18px 0 20px; border-top: 1px solid var(--line);
+              align-items: start; }
+      .stone { width: 74px; height: 92px; display: block; }
+      .name { font-family: var(--font-serif, serif); font-style: italic;
+              font-size: 20px; color: var(--fg); margin: 0 0 3px; }
+      .name a { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; }
+      .name a:hover { border-bottom-color: var(--accent); }
+      .vitals { color: var(--dim); font-size: 10.5px; letter-spacing: 0.08em;
+                line-height: 1.8; text-transform: uppercase; }
+      .vitals .sep { opacity: 0.4; padding: 0 5px; }
+
+      /* The epitaph: the judge's highest-rated window of that worm's poem. */
+      .epitaph { margin: 12px 0 0; padding-left: 12px;
+                 border-left: 2px solid var(--accent);
+                 font-family: var(--font-serif, serif); font-size: 16.5px;
+                 line-height: 1.6; color: var(--fg); }
+      .epitaph .src { display: block; margin-top: 7px; font-family: var(--font-mono, monospace);
+                      font-style: normal; font-size: 10px; letter-spacing: 0.1em;
+                      color: var(--dim); text-transform: uppercase; }
+      .last-words { margin-top: 11px; color: var(--dim); font-size: 11.5px; line-height: 1.7; }
+      .last-words b { color: var(--fg); font-weight: 400;
+                      font-family: var(--font-serif, serif); font-size: 14px; font-style: italic; }
+      #empty { padding: 40px 34px; color: var(--dim); font-style: italic; }
+
+      @media (max-width: 768px) {
+        #intro, #count, #plots { padding-left: 16px; padding-right: 16px; }
+        .plot { grid-template-columns: 56px 1fr; gap: 10px; }
+        .stone { width: 56px; height: 70px; }
+      }
+      @media (prefers-reduced-motion: reduce) { .stone { --motion: none; } }
+    </style>
+  </head>
+  <body data-page="graveyard">
+    <script src="/static/header.js?v=1"></script>
+    <div id="intro">
+      Worms starve. A worm that stops finding words on its dish runs out of
+      satiety in about thirteen minutes and dies where it was swimming — the
+      run continues without it until the generation rolls over. This is the
+      register of every one we have recorded, with <b>the lines the judge
+      rated highest</b> from the poem each was writing when it died.
+    </div>
+    <div id="count">…</div>
+    <div id="plots"></div>
+    <script src="/static/experiment_dropdown.js?v=2"></script>
+    <script src="/static/graveyard.js?v=1"></script>
+  </body>
+</html>

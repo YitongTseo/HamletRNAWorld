@@ -59,6 +59,44 @@ TRUST_RADIUS = 0.5       # hard cap: |Δθ| ≤ TRUST_RADIUS · σ · √d, so t
                          # can never move further than the cloud of children it
                          # actually measured. 0.5 ≈ the mean-shift-per-generation
                          # that CMA-ES uses (1/√μ_eff for μ_eff≈4).
+# --- shape of a mutation ----------------------------------------------------
+#
+# Degrees of freedom of the Student-t the children are drawn from. Set it to
+# float("inf") for the plain Gaussian, which is what every generation before
+# 2026-08-16 used and is how the A/B in tests/test_evolution.py is written.
+# (Not None: the helpers take df=None to mean "use this default", and one
+# sentinel doing both jobs silently turned an A/B into two identical runs.)
+#
+# WHY NOT GAUSSIAN. Real mutational effects are not bell-shaped. The measured
+# distributions are L-shaped and heavy-tailed: in Chlamydomonas MA lines, 95%
+# of mutations changed the expression of 0-1 genes and a 5% tail changed tens
+# or hundreds, and a single variance parameter provably fails to describe them
+# (higher moments differ between genes). Evolution mostly makes small
+# adjustments and occasionally makes a large one; a Gaussian makes neither —
+# it makes middling ones, always, in every coordinate at once.
+#
+# WHY IT DOESN'T BREAK THE ESTIMATOR (the claim I got wrong first time). The
+# eps in the NES update is not "the perturbation", it is the SCORE of the
+# search distribution, ∇_θ log p(x−θ). For an isotropic Gaussian that score
+# happens to equal eps, which is why the two are usually written the same way.
+# Swap the sampling law and the estimator stays exact provided you swap the
+# score with it. For a Student-t the score is
+#
+#     s(u) = (ν+1)·u / (ν + u²)          u = the standardised variate
+#
+# which rises, peaks, and then REDESCENDS. So the heavy tail buys genuine
+# large mutations while the update refuses to be hijacked by one: a child at
+# 10σ contributes about a fifth of what a child at 1σ contributes. That is a
+# redescending M-estimator, and it is exactly the property you want when a
+# lucky judge score lands on a wild outlier.
+#
+# ν=3 rather than 1 (Cauchy, as in fast evolutionary programming): ν>2 keeps
+# the variance finite, so σ still means what the σ-controllers and the trust
+# region assume it means. The variates are rescaled to unit variance for the
+# same reason. xNES's σ signal (‖eps‖²/d − 1) keeps its zero mean under that
+# rescaling but gets noisier; the live arms run vs_mean, which is unaffected.
+MUTATION_DF: float = 3.0
+
 GAMMA = 1.5              # fitness exponent — lowered (was 2.5) so a worm that
                          # is consistently language-like beats one lucky window
 EMOTIONAL_WEIGHT = 1.5   # vs 1.0 for coherence
@@ -252,7 +290,11 @@ def nes_update(
     rw = rank_weights(n)
     weighted_eps = np.zeros_like(parent)
     for rank, child_idx in enumerate(order):
-        weighted_eps += rw[rank] * eps_list[child_idx]
+        # The score of the search distribution, NOT the raw perturbation. They
+        # are the same thing for a Gaussian; under the heavy-tailed default
+        # (MUTATION_DF) the score redescends, so a freak child cannot drag the
+        # parent out past the cloud it actually measured.
+        weighted_eps += rw[rank] * mutation_score(eps_list[child_idx])
 
     # Natural-gradient step: magnitude scales WITH sigma.
     step = (lr * sigma / n) * weighted_eps
@@ -296,10 +338,67 @@ def spawn_population(parent: np.ndarray, n: int, sigma: float,
     eps_list: list[np.ndarray] = []
     children: list[np.ndarray] = []
     for _ in range(n):
-        eps = rng.standard_normal(parent.shape)
+        eps = sample_eps(parent.shape, rng)
         eps_list.append(eps)
         children.append(parent + sigma * eps)
     return children, eps_list
+
+
+def _t_scale(df: float) -> float:
+    """Factor that rescales a raw t_ν variate to unit variance (Var = ν/(ν−2))."""
+    return float(np.sqrt((df - 2.0) / df))
+
+
+def sample_eps(shape, rng: np.random.Generator,
+               df: float | None = None) -> np.ndarray:
+    """One mutation vector: unit-variance, heavy-tailed by default.
+
+    Unit variance is what keeps sigma meaning the same thing it meant under
+    the Gaussian, so the sigma controllers and the trust region need no
+    retuning (see MUTATION_DF)."""
+    df = MUTATION_DF if df is None else df
+    if not np.isfinite(df):
+        return rng.standard_normal(shape)
+    # MULTIVARIATE t: ONE chi-square scale for the whole child, not an
+    # independent draw per coordinate. This is the difference between "every
+    # synapse rolls its own dice" and "this individual carries a large-effect
+    # mutation", and at this dimensionality it is the whole ball game.
+    # Measured at d=3696, per-child ||eps||/sqrt(d):
+    #
+    #   Gaussian            p05 0.98  med 1.00  p99 1.03  max  1.04
+    #   independent t3      p05 0.91  med 0.97  p99 1.36  max  2.90
+    #   multivariate t3     p05 0.35  med 0.66  p99 3.20  max 29.5
+    #
+    # Concentration of measure eats per-coordinate tails: sum 3,696 of them
+    # and every child comes out the same size, which is exactly the
+    # middling-change-everywhere behaviour the Gaussian was rejected for.
+    # With a shared scale, 21% of children carry a mutation >1.5x the median
+    # and most carry less — the L-shape, at the level it is actually measured
+    # in nature (an individual, not a coordinate).
+    z = rng.standard_normal(shape)
+    w = rng.chisquare(df) / df
+    return _t_scale(df) * z / np.sqrt(w)
+
+
+def mutation_score(eps: np.ndarray, df: float | None = None) -> np.ndarray:
+    """∇_θ log p of the search distribution, in the same units as eps.
+
+    Identity for the Gaussian — which is why the NES update could always be
+    written in terms of eps directly — and redescending for the Student-t, so
+    an outlier child informs the step less than a moderate one rather than
+    more (MUTATION_DF)."""
+    df = MUTATION_DF if df is None else df
+    if not np.isfinite(df):
+        return eps
+    # Score of the MULTIVARIATE t: (nu+d)*u / (nu + ||u||^2), a per-child
+    # scalar times the direction. It redescends in ||eps||, so the child that
+    # gets down-weighted is the wildly-mutated INDIVIDUAL — the right unit,
+    # since that is what the judge scored. Reduces to eps as nu -> inf, and to
+    # ~eps for a typical child at finite nu.
+    c = _t_scale(df)
+    u = eps / c
+    d = u.size
+    return ((df + d) * u / (df + float(np.dot(u, u)))) / c
 
 
 @dataclass

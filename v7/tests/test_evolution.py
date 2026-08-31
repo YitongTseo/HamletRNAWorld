@@ -200,3 +200,109 @@ if __name__ == "__main__":
             failed += 1; print(f"FAIL {fn.__name__}"); traceback.print_exc()
     print(f"\n{len(fns)-failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+# --- shape of a mutation (MUTATION_DF) --------------------------------------
+#
+# Children are drawn from a Student-t, not a Gaussian, because real mutational
+# effect distributions are L-shaped and heavy-tailed rather than bell-shaped.
+# The estimator stays exact because the update uses that distribution's SCORE
+# (evolution.mutation_score), which for the t redescends — the heavy tail buys
+# rare large mutations without letting one freak child drag the parent.
+
+INF = float("inf")
+
+
+def test_heavy_tail_keeps_the_variance_but_not_the_shape():
+    """Same sigma must still mean the same sampling radius — the sigma
+    controllers and the trust region both assume it — while genuinely large
+    mutations become possible. Measured per coordinate, across children."""
+    rng = np.random.default_rng(4)
+    g = np.concatenate([ev.sample_eps((200,), rng, df=INF) for _ in range(1000)])
+    t = np.concatenate([ev.sample_eps((200,), rng) for _ in range(1000)])
+    assert abs(g.std() - 1.0) < 0.05 and abs(t.std() - 1.0) < 0.15
+    assert np.mean(np.abs(g) > 5) < 1e-4
+    assert np.mean(np.abs(t) > 5) > 1e-3
+    assert np.abs(t).max() > 3 * np.abs(g).max()
+
+
+def test_mutation_size_varies_between_children_not_just_within_them():
+    """The property that per-coordinate tails DON'T give you, and the reason
+    the sampler draws one chi-square scale per child rather than one per
+    weight. Concentration of measure: sum 3,696 independent heavy-tailed
+    coordinates and every child comes out the same size, which is the
+    middling-change-everywhere behaviour the Gaussian was rejected for.
+
+    Measured at d=3696, per-child ||eps||/sqrt(d): Gaussian spans 0.98-1.04
+    from p05 to max; independent-t 0.91-2.90; shared-scale t 0.35-29.5."""
+    rng = np.random.default_rng(6)
+    d = 512
+    def sizes(**kw):
+        return np.array([np.linalg.norm(ev.sample_eps((d,), rng, **kw)) / np.sqrt(d)
+                         for _ in range(2000)])
+    g, t = sizes(df=INF), sizes()
+    # A Gaussian gives every child the same-sized mutation at this dimension.
+    assert np.percentile(g, 99) / np.median(g) < 1.15
+    # The t gives most children a quiet genome and a few a large-effect one.
+    assert np.percentile(t, 99) / np.median(t) > 2.0
+    assert np.mean(t > 1.5 * np.median(t)) > 0.05
+    assert np.mean(t < 0.7 * np.median(t)) > 0.05
+
+
+def test_mutation_score_redescends_so_a_freak_child_cannot_hijack_the_step():
+    """The property that makes the heavy tail safe. Under the Gaussian the
+    influence of a child grows without bound in |eps|; under the t it peaks
+    and falls away."""
+    s = lambda e: float(ev.mutation_score(np.array([e]))[0])
+    assert s(1.0) > s(0.25)                    # rises
+    assert s(10.0) < s(1.0) / 4                # then redescends, hard
+    assert s(30.0) < s(10.0)
+    # The Gaussian is the identity — which is why the update could always be
+    # written in terms of eps directly.
+    for e in (0.5, 2.0, 40.0):
+        assert ev.mutation_score(np.array([e]), df=INF)[0] == e
+
+
+def test_gaussian_setting_reproduces_the_old_behaviour_exactly():
+    """The A/B. df=inf must be the pre-2026-08-16 rule, bit for bit, in both
+    the sampling and the update — otherwise the comparison is folklore.
+
+    (df=None means 'use the module default', NOT Gaussian. Conflating the two
+    silently turned this test into two identical runs when it was written.)"""
+    rng_a = np.random.default_rng(11)
+    rng_b = np.random.default_rng(11)
+    eps = ev.sample_eps((64,), rng_a, df=INF)
+    assert np.array_equal(eps, rng_b.standard_normal(64))
+    assert not np.array_equal(ev.sample_eps((64,), np.random.default_rng(11)),
+                              np.random.default_rng(11).standard_normal(64))
+
+    parent = np.zeros(6)
+    eps_list = [np.full(6, 0.5), np.full(6, -0.5), np.full(6, 3.0)]
+    scores = [1.0, 0.0, 2.0]
+    saved = ev.MUTATION_DF
+    try:
+        ev.MUTATION_DF = INF
+        gauss = ev.nes_update(parent, eps_list, scores, sigma=0.1)
+        ev.MUTATION_DF = 3.0
+        heavy = ev.nes_update(parent, eps_list, scores, sigma=0.1)
+    finally:
+        ev.MUTATION_DF = saved
+    # The top-ranked child here is the 3-sigma outlier, so the Gaussian update
+    # leans on it far harder than the heavy-tailed one does.
+    assert np.linalg.norm(gauss) > 2 * np.linalg.norm(heavy)
+
+
+def test_heavy_tailed_search_still_ascends():
+    """Sanity: the estimator has to actually optimise. Hill-climb a quadratic
+    with the real spawn/update pair and check the parent approaches the peak."""
+    rng = np.random.default_rng(7)
+    target = np.array([2.0, -1.0, 0.5, 3.0])
+    parent = np.zeros(4)
+    score = lambda x: -float(np.sum((x - target) ** 2))
+    start = score(parent)
+    sigma = 0.5
+    for _ in range(60):
+        children, eps = ev.spawn_population(parent, 12, sigma, rng)
+        parent = ev.nes_update(parent, eps, [score(c) for c in children], sigma=sigma)
+    assert score(parent) > start
+    assert np.linalg.norm(parent - target) < np.linalg.norm(target) * 0.5

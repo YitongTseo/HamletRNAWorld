@@ -17,21 +17,6 @@
       :root { --bg:#000; --fg:#ece2cd; --accent:#cfa348; --dim:#8f8266; --warm:#cfa348; --hot:#cd5d4a; }
       html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--fg); }
       body { font:13px ui-monospace, SFMono-Regular, Menlo, monospace; }
-      header {
-        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
-        padding: 22px 34px 16px; border-bottom: 1px solid #3a3226;
-      }
-      header h1 { margin: 0; font-family: var(--font-serif, serif); font-style: italic;
-                  font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--fg); }
-      header h1 b { font-weight: 400; color: var(--accent); }
-      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
-                        color: var(--dim); margin-left: 14px; font-style: normal; }
-      header h1 small a { color: var(--dim); }
-      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
-                   font-family: var(--font-mono, monospace); }
-      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
-      header nav a:hover { color: var(--accent); }
-      header nav a.here { color: var(--accent); }
 
       #status { padding:4px 18px; color:var(--dim); font-size:11px; }
 
@@ -115,13 +100,8 @@
       .heat-legend .swatch { display:inline-block; width:14px; height:14px; margin-right:4px; vertical-align:middle; border:1px solid #333; }
     </style>
   </head>
-  <body>
-    <header>
-      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
-        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
-      <nav><a href="/">worms</a><a href="/poems">poems</a><a href="/generations" class="here">generations</a><a href="/about">about</a></nav>
-      <div id="experiment-switcher"></div>
-    </header>
+  <body data-page="generations">
+    <script src="/static/header.js?v=1"></script>
 
     <section id="experiment-banner" class="card" style="display:none; padding:10px 14px; margin:0 18px;">
       <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">

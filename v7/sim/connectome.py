@@ -259,7 +259,7 @@ class Connectome:
             self._fired = set()
 
         if reward > 0.0 and self._trace:
-            from sim.lifelike import DELTA_CAP
+            from sim.lifelike import delta_cap_for
             gain = p["eta"] * reward
             delta = self._delta
             for (pre, post), e in self._trace.items():
@@ -267,13 +267,21 @@ class Connectome:
                 # strengthen (+), inhibitory synapses deepen (−). An unsigned
                 # increment would erode inhibition every meal and could drive
                 # an inhibitory weight across zero into excitation.
-                sign = 1.0 if self.weights.get(pre, {}).get(post, 0.0) >= 0 else -1.0
+                w = self.weights.get(pre, {}).get(post, 0.0)
+                sign = 1.0 if w >= 0 else -1.0
+                # The bound is proportional to THIS synapse (lifelike.py):
+                # under the old flat cap a weak synapse could grow 11x while a
+                # strong one grew 2.7x, so saturation flattened every weight
+                # to the same magnitude and the connectome stopped meaning
+                # anything. Now a synapse can at most double, and rank order
+                # survives learning.
+                cap = delta_cap_for(w)
                 dpre = delta.setdefault(pre, {})
                 d = dpre.get(post, 0.0) + gain * e * sign
-                if d > DELTA_CAP:
-                    d = DELTA_CAP
-                elif d < -DELTA_CAP:
-                    d = -DELTA_CAP
+                if d > cap:
+                    d = cap
+                elif d < -cap:
+                    d = -cap
                 dpre[post] = d
 
         # Decay traces and relax deltas toward the genome; prune dust so the
@@ -305,16 +313,20 @@ class Connectome:
         what separates 'learned a lot' from 'every traced synapse slammed into
         the cap and the rule can no longer steer'."""
         if self._stats_cache is None:
-            from sim.lifelike import DELTA_CAP
-            near_cap = DELTA_CAP - 1e-9
+            from sim.lifelike import delta_cap_for
             edges = capped = 0
             l1 = 0.0
-            for posts in self._delta.values():
-                for d in posts.values():
+            for pre, posts in self._delta.items():
+                for post, d in posts.items():
                     a = abs(d)
                     edges += 1
                     l1 += a
-                    if a >= near_cap:
+                    # Against THIS synapse's own cap: the bound is
+                    # proportional now, so a flat DELTA_CAP comparison would
+                    # report 0 capped edges no matter how saturated the worm
+                    # was — the metric that first exposed the exploit would
+                    # have gone quietly blind.
+                    if a >= delta_cap_for(self.weights.get(pre, {}).get(post, 0.0)) - 1e-9:
                         capped += 1
             self._stats_cache = {"edges": edges, "capped": capped,
                                  "l1": round(l1, 2), "traces": len(self._trace)}
