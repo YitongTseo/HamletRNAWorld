@@ -33,6 +33,7 @@ Public API:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -327,6 +328,64 @@ def adapt_sigma(sigma: float, success_rate: float) -> float:
 
 # --- helpers --------------------------------------------------------------
 
+# --- which coordinates evolution is allowed to touch --------------------------
+# WORMLET_EVOLVE_MASK freezes part of the connectome so the search runs in a
+# smaller space. This is the highest-leverage knob in the file, and it is pure
+# arithmetic: an ES gradient built from `lambda` children in `d` dimensions
+# aligns with the true gradient by roughly sqrt(lambda/d). At the full genome
+# with 5 fresh children that is sqrt(5/3689) = 0.037 — every step is 96%
+# random, and no judge or model fixes it. Measured on this connectome:
+#
+#   mode      d      alignment @5 children   @15 children
+#   all     3689           0.037                0.064
+#   chemo2  1417           0.059                0.103
+#   chemo    228           0.148                0.256
+#
+# So freezing the motor circuitry is worth ~4x, free, where TRIPLING the
+# population is worth 1.7x at triple the cost (sqrt scaling is unforgiving).
+#
+# The cut is biological, not arbitrary: 24 amphid neurons carry smell into the
+# brain and 228 synapses leave them — those decide "what does this word taste
+# like and which way do I turn". The other ~3,461 are the crawling machinery. A
+# real C. elegans does not re-evolve how to crawl in order to learn what to
+# eat. What you give up is solutions routed through the motor circuit, which in
+# this project's history have mostly been the degenerate exploits.
+#
+# The lifelike rule genes are ALWAYS in the search — they are 7 coordinates and
+# they are the learning machinery itself, not locomotion.
+#
+# "all" restores today's behaviour exactly and is how the A/B is written.
+EVOLVE_MASK = os.environ.get("WORMLET_EVOLVE_MASK", "all").strip() or "all"
+
+
+def build_evolve_mask(keys: list[tuple[str, str]],
+                      mode: str | None = None) -> np.ndarray | None:
+    """Boolean mask over the flattened genome, or None for "evolve everything".
+
+    None (not an all-True mask) is deliberate: it keeps the unmasked path
+    byte-identical to before this existed, so "all" cannot regress."""
+    mode = (EVOLVE_MASK if mode is None else mode).strip()
+    if mode in ("", "all", "none", "0"):
+        return None
+    from sim.chemosensory_mapping import PC_NEURON_PAIRS
+    from sim.lifelike import LIFELIKE_KEY
+
+    amphid = {n for pair in PC_NEURON_PAIRS for n in pair}
+    if mode == "chemo":
+        allowed_src = amphid
+    elif mode == "chemo2":
+        # Also the first interneuron layer: everything the amphids synapse ONTO.
+        allowed_src = amphid | {t for (s, t) in keys if s in amphid}
+    else:
+        raise ValueError(
+            f"unknown WORMLET_EVOLVE_MASK {mode!r} — use all, chemo or chemo2")
+    mask = np.array([s in allowed_src or s == LIFELIKE_KEY for (s, _t) in keys],
+                    dtype=bool)
+    if not mask.any():
+        raise ValueError(f"WORMLET_EVOLVE_MASK={mode} matched no coordinates")
+    return mask
+
+
 def spawn_population(parent: np.ndarray, n: int, sigma: float,
                      rng: np.random.Generator) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Spawn `n` FRESH Gaussian samples of the search distribution.
@@ -431,6 +490,7 @@ def evolve_generation(
     parent_fitness: float | None = None,
     prev_best_fitness: float | None = None,  # deprecated alias for parent_fitness
     scheme: str = "vs_mean",                 # Exp-2 σ-control A/B (σ-update only)
+    mask: np.ndarray | None = None,          # coords evolution may touch
 ) -> NextGen:
     """One generation of elitist NES (Changes 2 + 4 + 5).
 
@@ -450,6 +510,31 @@ def evolve_generation(
     genomes (top-n_elites carried verbatim, the rest fresh NES samples).
     """
     n = len(genomes)
+
+    # --- optional subspace projection (WORMLET_EVOLVE_MASK) ------------------
+    # Everything below runs at the MASKED dimension, so sample_eps, the
+    # multivariate-t score (which divides by d) and the trust region
+    # (sigma*sqrt(d)) all see the true size of the search. Masking eps after
+    # the fact would leave all three computing against d=3689 and quietly
+    # mis-scale every step.
+    full_parent = parent_vec
+    full_genomes = genomes
+    if mask is not None:
+        parent_vec = parent_vec[mask]
+        genomes = [g[mask] for g in genomes]
+        # eps is persisted full-length, so the normal case is a plain restrict.
+        # Anything else is a genome from before a layout change: drop it rather
+        # than guess, exactly as a missing eps is dropped.
+        epses = [e[mask] if (e is not None and e.shape == full_parent.shape)
+                 else None for e in epses]
+
+    def _expand(reduced: np.ndarray, base: np.ndarray) -> np.ndarray:
+        """Masked coords from `reduced`, everything else from `base`."""
+        if mask is None:
+            return reduced
+        out = base.copy()
+        out[mask] = reduced
+        return out
 
     # --- NES gradient from fresh children only (Change 2) ---
     # Elites are not Gaussian samples of THIS parent, so including them would
@@ -490,7 +575,11 @@ def evolve_generation(
     # --- elitism: carry the top-n_elites genomes verbatim (Change 5) ---
     ranked = sorted(range(n), key=lambda i: -fitnesses[i])
     k = min(max(0, n_elites), n)
-    elite_genomes = [genomes[i].copy() for i in ranked[:k]]
+    # Elites carry their OWN full genome, not the parent's frozen half. Under a
+    # stable mask the frozen coords are identical anyway; if the mask ever
+    # changes mid-lineage this is what stops the expansion silently rewriting
+    # the part of a genome evolution is no longer allowed to see.
+    elite_genomes = [full_genomes[i].copy() for i in ranked[:k]]
 
     # --- fill the rest with fresh samples of the UPDATED parent ---
     n_fresh = n - k
@@ -499,9 +588,14 @@ def evolve_generation(
     else:
         fresh_children, fresh_child_eps = [], []
 
-    next_genomes = elite_genomes + fresh_children
-    next_epses: list[np.ndarray | None] = [None] * k + fresh_child_eps
+    new_parent_full = _expand(new_parent, full_parent)
+    next_genomes = elite_genomes + [_expand(c, new_parent_full) for c in fresh_children]
+    # eps is stored full-length (zero on frozen coords) so the on-disk format
+    # is unchanged and a mask change cannot produce a length mismatch.
+    next_epses: list[np.ndarray | None] = [None] * k + [
+        _expand(e, np.zeros_like(full_parent)) for e in fresh_child_eps]
     next_is_elite = [True] * k + [False] * n_fresh
+    new_parent = new_parent_full
 
     return NextGen(
         new_parent=new_parent,

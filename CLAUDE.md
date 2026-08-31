@@ -125,6 +125,22 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   above. **Untested in production as of this writing** — verify after the
   first rollover that all worms in a flask report the same `seed` in
   `/api/worms`, then re-run the elite-vs-fresh test.
+- **The search space is maskable** (`WORMLET_EVOLVE_MASK`, default `all`).
+  `chemo` freezes everything but the 228 synapses leaving the 24 amphid
+  neurons; `chemo2` also keeps the first interneuron layer (1,417). This is the
+  highest-leverage knob in `evolution.py` and it is pure arithmetic: an ES
+  gradient from λ children in d dimensions aligns with the true gradient by
+  ~√(λ/d). At the full genome with 5 fresh children that is **0.037** — every
+  step is 96% random. `chemo2` gives 0.059, `chemo` **0.148**. Freezing the
+  motor circuitry is worth ~4× for free, where TRIPLING the population is worth
+  1.7× at triple the cost. The `_lifelike` rule genes are always evolvable.
+  Masking happens by projecting into the subspace *inside* `evolve_generation`,
+  so `sample_eps`, the multivariate-t score (which divides by d) and the trust
+  region (σ√d) all see the true size — masking eps after the fact would leave
+  all three scaled to d=3,689. eps is still persisted full length, so switching
+  the mask mid-lineage cannot cause a length mismatch, and elites carry their
+  own frozen half rather than the parent's. `all` returns None, not an all-True
+  mask, so the default path is byte-identical to before it existed.
 - **One judge, always** (`WORMLET_JUDGE_BACKEND=anthropic`, no fallback). The
   qwen-primary/Haiku-fallback pair spliced the lineage across two critics every
   time the gaming PC slept. qwen is not the better judge — measured elite

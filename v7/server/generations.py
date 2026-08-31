@@ -36,6 +36,7 @@ import numpy as np
 from corpus.hamlet import is_non_reactive  # punctuation set is in PUNCTUATION below
 from server.evolution import (
     SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT, FITNESS_WINDOW_FLOOR, N_ELITES,
+    EVOLVE_MASK, build_evolve_mask,
     evolve_generation, fitness, flatten_weights, unflatten_weights, WeightDict,
 )
 from server.gardener import maybe_write_log
@@ -435,7 +436,7 @@ def run_generation_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
-        scheme=SIGMA_SCHEME,
+        scheme=SIGMA_SCHEME, mask=build_evolve_mask(parent_keys),
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma
@@ -672,7 +673,7 @@ def run_experiment_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
-        scheme=SIGMA_SCHEME,
+        scheme=SIGMA_SCHEME, mask=build_evolve_mask(parent_keys),
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma
