@@ -191,12 +191,12 @@ def test_fresh_worm_dir_persists_lifelike_genes():
     try:
         with tempfile.TemporaryDirectory() as td:
             orch.FLASKS_DIR = Path(td)
-            wdir, w = orch._ensure_flask_worm_dir("flask_t", "wormy", 1)
+            wdir, w, _seed = orch._ensure_flask_worm_dir("flask_t", "wormy", 1)
             assert lifelike.LIFELIKE_KEY in w
             assert lifelike.LIFELIKE_KEY in _json.loads((wdir / "weights.json").read_text())
             # existing files are never retro-injected
             (wdir / "weights.json").write_text(_json.dumps({"A": {"B": 1.0}}))
-            _, w2 = orch._ensure_flask_worm_dir("flask_t", "wormy", 1)
+            _, w2, _seed2 = orch._ensure_flask_worm_dir("flask_t", "wormy", 1)
             assert lifelike.LIFELIKE_KEY not in w2
     finally:
         orch.FLASKS_DIR = real

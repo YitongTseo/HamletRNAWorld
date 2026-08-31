@@ -81,8 +81,26 @@ def _load_or_create_config(n_worms: int | None) -> list[dict]:
     return cfg
 
 
-def _ensure_worm_dir(name: str, seed: int) -> tuple[Path, dict]:
-    """Create data/worms/<name>/ if needed; return (dir, weights)."""
+def _read_seed(seed_file: Path, fallback: int) -> int:
+    """The seed that is actually on disk, or `fallback` if there isn't one yet.
+
+    seed.txt was WRITE-ONLY until 2026-09-01: `_respawn_flask` advanced each
+    worm's seed once per generation and persisted it, and then every loader
+    threw that away and recomputed the birth seed from the worm's index. So the
+    LCG chain reset on every restart, `seed.txt` under
+    generations/<flask>/gen-NNNN/<worm>/ recorded a seed that had not been used
+    since the last deploy, and a worm's slot — not its genome — permanently
+    owned a birth kick. Reading it back is what makes the docstring on
+    `_mutate_seed` ("fully reproducible from (base_seed, gen_count)") true, and
+    what lets the shared per-generation seed survive a restart."""
+    try:
+        return int(seed_file.read_text().strip())
+    except (OSError, ValueError):
+        return fallback
+
+
+def _ensure_worm_dir(name: str, seed: int) -> tuple[Path, dict, int]:
+    """Create data/worms/<name>/ if needed; return (dir, weights, seed)."""
     wdir = DATA_DIR / name
     wdir.mkdir(parents=True, exist_ok=True)
     seed_file = wdir / "seed.txt"
@@ -92,7 +110,7 @@ def _ensure_worm_dir(name: str, seed: int) -> tuple[Path, dict]:
     if not weights_path.exists():
         shutil.copyfile(DEFAULT_WEIGHTS, weights_path)
     weights = json.loads(weights_path.read_text())
-    return wdir, weights
+    return wdir, weights, _read_seed(seed_file, seed)
 
 
 def _tail_words(path: Path, n: int) -> list[str]:
@@ -115,7 +133,7 @@ def load_worms(n_worms: int | None = None) -> list[Worm]:
     for entry in cfg:
         name = entry["name"]
         seed = int(entry["seed"])
-        wdir, weights = _ensure_worm_dir(name, seed)
+        wdir, weights, seed = _ensure_worm_dir(name, seed)
         world = World(seed=seed, weights=weights)
         poem_path = wdir / "poem.txt"
         # Initialize word count from existing poem (if any).
@@ -206,7 +224,8 @@ def corpus_for_flask_name(flask_name: str) -> str | None:
         return None
 
 
-def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[Path, dict]:
+def _ensure_flask_worm_dir(flask_name: str, worm_name: str,
+                           seed: int) -> tuple[Path, dict, int]:
     wdir = FLASKS_DIR / flask_name / worm_name
     wdir.mkdir(parents=True, exist_ok=True)
     seed_file = wdir / "seed.txt"
@@ -226,16 +245,20 @@ def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[
         if lifelike.any_enabled():
             lifelike.ensure_params(weights)
         weights_path.write_text(json.dumps(weights))
-        return wdir, weights
-    return wdir, json.loads(weights_path.read_text())
+        return wdir, weights, _read_seed(seed_file, seed)
+    return wdir, json.loads(weights_path.read_text()), _read_seed(seed_file, seed)
 
 
 def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Worm]]:
     """Build N flasks of M worms each. Returns a list of lists — outer is
     flasks (in order flask_1, flask_2, ...), inner is the worms of that
     flask. Caller wraps each inner list in a WormGroup and attaches the flask's
-    shared embedder (v7.1). Seeds are unique across all worms in all flasks
-    (flask_idx * 1000 + worm_idx + 1) so no two worms ever share trajectories.
+    shared embedder (v7.1). A worm that has never run gets birth seed
+    `flask_idx * 1000 + worm_idx + 1`; one that has gets whatever
+    `_respawn_flask` last persisted to its seed.txt. Under COMMON_SEED that is
+    the SAME value for every worm in a flask, deliberately — see the comment on
+    app.COMMON_SEED for why identical birth conditions are the point rather
+    than a collision.
 
     The worlds are built with the process-default embedding model; the caller
     (app.lifespan) then attaches each flask's OWN shared EmbeddingModel via
@@ -259,8 +282,10 @@ def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Wor
                      if FLASK_NAME_GROUPS and fi < len(FLASK_NAME_GROUPS)
                      else FLASK_WORM_NAMES)
             wname = names[wi % len(names)]
+            # Birth seed for a worm that has never run. An existing worm's
+            # seed comes back off disk instead — see _read_seed.
             seed = fi * 1000 + wi + 1
-            wdir, weights = _ensure_flask_worm_dir(flask_name, wname, seed)
+            wdir, weights, seed = _ensure_flask_worm_dir(flask_name, wname, seed)
             world = World(seed=seed, weights=weights, corpus=flask_corpus(fi))
             poem_path = wdir / "poem.txt"
             if poem_path.exists():

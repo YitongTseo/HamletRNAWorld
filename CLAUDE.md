@@ -115,7 +115,13 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   already read an identical word stream. Giving each worm its own seed
   therefore did nothing except hand each genome a different random kick into a
   chaotic 300-neuron network, confounded with the genome in every comparison
-  the NES made. This is the leading suspect for the d=-0.009 elite result
+  the NES made. **`seed.txt` was write-only until the same date** — every
+  loader recomputed the birth seed from the worm's index and discarded the
+  persisted value, so the LCG chain reset on every restart and a worm's *slot*,
+  not its genome, permanently owned a birth kick. The per-generation `seed.txt`
+  under `generations/<flask>/gen-NNNN/<worm>/` is therefore WRONG for any
+  generation after a restart and before 2026-09-01; don't reconstruct an old
+  life from it. This is the leading suspect for the d=-0.009 elite result
   above. **Untested in production as of this writing** — verify after the
   first rollover that all worms in a flask report the same `seed` in
   `/api/worms`, then re-run the elite-vs-fresh test.
