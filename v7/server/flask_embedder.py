@@ -131,10 +131,12 @@ def step(state: FlaskEmbedderState, candidate_score: float) -> FlaskEmbedderStat
     return state
 
 
-def build_model(state: FlaskEmbedderState) -> "embedding.EmbeddingModel":
+def build_model(state: FlaskEmbedderState,
+                corpus: str = "hamlet") -> "embedding.EmbeddingModel":
     """The flask's SHARED EmbeddingModel for the currently-deployed candidate.
     Primes the E-table once; all the flask's worms sense through this one
-    instance."""
+    instance. `corpus` selects the smell table + PC11 grammar."""
     return embedding.EmbeddingModel(
-        embedding.EmbeddingParams.from_flat(state.candidate_vec())
+        embedding.EmbeddingParams.from_flat(state.candidate_vec()),
+        corpus=corpus,
     )

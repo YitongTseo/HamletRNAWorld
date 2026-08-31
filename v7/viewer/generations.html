@@ -3,36 +3,51 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script src="/static/palette.js?v=2"></script>
+    <script src="/static/palette.js?v=3"></script>
     <title>wormlet · generations</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <!-- Vendored (2026-08-15 security audit): the CDN URL was jsdelivr's
+         ON-THE-FLY minification of chart.umd.js (no such file exists in the
+         npm package), so SRI would break whenever their minifier changed.
+         viewer/vendor/chart.umd.js is the npm 4.4.1 artifact, sha256
+         dEAdc43T4D7l37O2hBIQ/ixOrYqWDEARykugt4qf2PM= (registry tarball ==
+         jsdelivr's published hash), already minified. Self-hosted also means
+         the generations page now works offline like the rest of the site. -->
+    <script src="/static/vendor/chart.umd.js"></script>
     <style>
-      :root { --bg:#000; --fg:#afa; --accent:#6f9; --dim:#5a5; --warm:#fc6; --hot:#f66; }
+      :root { --bg:#000; --fg:#ece2cd; --accent:#cfa348; --dim:#8f8266; --warm:#cfa348; --hot:#cd5d4a; }
       html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--fg); }
       body { font:13px ui-monospace, SFMono-Regular, Menlo, monospace; }
       header {
-        display:flex; align-items:baseline; justify-content:space-between;
-        padding:12px 18px 6px 18px;
+        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
+        padding: 22px 34px 16px; border-bottom: 1px solid #3a3226;
       }
-      header h1 { margin:0; font-size:16px; font-weight:600; color:var(--accent); }
-      header nav a { color:var(--accent); text-decoration:none; padding:4px 8px; margin-left:4px; }
-      header nav a:hover { background:var(--line, rgba(100,200,255,0.15)); }
+      header h1 { margin: 0; font-family: var(--font-serif, serif); font-style: italic;
+                  font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--fg); }
+      header h1 b { font-weight: 400; color: var(--accent); }
+      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
+                        color: var(--dim); margin-left: 14px; font-style: normal; }
+      header h1 small a { color: var(--dim); }
+      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
+                   font-family: var(--font-mono, monospace); }
+      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
+      header nav a:hover { color: var(--accent); }
+      header nav a.here { color: var(--accent); }
 
       #status { padding:4px 18px; color:var(--dim); font-size:11px; }
 
       .toolbar {
         display:flex; gap:14px; align-items:center; padding:6px 18px 10px;
-        border-bottom:1px solid var(--line, rgba(100,200,255,0.12));
+        border-bottom:1px solid var(--line, rgba(205,127,93,0.12));
       }
       .toolbar label { color:var(--dim); font-size:11px; }
       .toolbar select {
-        background:var(--panel,#001); color:var(--fg); border:1px solid var(--line, rgba(100,200,255,0.25));
+        background:var(--panel,#211a12); color:var(--fg); border:1px solid var(--line, rgba(205,127,93,0.25));
         padding:3px 6px; font:inherit;
       }
 
       main { padding:14px 18px 60px; display:flex; flex-direction:column; gap:18px; }
       section.card {
-        border:1px solid var(--line, rgba(100,200,255,0.18));
+        border:1px solid var(--line, rgba(205,127,93,0.18));
         background:var(--panel, rgba(0,20,10,0.45));
         border-radius:5px; padding:10px 14px;
       }
@@ -43,21 +58,21 @@
       section.card .subtle { color:var(--dim); font-size:11px; margin:2px 0 6px; }
 
       .chart-row { display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); }
-      .chart-wrap { background:var(--panel,#001); padding:8px; border:1px solid var(--line, rgba(100,200,255,0.12)); border-radius:3px; }
+      .chart-wrap { background:var(--panel,#211a12); padding:8px; border:1px solid var(--line, rgba(205,127,93,0.12)); border-radius:3px; }
       .chart-wrap canvas { display:block; width:100% !important; height:200px !important; }
 
       .gen-list {
         max-height:520px; overflow-y:auto;
-        border:1px solid var(--line, rgba(100,200,255,0.1)); border-radius:3px;
+        border:1px solid var(--line, rgba(205,127,93,0.1)); border-radius:3px;
       }
       .gen-row {
         display:grid; grid-template-columns:60px 80px 80px 1fr 60px;
         gap:8px; padding:6px 10px;
-        border-bottom:1px solid var(--line, rgba(100,200,255,0.08));
+        border-bottom:1px solid var(--line, rgba(205,127,93,0.08));
         cursor:pointer; font-size:12px;
       }
-      .gen-row:hover { background:var(--line, rgba(100,200,255,0.07)); }
-      .gen-row.selected { background:rgba(100,255,200,0.12); }
+      .gen-row:hover { background:var(--line, rgba(205,127,93,0.07)); }
+      .gen-row.selected { background:rgba(207,163,72,0.12); }
       .gen-row .num { color:var(--accent); font-weight:600; }
       .gen-row .score { color:var(--fg); }
       .gen-row .sigma { color:var(--dim); }
@@ -67,31 +82,31 @@
       .detail-cols { display:grid; gap:14px; grid-template-columns:1fr 1fr; }
       @media (max-width: 900px) { .detail-cols { grid-template-columns:1fr; } }
       .poem-box {
-        background:var(--panel,#001); padding:10px 12px; border-radius:3px; max-height:340px; overflow-y:auto;
+        background:var(--panel,#211a12); padding:10px 12px; border-radius:3px; max-height:340px; overflow-y:auto;
         white-space:pre-wrap; line-height:1.5; font-size:12px;
       }
       .poem-box .meta { color:var(--warm); font-size:11px; margin-bottom:6px; }
-      .windows-box { background:var(--panel,#001); padding:8px 12px; border-radius:3px; max-height:340px; overflow-y:auto; }
-      .window { padding:4px 0; border-bottom:1px dotted var(--line, rgba(100,200,255,0.08)); font-size:12px; }
+      .windows-box { background:var(--panel,#211a12); padding:8px 12px; border-radius:3px; max-height:340px; overflow-y:auto; }
+      .window { padding:4px 0; border-bottom:1px dotted var(--line, rgba(205,127,93,0.08)); font-size:12px; }
       .window .scores { color:var(--warm); margin-right:8px; font-variant-numeric:tabular-nums; }
 
       .highlights { display:grid; gap:10px; grid-template-columns:repeat(3, 1fr); margin-top:10px; }
       @media (max-width: 760px) { .highlights { grid-template-columns:1fr; } }
-      .highlight { background:var(--panel,#001); border:1px solid var(--line, rgba(100,200,255,0.15)); border-radius:3px; padding:8px 10px; }
+      .highlight { background:var(--panel,#211a12); border:1px solid var(--line, rgba(205,127,93,0.15)); border-radius:3px; padding:8px 10px; }
       .highlight .hl-label { font-size:10px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px; font-weight:600; }
       .highlight .hl-scores { font-variant-numeric:tabular-nums; font-size:11px; margin-bottom:5px; }
       .highlight .hl-worm { color:var(--dim); }
-      .highlight .hl-text { font-size:12px; line-height:1.45; color:var(--fg, #cfc); }
+      .highlight .hl-text { font-size:12px; line-height:1.45; color:var(--fg, #ece2cd); }
 
       .log-box {
-        background:var(--panel,#001); padding:10px 14px; border-radius:3px; border-left:3px solid var(--accent);
-        white-space:pre-wrap; font-style:italic; color:var(--fg, #cfc);
+        background:var(--panel,#211a12); padding:10px 14px; border-radius:3px; border-left:3px solid var(--accent);
+        white-space:pre-wrap; font-style:italic; color:var(--fg, #ece2cd);
       }
       .log-box.skipped { border-left-color:var(--dim); color:var(--dim); font-style:normal; }
 
       #heatmap {
         display:block; width:100%; image-rendering:pixelated;
-        background:var(--panel,#001); border:1px solid var(--line, rgba(100,200,255,0.15));
+        background:var(--panel,#211a12); border:1px solid var(--line, rgba(205,127,93,0.15));
       }
       .heat-legend {
         display:flex; gap:14px; align-items:center; font-size:11px; color:var(--dim);
@@ -102,8 +117,9 @@
   </head>
   <body>
     <header>
-      <h1>wormlet · generations <span style="opacity:0.55; font-weight:400; font-size:12px;">— created by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:underline;">Yitong</a></span></h1>
-      <nav><a href="/">worms</a> · <a href="/poems">poems</a> · <a href="/about">about</a></nav>
+      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
+        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
+      <nav><a href="/">worms</a><a href="/poems">poems</a><a href="/generations" class="here">generations</a><a href="/about">about</a></nav>
       <div id="experiment-switcher"></div>
     </header>
 
@@ -157,7 +173,7 @@
       <section class="card" id="detail-card" style="display:none;">
         <h2 id="detail-title">generation detail</h2>
         <div id="detail-log"></div>
-        <div class="subtle" style="margin-top:10px;">standout windows — graded on two axes: <span style="color:var(--warm);">artsy</span> (emotional/poetic impact) and <span style="color:#9cf;">comprehensible</span> (reads as language).</div>
+        <div class="subtle" style="margin-top:10px;">standout windows — graded on two axes: <span style="color:var(--warm);">artsy</span> (emotional/poetic impact) and <span style="color:#cd7f5d;">comprehensible</span> (reads as language).</div>
         <div class="highlights" id="detail-highlights"></div>
         <div class="detail-cols" style="margin-top:14px;">
           <div>
@@ -177,8 +193,8 @@
         <canvas id="heatmap" height="320"></canvas>
         <div class="heat-legend">
           <span><span class="swatch" style="background:#3366cc;"></span>negative</span>
-          <span><span class="swatch" style="background:#111;"></span>zero</span>
-          <span><span class="swatch" style="background:#ffaa33;"></span>positive</span>
+          <span><span class="swatch" style="background:#1d1710;"></span>zero</span>
+          <span><span class="swatch" style="background:#cfa348;"></span>positive</span>
           <span id="heat-stats"></span>
         </div>
       </section>
@@ -190,7 +206,7 @@
       </section>
     </main>
 
-    <script src="/static/experiment_dropdown.js?v=1"></script>
-    <script src="/static/generations.js?v=3"></script>
+    <script src="/static/experiment_dropdown.js?v=2"></script>
+    <script src="/static/generations.js?v=4"></script>
   </body>
 </html>

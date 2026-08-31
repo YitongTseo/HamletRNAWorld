@@ -28,12 +28,31 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from server import pos_grammar, pos_scorers
+
+
+def _punct_smell_on() -> bool:
+    """WORMLET_PUNCT_SMELL=1 gives punctuation a grammar-only smell so the
+    worm can learn sentence marks. Default off = stock behaviour (punctuation
+    is chemosensorily invisible and eaten only by accident)."""
+    return os.environ.get("WORMLET_PUNCT_SMELL", "0") == "1"
+
+
+# Punctuation-ONLY predicate. Deliberately not corpus.hamlet.is_non_reactive,
+# whose set also contains ~50 stop words ("the", "of", "and"…): those are in
+# the embedded vocab and must keep their full semantic smell — the flag is
+# advertised as punctuation-only (audit finding).
+_PUNCT_RE = re.compile(r"^[^\w\s]+$")
+
+
+def _is_punct(token: str) -> bool:
+    return bool(token) and bool(_PUNCT_RE.match(token))
 
 V7_ROOT = Path(__file__).resolve().parent.parent
 _NOMIC_PATH = V7_ROOT / "cache" / "corpus_nomic512.json"
@@ -181,19 +200,20 @@ class EmbeddingModel:
     cached and the cache is cleared whenever params change."""
 
     def __init__(self, params: EmbeddingParams, nomic: dict[str, np.ndarray] | None = None,
-                 mode: str | None = None):
+                 mode: str | None = None, corpus: str = "hamlet"):
         self.mode = mode or encoder_mode()
+        self.corpus = corpus
         self.params = params
         # In UMAP mode the frozen 11-dim coordinates ARE the encoder, so the
         # 512-dim nomic table is never consulted and isn't loaded (it's a 39 MB
         # blob). `_nomic` stays populated only on the learned path.
         if self.mode == ENCODER_UMAP:
             self._nomic = {}
-            self._umap = _load_umap()
+            self._umap = _load_umap(corpus)
         else:
             self._nomic = nomic if nomic is not None else _load_nomic()
             self._umap = {}
-        self._grammar = pos_grammar.get_grammar()
+        self._grammar = pos_grammar.get_grammar(corpus)
         self._enc_cache: dict[str, np.ndarray] = {}
         # Precompute tables (shared across every worm in a flask; rebuilt when
         # params change). Populated lazily by prime().
@@ -279,6 +299,11 @@ class EmbeddingModel:
         # a continuation of the POS sequence the worm has already eaten.
         pos_out = np.array([self._grammar.fit_word(current_word, list(history_words))])
 
+        # Punctuation smells of pure grammar (semantic channels zero) when
+        # WORMLET_PUNCT_SMELL=1 — mirrors embed_batch exactly.
+        if _punct_smell_on() and _is_punct(current_word) and self._widx.get(_norm(current_word), -1) < 0:
+            return np.concatenate([np.zeros(D_EMB), pos_out])
+
         if self.mode == ENCODER_UMAP:
             row = self._umap.get(_norm(current_word))
             if row is None:
@@ -328,8 +353,20 @@ class EmbeddingModel:
 
         ci = np.fromiter((self._widx.get(_norm(w), -1) for w in current_words),
                          dtype=np.int64, count=K)
-        valid = ci >= 0
-        safe = np.where(valid, ci, 0)
+        in_vocab = ci >= 0
+        # WORMLET_PUNCT_SMELL=1: punctuation becomes smellable as PURE GRAMMAR
+        # — semantic channels stay zero (a comma means nothing), PC11 carries
+        # the grammar fit already computed below for every word. This is the
+        # only signal that lets a worm LEARN sentence marks: without it,
+        # punctuation is invisible to chemosensation and every eaten mark is a
+        # collision accident no amount of evolution can select on.
+        if _punct_smell_on():
+            punct = np.fromiter((_is_punct(w) for w in current_words),
+                                dtype=bool, count=K)
+            valid = in_vocab | punct
+        else:
+            valid = in_vocab
+        safe = np.where(in_vocab, ci, 0)
 
         # --- PC11: POS-grammar fit (both modes) ---
         # The whole batch shares one history, so the normalised tag->fit map is
@@ -342,7 +379,7 @@ class EmbeddingModel:
         ).reshape(K, 1)
 
         if self.mode == ENCODER_UMAP:
-            emb_out = np.where(valid[:, None], E[safe], 0.0)                      # (K,11)
+            emb_out = np.where(in_vocab[:, None], E[safe], 0.0)                   # (K,11)
             out = np.concatenate([emb_out, pos_out], axis=1)                      # (K,12)
             out[~valid] = 0.0
             return out, valid
@@ -356,22 +393,35 @@ class EmbeddingModel:
         hist_summary = _relu(he @ p.W_Hh + p.b_Hh)                                # (11,)
 
         # --- embedding branch (batched) ---
-        cur_emb = np.where(valid[:, None], E[safe], 0.0)                          # (K,11)
+        cur_emb = np.where(in_vocab[:, None], E[safe], 0.0)                       # (K,11)
         fuse = np.concatenate(
             [cur_emb, np.broadcast_to(hist_summary, (K, D_EMB))], axis=1)         # (K,22)
         emb_out = _sigmoid(fuse @ p.W_Hf + p.b_Hf)                                # (K,11)
 
         out = np.concatenate([emb_out, pos_out], axis=1)                          # (K,12)
+        # Punct-valid rows keep only PC11: the sigmoid fuse above produces
+        # nonzero "semantics" even for a zero cur_emb (history leaks through),
+        # and a comma must not smell of meaning.
+        out[~in_vocab, :D_EMB] = 0.0
         out[~valid] = 0.0
         return out, valid
 
 
 # --- frozen UMAP table ------------------------------------------------------
 
-_UMAP_CACHE: dict[str, np.ndarray] | None = None
+_UMAP_CACHES: dict[str, dict[str, np.ndarray]] = {}
 
 
-def _load_umap() -> dict[str, np.ndarray]:
+def _umap_path(corpus: str):
+    """hamlet keeps the historical UMAP artifact; other corpora use the
+    Claude-axis caches (scripts/build_corpus_claude12.py, 2026-08-15) —
+    same file shape, key still "umap12", 12th column filler."""
+    if corpus == "hamlet":
+        return _UMAP_PATH
+    return _UMAP_PATH.parent / f"corpus_smell12_{corpus}.json"
+
+
+def _load_umap(corpus: str = "hamlet") -> dict[str, np.ndarray]:
     """{lowercased_word: np.array(11)} from cache/corpus_umap.json.
 
     The artifact holds 12 UMAP dimensions; we take the FIRST 11 as PC0..PC10
@@ -382,20 +432,20 @@ def _load_umap() -> dict[str, np.ndarray]:
 
     Missing file -> empty map (chemosensation goes silent; smoke tests run
     without it), matching _load_nomic's behaviour."""
-    global _UMAP_CACHE
-    if _UMAP_CACHE is not None:
-        return _UMAP_CACHE
-    if not _UMAP_PATH.exists():
-        _UMAP_CACHE = {}
-        return _UMAP_CACHE
-    data = json.loads(_UMAP_PATH.read_text())
-    words = data["words"]
-    coords = data["umap12"]
-    _UMAP_CACHE = {
+    cached = _UMAP_CACHES.get(corpus)
+    if cached is not None:
+        return cached
+    path = _umap_path(corpus)
+    if not path.exists():
+        _UMAP_CACHES[corpus] = {}
+        return _UMAP_CACHES[corpus]
+    data = json.loads(path.read_text())
+    table = {
         _norm(w): np.asarray(c[:D_EMB], dtype=np.float64)
-        for w, c in zip(words, coords)
+        for w, c in zip(data["words"], data["umap12"])
     }
-    return _UMAP_CACHE
+    _UMAP_CACHES[corpus] = table
+    return table
 
 
 # --- frozen nomic table -----------------------------------------------------

@@ -84,7 +84,7 @@ const bodyMaterial = new THREE.ShaderMaterial({
   vertexShader: bodyVert,
   fragmentShader: bodyFrag,
   uniforms: {
-    uColor: { value: new THREE.Color(0x44ff77) },
+    uColor: { value: new THREE.Color(0xe8dcc0) },
     uTime: { value: 0 },
     uRimPower: { value: 2.2 },
     uCoreBoost: { value: 0.12 },   // dim body interior — let organs show
@@ -251,7 +251,7 @@ const organMaterial = new THREE.ShaderMaterial({
   vertexShader: organVert,
   fragmentShader: organFrag,
   uniforms: {
-    uOrganColor: { value: new THREE.Color(0x80ffaa) },
+    uOrganColor: { value: new THREE.Color(0xc9b795) },
     uTime: { value: 0 },
     uBoost: { value: 1.1 },
   },
@@ -284,7 +284,7 @@ const FOCI = [
   [0.80, 0.22, 0.70, 0.0],
 ];
 const fociGeom = new THREE.SphereGeometry(1, 16, 12);
-const fociBaseColor = new THREE.Color(0xb8ffd0);
+const fociBaseColor = new THREE.Color(0xf2e8cf);
 const fociGroup = new THREE.Group();
 fociGroup.renderOrder = 3; // above organ tube + body wall
 scene.add(fociGroup);

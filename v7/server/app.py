@@ -45,10 +45,11 @@ from sim.connectome import (
     SENSORY_NEURONS, CHEMOSENSORY_NEURONS, MOTOR_NEURONS,
 )
 from corpus.hamlet import get_sentences
-from sim.world import World
+from sim.world import World, BODY_TICK_HZ
 
 from server.orchestrator import (
-    load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm, Worm,
+    load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm,
+    corpus_for_flask_name, Worm,
 )
 from server.worm_group import WormGroup
 from server import flask_embedder as flask_emb
@@ -163,6 +164,12 @@ def _write_checkpoint(worm, generation: int) -> None:
             "word_count": worm.word_count,
             "scroller": worm.world.text_scroller.snapshot(),
         }
+        # Lifelike biology (satiety + learned deltas) rides along so a
+        # restart doesn't cost the worm its within-life learning. Absent
+        # when the features are off; old checkpoints without it restore fine.
+        ll = worm.world.lifelike_checkpoint()
+        if ll is not None:
+            data["lifelike"] = ll
         path = _checkpoint_path(worm)
         tmp = path.with_name("checkpoint.json.tmp")
         tmp.write_text(json.dumps(data))
@@ -177,6 +184,54 @@ def _delete_checkpoint(worm) -> None:
     except Exception:
         LOG.debug("checkpoint delete failed for %s", getattr(worm, "name", "?"),
                   exc_info=True)
+
+
+def _log_death(flask_name: str, worm) -> None:
+    """Append a post-mortem record to <data>/flasks/<flask>/deaths.jsonl and
+    mirror the headline to the server log. The sim is wallclock-free, so the
+    World only captures deterministic facts (death tick, last-meal tick,
+    position) in death_record; everything else a diagnosis needs — poem size,
+    last meals, the evolved learning-rule genes, and how much of the
+    plasticity budget was saturated — is frozen on the corpse and read here.
+    Motivating case: two worms starved with nothing on disk but
+    dead=true, and the process log is root-only. Best-effort like checkpoints:
+    never breaks the sim loop. The 'logged' flag rides the death_record into
+    the checkpoint so a restart doesn't duplicate the entry (worst case: one
+    dupe if we die within a checkpoint interval of the worm)."""
+    try:
+        w = worm.world
+        # The sim_loop guard guarantees death_record is present here.
+        dr = w.death_record
+        flask = _find_flask(flask_name)  # None in legacy mode -> gen 0
+        gen = flask.state.generation if flask and flask.state else 0
+        rec = {
+            # UTC Z, same stamp format as gardener/board_publish/status.
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "flask": flask_name,
+            "worm": worm.name,
+            "generation": gen,
+            **{k: v for k, v in dr.items() if k != "logged"},
+            "starved_s": round(dr["starved_ticks"] / BODY_TICK_HZ, 1),
+            "word_count": worm.word_count,
+            "recent_eaten": list(w._recent_eaten[:10]),
+            "lifelike_params": {k: round(v, 4) for k, v in w.lifelike_params.items()},
+            "plasticity": w.brain.plasticity_stats(),
+        }
+        # poem_path-relative rather than FLASKS_DIR/<name>: in legacy mode
+        # ("default") no flask dir exists, but the worm dir always does.
+        deaths_path = worm.poem_path.parent.parent / "deaths.jsonl"
+        with open(deaths_path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        dr["logged"] = True
+        LOG.info(
+            "death: %s/%s gen=%d tick=%s — starved %.0fs after last meal; "
+            "words=%d, plasticity capped=%d/%d edges",
+            flask_name, worm.name, gen, rec["died_at_tick"],
+            rec["starved_s"], worm.word_count,
+            rec["plasticity"]["capped"], rec["plasticity"]["edges"])
+    except Exception:
+        LOG.exception("death log failed for %s/%s", flask_name,
+                      getattr(worm, "name", "?"))
 
 
 def _reset_worm_poem(worm) -> None:
@@ -205,6 +260,7 @@ def _restore_or_reset_worm(worm, generation: int) -> None:
             data = json.loads(path.read_text())
             if data.get("generation") == generation and "scroller" in data:
                 worm.world.text_scroller.restore(data["scroller"])
+                worm.world.restore_lifelike(data.get("lifelike"))
                 LOG.info("restored mid-gen checkpoint: %s (gen=%d, words=%d)",
                          worm.poem_path.parent, generation, worm.word_count)
                 return
@@ -223,7 +279,14 @@ def _focus_key(flask: str, worm: str) -> str:
 
 
 def _find_worm(flask: str, worm: str) -> Worm | None:
-    return WORM_BY_KEY.get((flask, worm))
+    """Exact name first, then the hyphen-slug form: the overview links
+    'dowager cixi' as /focus/flask_1/dowager-cixi so URLs carry no literal
+    spaces. Exact-first means a name that genuinely contains hyphens is
+    never mis-resolved."""
+    w = WORM_BY_KEY.get((flask, worm))
+    if w is None and "-" in worm:
+        w = WORM_BY_KEY.get((flask, worm.replace("-", " ")))
+    return w
 
 
 def _find_flask(name: str) -> WormGroup | None:
@@ -286,7 +349,23 @@ def _worm_overview_dict(w: Worm, flask_name: str) -> dict:
         "word_count": w.word_count,
         "recent_words": w.recent_words[-3:],
         "paused": w.world.paused,
+        # Lifelike condition for the specimen-tray labels; keys appear only
+        # when the features are on (same policy as snapshot()/api/worms).
+        **({"satiety": round(w.world.satiety, 3), "dead": w.world.dead}
+           if getattr(w.world, "_hunger_on", False) else {}),
     }
+
+
+def _corpus_title(flask_name: str) -> str | None:
+    """Short display title for a non-hamlet flask corpus, else None."""
+    # Label every flask when WORMLET_FLASK_TEXTS is configured — including
+    # hamlet, so a mixed tray reads evenly. Unset (stock) → no labels,
+    # payload unchanged.
+    c = corpus_for_flask_name(flask_name)
+    if not c:
+        return None
+    from corpus import library
+    return library.DISPLAY_TITLES.get(c, c)
 
 
 def _overview_payload() -> dict:
@@ -303,6 +382,11 @@ def _overview_payload() -> dict:
                 {
                     "name": f.name,
                     "display": f.display,
+                    # Corpus label for the flask header ("Flask 2 · Tao Teh
+                    # King..."); absent key = hamlet, so pre-multi-corpus
+                    # clients and payloads are unchanged.
+                    **({"corpus": _corpus_title(f.name)}
+                       if _corpus_title(f.name) else {}),
                     "generation": f.state.generation if f.state else 0,
                     "worms": [_worm_overview_dict(w, f.name) for w in f.worms],
                 }
@@ -361,6 +445,13 @@ def _build_snapshot(worm: Worm) -> dict:
                  "food_sense": w.stim_food_sense},
         "paused": w.paused,
         "neurons": neurons_active,
+        # The worm's chemosensory memory — the specimen card's "recently
+        # ingested" reads this (it was missing from this inline snapshot,
+        # which predates the card; World.snapshot() always had it).
+        "recent_eaten": list(w._recent_eaten),
+        # Lifelike keys only when the features are on (site-wide policy;
+        # the per-feature gating lives in World.lifelike_payload).
+        **w.lifelike_payload(),
     }
 
 
@@ -437,7 +528,8 @@ def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
             w.poem_file.close()
         except Exception:
             pass
-        w.world = World(seed=w.seed, weights=wt, embedding_model=flask.embedding_model)
+        w.world = World(seed=w.seed, weights=wt, embedding_model=flask.embedding_model,
+                        corpus=corpus_for_flask_name(flask.name))
         w.poem_path.write_text("")  # truncate previous-generation poem
         w.poem_file = open(w.poem_path, "a", buffering=1)
         w.word_count = 0
@@ -749,6 +841,13 @@ async def sim_loop():
             for flask_name, worm in _iter_flask_worms():
                 try:
                     worm.world.tick()
+                    # First tick we observe a death (or a restored-dead worm
+                    # whose record was never written), log the post-mortem.
+                    # Old checkpoints may restore dead=True with no record —
+                    # nothing to log there, hence the record check.
+                    if (worm.world.dead and worm.world.death_record is not None
+                            and not worm.world.death_record.get("logged")):
+                        _log_death(flask_name, worm)
                     for word in drain_and_persist(worm):
                         await _broadcast(POEM_CLIENTS, {
                             "type": "eaten",
@@ -887,9 +986,17 @@ def _asyncio_exception_handler(loop, context: dict) -> None:
 
 
 def _load_initial_default_weights() -> dict:
-    """The starter connectome every flask's parent vector is seeded from."""
+    """The starter connectome every flask's parent vector is seeded from.
+    In lifelike mode the _lifelike gene block is injected here so a COLD-START
+    lineage's parent_keys include the learning-rule genes — this must stay in
+    lockstep with the fresh-file injection in orchestrator._ensure_flask_worm_dir
+    or gen-1 flattening dimensions mismatch and the rollover livelocks."""
     from server.orchestrator import DEFAULT_WEIGHTS
-    return json.loads(DEFAULT_WEIGHTS.read_text())
+    from sim import lifelike
+    weights = json.loads(DEFAULT_WEIGHTS.read_text())
+    if lifelike.any_enabled():
+        lifelike.ensure_params(weights)
+    return weights
 
 
 @asynccontextmanager
@@ -932,7 +1039,8 @@ async def lifespan(app: FastAPI):
             emb_seed = EMBEDDING_SEED + fi
             emb_state = flask_emb.FlaskEmbedderState.load_or_init(
                 _embedder_path(flask_name), flask_name, seed=emb_seed)
-            emb_model = flask_emb.build_model(emb_state)
+            emb_model = flask_emb.build_model(
+                emb_state, corpus=corpus_for_flask_name(flask_name) or "hamlet")
             attach_flask_model(worms, emb_model)
             for w in worms:
                 _restore_or_reset_worm(w, state.generation)
@@ -1185,20 +1293,36 @@ async def corpus_pca():
 
 
 @app.get("/api/corpus_umap")
-async def corpus_umap():
+async def corpus_umap(flask: str | None = None):
     """Serves the precomputed Hamlet UMAP artifact (built once by
     scripts/build_corpus_umap.py). Same shape as /api/corpus_pca but with
     `umap12`/`umap12_sparse`/`umap2` instead of the `pca*` keys. The focus
     page reads `umap2` for the hover scatter; the sim still uses the PCA
     artifact for chemosensation (will swap when generational evolution
     starts)."""
-    global _CORPUS_UMAP_FILE_CACHE
-    if _CORPUS_UMAP_FILE_CACHE is None:
-        path = V6_ROOT / "cache" / "corpus_umap.json"
+    return _corpus_smell_payload(flask)
+
+
+_CORPUS_SMELL_CACHE: dict[str, dict] = {}
+
+
+def _corpus_smell_payload(flask: str | None) -> JSONResponse:
+    """Per-corpus smell-space artifact: hamlet keeps its UMAP file; other
+    corpora serve their Claude-axis caches (same shape — words/umap12/
+    emotion_keys/emotions, plus "axes" naming the channels). Before this,
+    every flask's focus page got Hamlet's file — radar and hover scatter
+    were garbage for non-hamlet flasks."""
+    corpus = (corpus_for_flask_name(flask) if flask else None) or "hamlet"
+    hit = _CORPUS_SMELL_CACHE.get(corpus)
+    if hit is None:
+        name = ("corpus_umap.json" if corpus == "hamlet"
+                else f"corpus_smell12_{corpus}.json")
+        path = V6_ROOT / "cache" / name
         if not path.exists():
-            raise HTTPException(503, "corpus_umap.json missing — run scripts/build_corpus_umap.py")
-        _CORPUS_UMAP_FILE_CACHE = json.loads(path.read_text())
-    return JSONResponse(_CORPUS_UMAP_FILE_CACHE)
+            raise HTTPException(503, f"{name} missing")
+        hit = json.loads(path.read_text())
+        _CORPUS_SMELL_CACHE[corpus] = hit
+    return JSONResponse(hit)
 
 
 _NEURON_BODY_CACHE: dict | None = None
@@ -1218,6 +1342,18 @@ async def neuron_body_coords():
     return JSONResponse(_NEURON_BODY_CACHE)
 
 
+def _worm_entry(w) -> dict:
+    """REST view of one worm. Lifelike keys (sim/lifelike.py) appear only
+    when the features are on — mirrors World.snapshot(), keeps the
+    default-off payload unchanged, and feeds the metrics collector."""
+    entry = {"name": w.name, "seed": w.seed, "word_count": w.word_count}
+    # Spin watch (task #9): always-on motion diagnostics, REST only — the
+    # WS snapshot payload stays untouched.
+    entry.update(w.world.motion_stats())
+    entry.update(w.world.lifelike_payload())
+    return entry
+
+
 @app.get("/api/worms")
 async def list_worms():
     """Return worms grouped by flask. In legacy mode FLASKS is empty and
@@ -1227,16 +1363,14 @@ async def list_worms():
             {
                 "flask": f.name,
                 "display": f.display,
-                "worms": [{"name": w.name, "seed": w.seed, "word_count": w.word_count}
-                          for w in f.worms],
+                "worms": [_worm_entry(w) for w in f.worms],
             }
             for f in FLASKS
         ])
     return JSONResponse([{
         "flask": "default",
         "display": "Worms",
-        "worms": [{"name": w.name, "seed": w.seed, "word_count": w.word_count}
-                  for w in WORMS],
+        "worms": [_worm_entry(w) for w in WORMS],
     }])
 
 
@@ -1479,6 +1613,12 @@ async def api_generations_index():
             "sigma_scheme": _gv_read_json(
                 d / f"gen-{nums[-1]:04d}" / "metadata.json", {}
             ).get("sigma_scheme") if nums else None,
+            # Corpus title for the page header. Local flasks resolve via env
+            # config; for gen>=1 the metadata.json provenance wins (works for
+            # sibling dirs too, where this process has no env knowledge).
+            "corpus": (_gv_read_json(
+                d / f"gen-{nums[-1]:04d}" / "metadata.json", {}
+            ).get("corpus") if nums else None) or _corpus_title(name),
         })
     return JSONResponse({"flasks": flasks})
 
@@ -1705,5 +1845,17 @@ app.mount("/static", StaticFiles(directory=str(VIEWER_DIR)), name="viewer")
 # the same shared dir, so any process can serve any other's subtree. The dir is
 # created here so the mount succeeds even before the first generation publishes.
 from server.board_publish import BOARD_PUBLISH_DIR  # noqa: E402
-BOARD_PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/board", StaticFiles(directory=str(BOARD_PUBLISH_DIR)), name="board")
+try:
+    BOARD_PUBLISH_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError:
+    # Dev boxes can't create the prod default under /home/web; the mount
+    # guard below just skips /board. Prod and the jail set their own dir.
+    pass
+# Guard: the publish dir may not exist or be readable (dev boxes; the jail
+# blocks board egress anyway). Serving without /board beats failing import —
+# this was the last blocker to running the route tests outside prod.
+try:
+    if BOARD_PUBLISH_DIR.is_dir():
+        app.mount("/board", StaticFiles(directory=str(BOARD_PUBLISH_DIR)), name="board")
+except PermissionError:
+    pass

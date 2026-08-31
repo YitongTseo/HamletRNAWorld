@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import IO, Iterable
 
 from sim.world import World
+from sim import lifelike
 
 V6_ROOT = Path(__file__).resolve().parent.parent
 
@@ -145,7 +146,64 @@ FLASK_WORM_NAMES = ["Alice", "Bob", "Carol", "Dave", "Eve",
                     "Frank", "Grace", "Heidi", "Ivan", "Judy",
                     "Kara", "Liam", "Mallory", "Niaj", "Oscar",
                     "Peggy", "Quentin", "Ruth", "Sybil", "Trent"]
+# WORMLET_FLASK_WORM_NAMES: comma-separated override of the lineup above, so a
+# deployment can name its own worms without editing code (legacy no-generations
+# mode already allows this via worms.json; flask mode had no equivalent). The
+# same collision rule applies — load_flasks still raises if the list is shorter
+# than WORMLET_N_WORMS_PER_FLASK. Names become directory names; spaces are fine.
+_ENV_NAMES = os.environ.get("WORMLET_FLASK_WORM_NAMES", "").strip()
+# ';' splits per-flask groups (flask 1 gets group 0, etc.); a flat comma list
+# keeps the historical semantics: every flask draws from the same lineup.
+FLASK_NAME_GROUPS: list[list[str]] | None = None
+if _ENV_NAMES:
+    if ";" in _ENV_NAMES:
+        FLASK_NAME_GROUPS = [[n.strip() for n in grp.split(",") if n.strip()]
+                             for grp in _ENV_NAMES.split(";")]
+        FLASK_WORM_NAMES = [n for grp in FLASK_NAME_GROUPS for n in grp]
+    else:
+        FLASK_WORM_NAMES = [n.strip() for n in _ENV_NAMES.split(",") if n.strip()]
+    # Names become directory names and (flask, name) identity keys: duplicates
+    # silently collide two worms onto one poem/weights/checkpoint file, and a
+    # slash becomes a path separator. Fail loudly at startup instead.
+    if len(set(FLASK_WORM_NAMES)) != len(FLASK_WORM_NAMES):
+        raise ValueError(
+            f"WORMLET_FLASK_WORM_NAMES contains duplicates: {_ENV_NAMES!r}")
+    if any("/" in n for n in FLASK_WORM_NAMES):
+        raise ValueError(
+            f"WORMLET_FLASK_WORM_NAMES names must not contain '/': {_ENV_NAMES!r}")
+    # With '/' banned a name is a single path segment, so the only remaining
+    # traversal spellings are the segments '.' and '..' themselves ("wat..son"
+    # is harmless). '..' as a worm name would write poem/weights/checkpoint
+    # files into the flask dir's parent (2026-08-15 security audit).
+    if any(n in (".", "..") for n in FLASK_WORM_NAMES):
+        raise ValueError(
+            f"WORMLET_FLASK_WORM_NAMES names must not be '.' or '..': {_ENV_NAMES!r}")
 FLASKS_DIR = _DATA_ROOT / "flasks"
+
+# WORMLET_FLASK_TEXTS: comma-separated corpus per flask (e.g.
+# "hamlet,laozi,beowulf"). Unset/short list → hamlet (stock). Unknown names
+# fail loudly at import, same policy as the worm-name guards above.
+FLASK_TEXTS = [t.strip() for t in
+               os.environ.get("WORMLET_FLASK_TEXTS", "").split(",") if t.strip()]
+if FLASK_TEXTS:
+    from corpus import library as _library
+    _unknown = [t for t in FLASK_TEXTS if t not in _library.TITLES]
+    if _unknown:
+        raise ValueError(f"WORMLET_FLASK_TEXTS unknown corpora: {_unknown}")
+
+
+def flask_corpus(flask_index: int) -> str | None:
+    """Corpus for flask N (0-based); None = legacy hamlet/env-passage."""
+    return FLASK_TEXTS[flask_index] if flask_index < len(FLASK_TEXTS) else None
+
+
+def corpus_for_flask_name(flask_name: str) -> str | None:
+    """Same, from a 'flask_N' name — for respawn/reset sites that don't
+    carry the index."""
+    try:
+        return flask_corpus(int(flask_name.rsplit("_", 1)[-1]) - 1)
+    except ValueError:
+        return None
 
 
 def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[Path, dict]:
@@ -156,7 +214,19 @@ def _ensure_flask_worm_dir(flask_name: str, worm_name: str, seed: int) -> tuple[
         seed_file.write_text(str(seed))
     weights_path = wdir / "weights.json"
     if not weights_path.exists():
-        shutil.copyfile(DEFAULT_WEIGHTS, weights_path)
+        # Fresh worm dir. In lifelike mode the _lifelike gene block is
+        # PERSISTED into the new weights.json so the learning-rule params
+        # genuinely enter the NES search space (rollovers flatten the on-disk
+        # genome). Existing files are NEVER retro-injected: a lineage whose
+        # parent_keys predate the block would flatten to a different length
+        # and livelock the rollover — old lineages keep running the clipped
+        # defaults instead. Must stay in lockstep with the cold-start
+        # injection in app._load_initial_default_weights.
+        weights = json.loads(DEFAULT_WEIGHTS.read_text())
+        if lifelike.any_enabled():
+            lifelike.ensure_params(weights)
+        weights_path.write_text(json.dumps(weights))
+        return wdir, weights
     return wdir, json.loads(weights_path.read_text())
 
 
@@ -171,9 +241,11 @@ def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Wor
     (app.lifespan) then attaches each flask's OWN shared EmbeddingModel via
     `attach_flask_model`, so the precomputed E-table is shared across the flask
     and independent of every other flask."""
-    if n_worms_per_flask > len(FLASK_WORM_NAMES):
+    _min_names = (min(len(g) for g in FLASK_NAME_GROUPS)
+                  if FLASK_NAME_GROUPS else len(FLASK_WORM_NAMES))
+    if n_worms_per_flask > _min_names:
         raise ValueError(
-            f"n_worms_per_flask={n_worms_per_flask} exceeds the {len(FLASK_WORM_NAMES)} "
+            f"n_worms_per_flask={n_worms_per_flask} exceeds the {_min_names} "
             f"available worm names; worms would collide onto shared directories. "
             f"Add more names to FLASK_WORM_NAMES."
         )
@@ -183,10 +255,13 @@ def load_flasks(n_flasks: int = 4, n_worms_per_flask: int = 10) -> list[list[Wor
         flask_name = f"flask_{fi + 1}"
         worms: list[Worm] = []
         for wi in range(n_worms_per_flask):
-            wname = FLASK_WORM_NAMES[wi % len(FLASK_WORM_NAMES)]
+            names = (FLASK_NAME_GROUPS[fi]
+                     if FLASK_NAME_GROUPS and fi < len(FLASK_NAME_GROUPS)
+                     else FLASK_WORM_NAMES)
+            wname = names[wi % len(names)]
             seed = fi * 1000 + wi + 1
             wdir, weights = _ensure_flask_worm_dir(flask_name, wname, seed)
-            world = World(seed=seed, weights=weights)
+            world = World(seed=seed, weights=weights, corpus=flask_corpus(fi))
             poem_path = wdir / "poem.txt"
             if poem_path.exists():
                 with open(poem_path) as f:
@@ -234,6 +309,8 @@ def reset_worm(worm: Worm, archive_poem: bool = True) -> None:
         worm.poem_path.rename(worm.poem_path.with_name(f"poem.{ts}.txt"))
         worm.poem_file = open(worm.poem_path, "a", buffering=1)
     weights = json.loads((worm.poem_path.parent / "weights.json").read_text())
-    worm.world = World(seed=worm.seed, weights=weights)
+    # Flask dir layout: .../flasks/<flask_name>/<worm_name>/poem.txt
+    worm.world = World(seed=worm.seed, weights=weights,
+                       corpus=corpus_for_flask_name(worm.poem_path.parent.parent.name))
     worm.word_count = 0
     worm.recent_words = []

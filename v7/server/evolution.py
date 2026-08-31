@@ -125,21 +125,44 @@ def repetition_factor(tokens: list[str]) -> float:
     return max(REP_MIN_FACTOR, f)
 
 
+# Divisor floor for the per-window mean. ≈ the window count of a typical
+# surviving worm (~750 words → ~50 windows → 25% sampled ≈ 12), measured over
+# data-lifelike-2 gens 1-6 where the flask median was 12-13. Below the floor
+# the mean is diluted (sum/12), so a worm that dies after one lucky window
+# cannot out-rank a full life of decent ones; above it, pure mean — extra
+# volume buys nothing.
+FITNESS_WINDOW_FLOOR = 12
+
+
 def fitness(scored_windows: Iterable[ScoredWindow]) -> float:
-    """Sum over windows of  EMOTIONAL_WEIGHT * (E/100)^GAMMA + (C/100)^GAMMA.
+    """MEAN over windows of  EMOTIONAL_WEIGHT * (E/100)^GAMMA + (C/100)^GAMMA,
+    with the divisor floored at FITNESS_WINDOW_FLOOR.
 
     GAMMA makes top-rated windows dominate (a 90 contributes ~10× a 50); the
     1.5× weights emotional impact above coherence.
 
     2026-08-13: the repetition discount that v7 applied here is GONE — let them
     repeat. A repetitive window and a diverse one with identical E/C now score
-    identically, so the judge's rating is the only thing that decides."""
+    identically, so the judge's rating is the only thing that decides.
+
+    2026-08-15 REGIME CHANGE (flask_1 from gen 8): was a plain SUM, which paid
+    linearly for volume — sampled windows scale with words eaten, so a worm
+    could out-rank better poets by eating more (data-lifelike-2 gen 6: the
+    top eater ranked #2 on sum with the flask's second-worst per-window
+    quality). Volume no longer needs a fitness incentive because hunger
+    (WORMLET_HUNGER=1) enforces eating environmentally — starvation kills.
+    The judge now pays for quality alone. NES selection is rank-based, so
+    this is a pure re-ordering; σ and learning rate are untouched. Fitness
+    values before/after this change are not comparable."""
     total = 0.0
+    n = 0
     for w in scored_windows:
         e = (w.emotional / 100.0) ** GAMMA
         c = (w.coherence / 100.0) ** GAMMA
         total += EMOTIONAL_WEIGHT * e + 1.0 * c
-    return total
+        n += 1
+    # n == 0 needs no special case: 0.0 / FLOOR == 0.0.
+    return total / max(n, FITNESS_WINDOW_FLOOR)
 
 
 # --- NES update -----------------------------------------------------------

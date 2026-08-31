@@ -31,7 +31,7 @@ const hud = document.getElementById('hud');
 // Food — yellow-ish bacterial spots. Modest emission so they bloom slightly.
 // ---------------------------------------------------------------------------
 const foodMaterial = new THREE.MeshBasicMaterial({
-  color: 0xffd040,
+  color: 0xcfa348,
   toneMapped: false,
   side: THREE.DoubleSide,
   depthTest: false,
@@ -96,6 +96,7 @@ function connect() {
     setFood(msg.food);
     smellsData = msg.smells || [];
     latestResidual = msg.residual || { pca: new Array(12).fill(0), words: [] };
+    updateSpecimenCard(msg);
     const wordImpact = computeWordImpact();
     // Each panel's own draw fn short-circuits when hidden, but we also guard
     // here so once-per-frame work (string building, etc.) doesn't fire when
@@ -109,7 +110,7 @@ function connect() {
 
     isPaused = msg.paused || false;
     window.__lastPaused = isPaused;
-    const pausedStr = isPaused ? ' <span style="color:#fc6;">[PAUSED]</span>' : '';
+    const pausedStr = isPaused ? ' <span style="color:#cfa348;">[PAUSED]</span>' : '';
 
     // Row 1: tight, just speed and motor.
     const row1 =
@@ -130,11 +131,11 @@ function connect() {
       const top = wordImpact.entries.slice(0, 5);
       row2 += top.map(e => {
         const pct = (e.value / total * 100) | 0;
-        const color = e.eaten ? '#fc8' : '#cfc';
+        const color = e.eaten ? '#d9b98a' : '#ece2cd';
         const note = e.eaten ? `<span style="opacity:0.6;">·eaten</span>` : '';
         return `<span style="color:${color};">${escapeHTML(e.word)} ${pct}%${note}</span>`;
       }).join(' <span style="opacity:0.3;">·</span> ');
-      row2 += ` <span style="opacity:0.4; font-size:10px;">[<span style="color:#cfc;">smelled</span> <span style="color:#fc8;">eaten</span>]</span>`;
+      row2 += ` <span style="opacity:0.4; font-size:10px;">[<span style="color:#ece2cd;">smelled</span> <span style="color:#d9b98a;">eaten</span>]</span>`;
     }
 
     hud.innerHTML = row1 + '<br>' + row2;
@@ -144,7 +145,7 @@ connect();
 
 function bar(percent, hue, w = 70) {
   const v = Math.max(0, Math.min(100, percent));
-  return `<span style="display:inline-block; width:${w}px; height:8px; background:rgba(255,255,255,0.08); border-radius:2px; vertical-align:middle; overflow:hidden;">
+  return `<span style="display:inline-block; width:${w}px; height:8px; background:rgba(236,226,205,0.08); border-radius:2px; vertical-align:middle; overflow:hidden;">
     <span style="display:block; width:${v}%; height:100%; background:hsl(${hue},75%,55%); box-shadow:0 0 4px hsl(${hue},90%,60%);"></span>
   </span>`;
 }
@@ -275,7 +276,7 @@ async function initCorpusEmbeddings() {
     simEmbedding = (hz.embedding || 'pca').toLowerCase();
   } catch (_e) { /* fall back to pca */ }
   try {
-    const umap = await (await fetch('/api/corpus_umap')).json();
+    const umap = await (await fetch(`/api/corpus_umap?flask=${encodeURIComponent(FLASK_NAME)}`)).json();
     // Word order in the UMAP cache matches the PCA cache (same dedup pipeline).
     pcaData.pca = umap.umap2;
     pcaData.projection = 'umap';
@@ -375,7 +376,50 @@ let mouseWorldPos = { x: WORLD_W / 2, y: WORLD_H / 2 };  // mouse position in wo
 // Smell visualization
 let smellsData = [];          // list of sensed smells from snapshot
 let latestResidual = { pca: new Array(12).fill(0), words: [] };
-let smellsVisible = true;     // toggle with 'o' key
+// Smell lines default OFF since the desire layer landed — ten dashed lines
+// per word read as clutter next to the heatmap. 'o' brings them back for
+// neuron-level debugging.
+let smellsVisible = false;    // toggle with 'o' key
+let desireVisible = true;     // desire heatmap on by default; 'd' hides it
+let isMouseDown = false;      // pca popup shows only while pointer held
+window.addEventListener('mousedown', () => { isMouseDown = true; });
+window.addEventListener('mouseup', () => { isMouseDown = false; });
+
+// --- specimen data card (observation-log restyle) ---------------------------
+// Fills #specimen-card from each state frame. Lifelike fields (satiety /
+// dead / plasticity_delta) only exist when the server runs those features;
+// rows hide themselves when absent.
+function updateSpecimenCard(msg) {
+  // True worm name from the sim (the URL may carry a hyphen slug).
+  if (msg.name) {
+    const t = document.getElementById('wormtitle');
+    if (t && t.textContent !== msg.name) {
+      t.textContent = msg.name;
+      document.title = `wormlet — ${msg.name}`;
+    }
+  }
+  const card = document.getElementById('specimen-card');
+  if (!card) return;
+  const row = (id, val, warn) => {
+    const el = card.querySelector(`[data-row="${id}"]`);
+    if (!el) return;
+    el.style.display = (val === undefined || val === null) ? 'none' : '';
+    const v = el.querySelector('b');
+    if (v && val !== undefined && val !== null) {
+      v.textContent = val;
+      v.classList.toggle('warn', !!warn);
+    }
+  };
+  row('words', msg.word_count);
+  row('satiety', typeof msg.satiety === 'number'
+      ? (msg.dead ? 'deceased' : msg.satiety.toFixed(2))
+      : undefined,
+      msg.dead || (typeof msg.satiety === 'number' && msg.satiety < 0.3));
+  row('learning', typeof msg.plasticity_delta === 'number'
+      ? Math.round(msg.plasticity_delta) : undefined);
+  const ing = card.querySelector('[data-row="ingested"] b');
+  if (ing && msg.recent_eaten) ing.textContent = msg.recent_eaten.slice(0, 8).join(' ');
+}
 
 // X-ray neuron-label visibility ('l' key). Single source of truth — the
 // network panel and the magnifier are both notified on every toggle. This
@@ -428,6 +472,9 @@ window.addEventListener('keydown', ev => {
   }
   if (ev.key === 'o' || ev.key === 'O') {
     smellsVisible = !smellsVisible;
+  }
+  if (ev.key === 'd' || ev.key === 'D') {
+    desireVisible = !desireVisible;
   }
   if (ev.key === 'c' || ev.key === 'C') {
     toggleChemo();
@@ -525,6 +572,8 @@ function render() {
     mouseScreenPos,
     smellsData,
     smellsVisible,
+    desireVisible,
+    mouseDown: isMouseDown,
     wormHeadPos,
     pcaData,
   });
@@ -542,22 +591,22 @@ render();
       background: rgba(0, 0, 0, 0.78); z-index: 9999;
       align-items: center; justify-content: center;
       font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
-      color: #6f9;
+      color: #cfa348;
     }
     #gen-overlay.visible { display: flex; }
     #gen-overlay .panel {
       min-width: 360px; max-width: 560px; padding: 22px 28px;
-      background: rgba(0, 20, 10, 0.92);
-      border: 1px solid rgba(100, 255, 200, 0.4);
+      background: rgba(33, 26, 18, 0.92);
+      border: 1px solid rgba(207, 163, 72, 0.4);
       border-radius: 6px;
       box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
     }
-    #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: #6f9; }
-    #gen-overlay .phase { margin-bottom: 12px; color: #cfd; font-size: 13px; }
-    #gen-overlay .bar { height: 6px; background: rgba(100, 255, 200, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
-    #gen-overlay .bar > div { height: 100%; background: #6f9; transition: width 250ms ease; }
-    #gen-overlay .meta { color: #5a5; font-size: 11px; margin-top: 8px; }
-    #gen-overlay .err { color: #f88; margin-top: 10px; font-size: 12px; }
+    #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: #cfa348; }
+    #gen-overlay .phase { margin-bottom: 12px; color: #ece2cd; font-size: 13px; }
+    #gen-overlay .bar { height: 6px; background: rgba(207, 163, 72, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+    #gen-overlay .bar > div { height: 100%; background: #cfa348; transition: width 250ms ease; }
+    #gen-overlay .meta { color: #8f8266; font-size: 11px; margin-top: 8px; }
+    #gen-overlay .err { color: #cd5d4a; margin-top: 10px; font-size: 12px; }
   `;
   document.head.appendChild(style);
   const overlay = document.createElement('div');

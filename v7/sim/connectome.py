@@ -122,18 +122,49 @@ class Connectome:
         self._left_set = set(M_LEFT)
         self._right_set = set(M_RIGHT)
 
+        # --- lifelike plasticity state (inert unless enable_plasticity()) ---
+        # self.weights stays the PRISTINE genome — rollovers and elites read
+        # it — while learned changes live in _delta (effective weight =
+        # genome + delta). Deltas die with the worm: Darwinian, not
+        # Lamarckian. _trace holds per-edge eligibility (recent co-firing);
+        # _fired accumulates firings across the several run() calls one
+        # brain tick makes, consumed by plasticity_step().
+        self._plasticity_on = False
+        self._plast: dict[str, float] = {}
+        self._delta: dict[str, dict[str, float]] = {}
+        self._trace: dict[tuple[str, str], float] = {}
+        # Memoised plasticity_stats(). The stats only change when
+        # plasticity_step mutates _delta/_trace (2 Hz), but the focus
+        # broadcast reads them at 60 Hz — on a saturated worm (~3k edges)
+        # that was a ~3k-iteration loop 60×/s for a value that moves twice a
+        # second. Any code that mutates _delta/_trace directly (not via
+        # plasticity_step) must reset this to None.
+        self._stats_cache: dict | None = None
+        self._fired: set[str] = set()
+
+    def enable_plasticity(self, params: dict[str, float]) -> None:
+        self._plasticity_on = True
+        self._plast = params
+
     # --- core ---
     def dendrite_accumulate(self, pre: str, scale: float = 1.0) -> None:
         targets = self.weights.get(pre)
         if not targets:
             return
         ns = self.next_state
-        for post, w in targets.items():
-            self.psyn[post][ns] += w * scale
+        dpre = self._delta.get(pre)
+        if dpre is None:
+            for post, w in targets.items():
+                self.psyn[post][ns] += w * scale
+        else:
+            for post, w in targets.items():
+                self.psyn[post][ns] += (w + dpre.get(post, 0.0)) * scale
 
     def fire_neuron(self, neuron: str) -> None:
         if neuron == "MVULVA":
             return
+        if self._plasticity_on:
+            self._fired.add(neuron)
         self.dendrite_accumulate(neuron)
         self.psyn[neuron][self.next_state] = 0.0
 
@@ -195,3 +226,96 @@ class Connectome:
     def activity(self) -> dict[str, float]:
         ts = self.this_state
         return {n: self.psyn[n][ts] for n in self.neurons}
+
+    # --- lifelike plasticity (called once per brain tick by World) ---
+    def plasticity_step(self, reward: float) -> None:
+        """Three-factor learning rule. (1) Eligibility: edges whose pre AND
+        post fired during this brain tick get their trace bumped — Hebbian
+        co-activity marks candidate synapses. (2) Reward: eating consolidates
+        every currently-traced edge into _delta, scaled by eta — synapses
+        active on the path to food strengthen (positive weights up,
+        inhibitory weights deepen: the delta follows the trace regardless of
+        sign, reinforcing the circuit as wired). (3) Decay: traces fade
+        (trace_decay) and deltas relax toward the genome (baseline_pull), so
+        unreinforced learning is forgotten. All arithmetic is deterministic."""
+        if not self._plasticity_on:
+            return
+        p = self._plast
+        fired = self._fired
+        if fired:
+            trace = self._trace
+            # sorted: set iteration order varies with PYTHONHASHSEED across
+            # processes; per-key arithmetic is order-safe, but insertion order
+            # feeds the plasticity_stats() L1 summation order and the
+            # checkpoint's JSON byte order — sorting keeps those reproducible
+            # across restarts.
+            for pre in sorted(fired):
+                targets = self.weights.get(pre)
+                if not targets:
+                    continue
+                for post in targets:
+                    if post in fired:
+                        trace[(pre, post)] = trace.get((pre, post), 0.0) + 1.0
+            self._fired = set()
+
+        if reward > 0.0 and self._trace:
+            from sim.lifelike import DELTA_CAP
+            gain = p["eta"] * reward
+            delta = self._delta
+            for (pre, post), e in self._trace.items():
+                # Reinforce the circuit AS WIRED: excitatory synapses
+                # strengthen (+), inhibitory synapses deepen (−). An unsigned
+                # increment would erode inhibition every meal and could drive
+                # an inhibitory weight across zero into excitation.
+                sign = 1.0 if self.weights.get(pre, {}).get(post, 0.0) >= 0 else -1.0
+                dpre = delta.setdefault(pre, {})
+                d = dpre.get(post, 0.0) + gain * e * sign
+                if d > DELTA_CAP:
+                    d = DELTA_CAP
+                elif d < -DELTA_CAP:
+                    d = -DELTA_CAP
+                dpre[post] = d
+
+        # Decay traces and relax deltas toward the genome; prune dust so the
+        # sparse dicts stay small over a long life.
+        from sim.lifelike import PRUNE_EPS
+        td = p["trace_decay"]
+        self._trace = {k: v * td for k, v in self._trace.items() if v * td > PRUNE_EPS}
+        pull = 1.0 - p["baseline_pull"]
+        if self._delta:
+            new_delta: dict[str, dict[str, float]] = {}
+            for pre, posts in self._delta.items():
+                kept = {post: d * pull for post, d in posts.items()
+                        if abs(d * pull) > PRUNE_EPS}
+                if kept:
+                    new_delta[pre] = kept
+            self._delta = new_delta
+        self._stats_cache = None
+
+    def delta_norm(self) -> float:
+        """L1 size of current learned changes — kept as the historical name;
+        the one implementation lives in plasticity_stats()."""
+        return self.plasticity_stats()["l1"]
+
+    def plasticity_stats(self) -> dict:
+        """Rollup of the learned layer for post-mortems and diagnostics.
+        The L1 alone proved ambiguous in the field: three worms in one
+        flask all reported the identical L1 (29620.0 — 2,962 edges pinned at
+        DELTA_CAP) and one thrived while two starved. The capped-edge count is
+        what separates 'learned a lot' from 'every traced synapse slammed into
+        the cap and the rule can no longer steer'."""
+        if self._stats_cache is None:
+            from sim.lifelike import DELTA_CAP
+            near_cap = DELTA_CAP - 1e-9
+            edges = capped = 0
+            l1 = 0.0
+            for posts in self._delta.values():
+                for d in posts.values():
+                    a = abs(d)
+                    edges += 1
+                    l1 += a
+                    if a >= near_cap:
+                        capped += 1
+            self._stats_cache = {"edges": edges, "capped": capped,
+                                 "l1": round(l1, 2), "traces": len(self._trace)}
+        return dict(self._stats_cache)

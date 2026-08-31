@@ -188,6 +188,25 @@ minutes. `full` is the whole play and takes hours per generation, which is
 what production uses. Artifacts land in
 `data/dev/generations/flask_1/gen-NNNN/`.
 
+### 7b. Or judge with a local model (free, no key)
+
+Evolution can run fully offline against any OpenAI-compatible server
+(Ollama, LM Studio, llama.cpp server, vLLM):
+
+```bash
+WORMLET_GENERATIONS_ENABLED=1 WORMLET_GIT_COMMIT=0 \
+WORMLET_JUDGE_BACKEND=openai \
+WORMLET_JUDGE_URL=http://<your-llm-box>:11434/v1 \
+WORMLET_JUDGE_MODEL=gemma3:4b \
+  ./.venv/bin/python main.py --host 127.0.0.1 --port 8000
+```
+
+Same rubric, sampling, temperature-0 pin and CSV protocol as the Claude
+judge — only the transport differs. Without `ANTHROPIC_API_KEY` the gardener
+commentary silently skips, and nothing else needs the network. Calibration
+caveat: a different judge model is a different critic — don't compare fitness
+histories across judges as if they were one.
+
 ## 8. Environment variables
 
 Defaults below are read out of the code, not from memory — check them again if
@@ -210,7 +229,12 @@ you change versions.
 | `WORMLET_EXPERIMENT_MODE` | unset | POS-scorer sanity runs (`words`, `nouns`, `pos_chain`, `semantic`) — no LLM, free |
 | `WORMLET_CHECKPOINT_INTERVAL_S` | `60` | worm-state checkpoint cadence |
 | `WORMLET_BOARD_PUBLISH_DIR` | `/home/web/board_publish` | where generation winners are published |
-| `ANTHROPIC_API_KEY` | unset | required only in generations mode |
+| `WORMLET_JUDGE_BACKEND` | `anthropic` | `anthropic` or `openai` (any OpenAI-compatible `/v1` — Ollama, LM Studio, llama.cpp, vLLM) |
+| `WORMLET_JUDGE_MODEL` | `claude-haiku-4-5` | judge model; **required** when backend is `openai` (e.g. `gemma3:4b`) |
+| `WORMLET_JUDGE_URL` | `http://127.0.0.1:11434/v1` | base URL for the `openai` backend (default is local Ollama) |
+| `WORMLET_JUDGE_API_KEY` | unset | bearer token for the `openai` backend, if the server wants one |
+| `WORMLET_JUDGE_TIMEOUT_S` | `300` | HTTP timeout for the `openai` backend — small local models take minutes on a full poem |
+| `ANTHROPIC_API_KEY` | unset | required only in generations mode with the `anthropic` judge |
 
 ### Set `WORMLET_GIT_COMMIT=0`
 

@@ -42,10 +42,17 @@ def test_repetition_is_not_penalized_in_fitness():
 
 
 def test_fitness_is_pure_judge_score():
-    """Fitness is exactly Σ 1.5*(E/100)^γ + (C/100)^γ — no other factors."""
+    """Fitness is exactly mean(1.5*(E/100)^γ + (C/100)^γ) with the divisor
+    floored at FITNESS_WINDOW_FLOOR — no other factors. Regime change
+    2026-08-15: was a plain sum, which paid for volume."""
     w = [_win(["a", "b", "c"], 80, 60)]
-    expected = ev.EMOTIONAL_WEIGHT * (0.8 ** ev.GAMMA) + (0.6 ** ev.GAMMA)
-    assert abs(fitness(w) - expected) < 1e-12
+    per_win = ev.EMOTIONAL_WEIGHT * (0.8 ** ev.GAMMA) + (0.6 ** ev.GAMMA)
+    assert abs(fitness(w) - per_win / ev.FITNESS_WINDOW_FLOOR) < 1e-12
+    # at/above the floor it is a true mean: n identical windows == one window's
+    # per-window value, independent of n
+    full = [_win(["a", "b", "c"], 80, 60)] * ev.FITNESS_WINDOW_FLOOR
+    assert abs(fitness(full) - per_win) < 1e-12
+    assert abs(fitness(full * 2) - per_win) < 1e-12
 
 
 # --- step size vs sigma (the decoupling fix) ------------------------------

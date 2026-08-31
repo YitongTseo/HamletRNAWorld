@@ -67,6 +67,7 @@ TAGGING (load-bearing)
 from __future__ import annotations
 
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -74,6 +75,14 @@ from server import pos_scorers
 
 V7_ROOT = Path(__file__).resolve().parent.parent
 _CACHE = V7_ROOT / "cache" / "pos_transitions.json"
+
+
+def _cache_path(corpus: str) -> Path:
+    """Hamlet keeps the historical filename (tracked in git, deployed);
+    other corpora get a suffixed sibling."""
+    if corpus == "hamlet":
+        return _CACHE
+    return V7_ROOT / "cache" / f"pos_transitions_{corpus}.json"
 
 # Jelinek-Mercer smoothing constant. A context seen SMOOTHING times gets half
 # its weight from the higher-order estimate and half from the backoff. 5 is
@@ -109,9 +118,17 @@ class PosGrammar:
         self._tri_ctx: Counter = Counter()
         for (p2, p1, _t), c in tri.items():
             self._tri_ctx[(p2, p1)] += c
+        # Tag inventory is the MODEL'S, not the global TAGS constant: for
+        # the daodejing character grammar the "tags" are the 810 characters
+        # themselves, and iterating only the 12 universal POS tags would
+        # score every character 0 (dead PC11). Union with TAGS keeps hamlet
+        # byte-identical (its uni keys are a subset of TAGS, and unobserved
+        # tags scored ~0 anyway) while unseen-tag lookups stay safe.
+        self._tags: list[str] = sorted(set(TAGS) | set(uni.keys()))
         # fit() is called once per in-range word per brain tick; the number of
-        # distinct (p2,p1) contexts is tiny (~170), so memoising the whole
-        # normalised distribution per context makes it a dict lookup.
+        # distinct (p2,p1) contexts is tiny (~170 for POS; a few thousand for
+        # the character grammar), so memoising the whole normalised
+        # distribution per context makes it a dict lookup.
         self._dist_cache: dict[tuple[str, str], dict[str, float]] = {}
 
     # ---- estimation ----
@@ -128,7 +145,7 @@ class PosGrammar:
         l2 = n_bi / (n_bi + SMOOTHING)
 
         probs: dict[str, float] = {}
-        for t in TAGS:
+        for t in self._tags:
             p1_uni = self._uni.get(t, 0) / self._uni_total
             p2_bi = (self._bi.get((p1, t), 0) / n_bi) if n_bi else 0.0
             p3_tri = (self._tri.get((p2, p1, t), 0) / n_tri) if n_tri else 0.0
@@ -210,27 +227,41 @@ def build_counts(lines: list[list[str]],
     return uni, bi, tri
 
 
-def _corpus_tokens() -> list[list[str]]:
-    """Dialogue lines of the full play, tokenised, one list per line.
+def _corpus_tokens(corpus: str = "hamlet") -> list[list[str]]:
+    """Edible lines of the corpus, tokenised, one list per line.
 
-    DIALOGUE ONLY. `get_sentences` would also hand back speaker-name lines
-    ("KING."), act/scene cues and stage directions — none of which are English
-    grammar, and none of which the worm can eat or smell anyway (the sim marks
-    them inedible via the same `is_dialogue_line` flag). Letting them into the
+    EDIBLE ONLY (Hamlet: dialogue). `get_sentences` would also hand back
+    speaker-name lines ("KING."), act/scene cues and stage directions — for
+    the other corpora, fitt headings and prose glosses — none of which are
+    the text's grammar, and none of which the worm can eat or smell anyway
+    (the sim marks them inedible via the same flags). Letting them into the
     table would teach the grammar that a NOUN frequently follows a full stop
     at the start of a line, which is an artefact of the typesetting.
 
     Kept as a list-of-lines rather than one flat stream so transitions don't
     run across a line boundary into an unrelated speech."""
-    from corpus import hamlet
-    sentences, edible = hamlet.get_sentences_with_flags(passage="full")
+    from corpus import library
+    sentences, edible = library.get_sentences_with_flags(corpus, "full")
     return [s for s, ok in zip(sentences, edible) if ok and s]
 
 
-def build_and_cache(path: Path = _CACHE) -> "PosGrammar":
-    """Build the lexicon + transition table from the Hamlet corpus, cache it."""
-    lines = _corpus_tokens()
-    lexicon = build_lexicon(lines)
+def build_and_cache(corpus: str = "hamlet", path: Path | None = None) -> "PosGrammar":
+    """Build the lexicon + transition table from a corpus, cache it. NOTE
+    for beowulf: NLTK's perceptron on Hall's alliterative verse is noisier
+    than on Hamlet (inversions, compounds like "prowess-in-battle") — PC11
+    is a rougher signal there, accepted and documented."""
+    if path is None:
+        path = _cache_path(corpus)
+    lines = _corpus_tokens(corpus)
+    if corpus == "daodejing":
+        # Classical Chinese: no POS tagger exists here, and none is needed —
+        # characters ARE the grammar atoms. Identity lexicon makes the
+        # trigram a character model: PC11 = "how expected is this character
+        # after the last two", trained on the text itself. 810 distinct
+        # chars; the same Counter/smoothing machinery carries it.
+        lexicon = {t: t for line in lines for t in line}
+    else:
+        lexicon = build_lexicon(lines)
     uni, bi, tri = build_counts(lines, lexicon)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
@@ -245,29 +276,33 @@ def build_and_cache(path: Path = _CACHE) -> "PosGrammar":
     return PosGrammar(uni, bi, tri, lexicon)
 
 
-_grammar: PosGrammar | None = None
+_grammars: dict[str, PosGrammar] = {}
 
 
-def get_grammar() -> PosGrammar:
-    """Process-wide singleton. Loads the cached table, building it on first
-    use if the cache is absent."""
-    global _grammar
-    if _grammar is not None:
-        return _grammar
-    if _CACHE.exists():
-        raw = json.loads(_CACHE.read_text())
+def get_grammar(corpus: str = "hamlet") -> PosGrammar:
+    """Process-wide singleton per corpus. Loads the cached table, building
+    it on first use if the cache is absent. Default 'hamlet' keeps every
+    pre-multi-corpus call site byte-identical in behaviour."""
+    g = _grammars.get(corpus)
+    if g is not None:
+        return g
+    cache = _cache_path(corpus)
+    if cache.exists():
+        raw = json.loads(cache.read_text())
         uni = Counter(raw["uni"])
         bi = Counter({tuple(k.split("|")): v for k, v in raw["bi"].items()})
         tri = Counter({tuple(k.split("|")): v for k, v in raw["tri"].items()})
-        _grammar = PosGrammar(uni, bi, tri, raw.get("lexicon", {}))
+        g = PosGrammar(uni, bi, tri, raw.get("lexicon", {}))
     else:
-        _grammar = build_and_cache()
-    return _grammar
+        g = build_and_cache(corpus)
+    _grammars[corpus] = g
+    return g
 
 
 if __name__ == "__main__":
-    g = build_and_cache()
-    print(f"wrote {_CACHE}  ({len(g._lexicon)} word types in lexicon)")
+    corpus = sys.argv[1] if len(sys.argv) > 1 else "hamlet"
+    g = build_and_cache(corpus)
+    print(f"wrote {_cache_path(corpus)}  ({len(g._lexicon)} word types in lexicon)")
     counts = Counter(g._lexicon.values())
     print("lexicon tag distribution: "
           + "  ".join(f"{t}={c}" for t, c in counts.most_common()))

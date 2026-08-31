@@ -1,0 +1,48 @@
+"""Corpus registry — the one place that knows which texts exist.
+
+get_sentences_with_flags(corpus, passage) dispatches to the per-text
+module; hamlet keeps its passage vocabulary (opening/soliloquy/act1/full),
+the others have only "full". TITLES feed the judge prompt and viewer
+labels, so a flask's critic and its dish header always name the same text.
+"""
+from __future__ import annotations
+
+from corpus import beowulf, daodejing, hamlet, laozi
+
+TITLES = {
+    "hamlet": "Shakespeare's Hamlet",
+    "laozi": "the Tao Teh King of Lao-Tse (Legge translation)",
+    "beowulf": "the Anglo-Saxon epic Beowulf (Hall translation)",
+    "daodejing": "the Daodejing of Laozi, in the original Classical Chinese",
+}
+
+# Short viewer labels. Decoupled from TITLES because TITLES feed the judge
+# rubric, and editing a live flask's rubric mid-lineage is a critic change
+# (regime rule) — display can modernise romanisation freely, the rubric
+# cannot.
+DISPLAY_TITLES = {
+    "hamlet": "Hamlet",
+    "laozi": "Tao Te Ching (Legge)",
+    "beowulf": "Beowulf (Hall)",
+    "daodejing": "道德經",
+}
+
+# Spatial layout per corpus: "vertical" = column layout (CJK reading
+# order delivered by the scroll); default horizontal.
+LAYOUTS = {"daodejing": "vertical"}
+
+_LOADERS = {
+    "hamlet": hamlet.get_sentences_with_flags,
+    "laozi": laozi.get_sentences_with_flags,
+    "beowulf": beowulf.get_sentences_with_flags,
+    "daodejing": daodejing.get_sentences_with_flags,
+}
+
+
+def get_sentences_with_flags(corpus: str, passage: str = "full",
+                             n: int | None = None):
+    try:
+        loader = _LOADERS[corpus]
+    except KeyError:
+        raise ValueError(f"unknown corpus {corpus!r}; have {sorted(_LOADERS)}")
+    return loader(passage, n=n) if n is not None else loader(passage)

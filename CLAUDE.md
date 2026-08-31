@@ -54,9 +54,14 @@ Public site: **https://wordswordsworms.org**
 
 ## Analysing whether the worms are learning
 
-**Fitness is a SUM over judged windows, so it rewards eating VOLUME.** Always
-normalise by `windows_scored` before concluding anything about poem quality. A
-flask can gain fitness purely by eating more.
+**Fitness regime changed 2026-08-15** (`fitness.json` carries `window_floor`
+when the new regime scored it): it is now the per-window MEAN with the divisor
+floored at 12, so volume no longer pays — hunger enforces eating instead.
+**Every generation scored before then used a SUM over judged windows, which
+rewarded eating VOLUME.** When analysing old generations, always normalise by
+`windows_scored` before concluding anything about poem quality; a flask could
+gain fitness purely by eating more. Never compare fitness values across the
+regime boundary.
 
 Also check for scoring-regime changes before reading a trend: `GAMMA` changed
 2.5 → 1.5 at v6 generation 13 and jumped fitness 3.7 → 27.3 in a single
@@ -81,6 +86,23 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   further than it had sampled. Now the true natural gradient plus a trust
   region; step/sampling-radius is a constant 0.170 at every σ.
 - **No repetition penalty.** Fitness is the judge's rating alone.
+- **Fitness is quality-per-window since 2026-08-15** (mean with divisor
+  floored at `FITNESS_WINDOW_FLOOR=12`). Volume is enforced by hunger
+  (starvation), not by the judge. The lifelike lineage on droog
+  (`data-lifelike-2`, flask_1) crossed the regime at gen 8.
+- **Plasticity saturation is observable:** `plasticity_capped`/
+  `plasticity_edges` in worm snapshots and `wormlet_plasticity_capped` in
+  VictoriaMetrics. If capped/edges trends toward 1 across generations, the
+  NES has discovered "pin everything at DELTA_CAP" as a strategy and
+  plasticity is a blanket amplifier, not learning.
+- **Habituation exists but is OFF everywhere** (`WORMLET_HABITUATION=1` to
+  enable): per-neuron chemosensory adaptation — a static smell fades
+  (subtractive EMA baseline, `adapt_rate` gene), silence recovers it, eating
+  dishabituates (`dishab_relief` gene). Snapshot key `habituation` is the
+  baseline L1: pinned at 0 across a lineage means adapt_rate evolved to 0.
+  Like the other lifelike genes, only a cold-started lineage evolves the two
+  new params — every existing lineage (including `data-lifelike-2`) runs the
+  clipped defaults.
 - **Open question:** neither v6 nor v7 has ever demonstrably learned to write
   better poetry once fitness is normalised by volume. The above fixes remove
   the known mechanical reasons it *couldn't*; whether it now does is untested.

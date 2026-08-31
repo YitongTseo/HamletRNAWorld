@@ -14,6 +14,17 @@ CHAR_W = 11.0             # world units per character (monospace approx)
 WORD_GAP = 70.0           # world units gap between words
 CENTER_X = WORLD_W / 2.0
 
+# Vertical (CJK) layout: each line is a COLUMN, first character topmost so
+# the upward scroll delivers characters past a stationary worm in reading
+# order — traditional top-to-bottom layout, and wu wei as a foraging
+# strategy. Columns cycle right-to-left like a traditional page. Slot reuse
+# (N_COLS x spawn interval ~ 210 s) comfortably exceeds the longest
+# column's full transit (~190 s), so columns never overlap in a slot.
+V_GAP = 60.0              # vertical gap between characters in a column
+N_COLS = 10               # column slots across the dish
+COL_X0 = WORLD_W - 150.0  # rightmost slot (first column of the "page")
+COL_STEP = 140.0          # slot pitch, right to left
+
 
 @dataclass
 class WordState:
@@ -28,7 +39,9 @@ class WordState:
 
 class TextScroller:
     def __init__(self, sentences: list[list[str]], loop: bool = True,
-                 edible_flags: list[bool] | None = None):
+                 edible_flags: list[bool] | None = None,
+                 spawn_interval: float = SPAWN_INTERVAL,
+                 layout: str = "horizontal"):
         """If loop=False, stop spawning new lines after one full pass; the
         `corpus_exhausted` property goes True once the last line has scrolled
         off the screen. Generation mode passes loop=False.
@@ -40,6 +53,8 @@ class TextScroller:
         self.sentences = sentences
         self.edible_flags = edible_flags or []
         self.loop = loop
+        self.spawn_interval = spawn_interval
+        self.layout = layout
         self._sent_idx = 0
         self._line_id = 0
         self._active: list[list[WordState]] = []
@@ -75,7 +90,7 @@ class TextScroller:
         if self._elapsed >= self._next_spawn:
             if self.loop or self._sent_idx < len(self.sentences):
                 self._spawn()
-            self._next_spawn = self._elapsed + SPAWN_INTERVAL
+            self._next_spawn = self._elapsed + self.spawn_interval
 
     def _spawn(self) -> None:
         """Create a new line of words from the next sentence."""
@@ -91,22 +106,29 @@ class TextScroller:
         lid = self._line_id
         self._line_id += 1
 
-        # Horizontal layout centered on world center
-        total_w = sum(len(t) * CHAR_W for t in tokens) + WORD_GAP * (len(tokens) - 1)
-        x = CENTER_X - total_w / 2
         line: list[WordState] = []
-
-        for idx, tok in enumerate(tokens):
-            w = WordState(
-                text=tok,
-                line_id=lid,
-                word_idx=idx,
-                x=x + len(tok) * CHAR_W / 2,  # center of word
-                y=SPAWN_Y,
-                edible=edible,
-            )
-            line.append(w)
-            x += len(tok) * CHAR_W + WORD_GAP
+        if self.layout == "vertical":
+            # Column: token 0 at SPAWN_Y (topmost — first past any point as
+            # everything rises), later tokens trail below, entering one by
+            # one from the bottom edge.
+            x_col = COL_X0 - (lid % N_COLS) * COL_STEP
+            for idx, tok in enumerate(tokens):
+                line.append(WordState(
+                    text=tok, line_id=lid, word_idx=idx,
+                    x=x_col, y=SPAWN_Y + idx * V_GAP, edible=edible,
+                ))
+        else:
+            # Horizontal layout centered on world center (stock — byte
+            # identical for every Latin corpus).
+            total_w = sum(len(t) * CHAR_W for t in tokens) + WORD_GAP * (len(tokens) - 1)
+            x = CENTER_X - total_w / 2
+            for idx, tok in enumerate(tokens):
+                line.append(WordState(
+                    text=tok, line_id=lid, word_idx=idx,
+                    x=x + len(tok) * CHAR_W / 2,  # center of word
+                    y=SPAWN_Y, edible=edible,
+                ))
+                x += len(tok) * CHAR_W + WORD_GAP
 
         self._active.append(line)
 

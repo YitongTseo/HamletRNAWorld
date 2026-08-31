@@ -24,6 +24,7 @@ from sim.connectome import Connectome
 from sim.muscle_body import MuscleBody
 from sim.worm import WormBody
 from sim.text_scroller import TextScroller
+from sim import lifelike
 from corpus.hamlet import get_sentences_with_flags
 from sim.chemosensory_mapping import (
     compute_pca_activation, PC_NEURON_PAIRS,
@@ -85,6 +86,10 @@ class World:
     # per generation and reused across the whole flask. None → the process-wide
     # default model (used by tests / legacy / single-worm paths).
     embedding_model: "embedding.EmbeddingModel | None" = None
+    # Which text this world scrolls (WORMLET_FLASK_TEXTS, per flask). None →
+    # legacy env-passage hamlet, so every pre-multi-corpus caller is
+    # unchanged. Non-hamlet corpora always scroll their full text.
+    corpus: str | None = None
     body_kind: str = "ik"
     brain: Connectome = field(init=False)
     worm: WormBody | MuscleBody = field(init=False)
@@ -108,10 +113,42 @@ class World:
     _recent_eaten: list = field(default_factory=list)
     # Brain tick counter (kept for pacing; no longer drives any decay math).
     _brain_tick_count: int = 0
+    # Lifelike mode (sim/lifelike.py). Flags are read once at init so a
+    # worm's behaviour can't change mid-life if the env mutates.
+    satiety: float = lifelike.SATIETY_START
+    dead: bool = False
+    _reward_accum: float = 0.0
+    # Motion tracking for the spin-from-birth watch (BEHAVIOUR-LOG.md
+    # 2026-08-15): per brain tick (2 Hz), |heading change| and position ride
+    # 60-second windows. A spinner shows high turns_min with drift_min under
+    # a body length; observability only — no sim behaviour reads these.
+    _turn_window: object = field(default_factory=lambda: __import__("collections").deque(maxlen=120))
+    _pos_window: object = field(default_factory=lambda: __import__("collections").deque(maxlen=120))
+    _last_facing: float | None = None
+    # Habituation: per-neuron adapted baseline (EMA of recent pre-gain
+    # chemosensory input). Response = input - baseline, so a static smell
+    # fades and the worm moves on. Empty forever when the flag is off.
+    _adapt: dict = field(default_factory=dict)
+    # Post-mortem bookkeeping. tick_count keeps advancing for a corpse (the
+    # scroller must exhaust for rollover), so the death tick and the gap since
+    # the last meal exist only at the moment of death — capture them then.
+    # Deterministic: sim ticks only, no wallclock (the server's death logger
+    # adds the wall timestamp when it writes the record out).
+    _last_meal_tick: int = -1
+    death_record: dict | None = None
 
     def __post_init__(self):
         self.rng = random.Random(self.seed)
+        # Pop the _lifelike gene block BEFORE the dict reaches Connectome —
+        # it's params, not a neuron. pop_params returns clipped values (or
+        # defaults) whether or not the genome carries the block.
+        self._plasticity_on = lifelike.plasticity_enabled()
+        self._hunger_on = lifelike.hunger_enabled()
+        self._habituation_on = lifelike.habituation_enabled()
+        self.lifelike_params = lifelike.pop_params(self.weights)
         self.brain = Connectome(weights=self.weights, rng=self.rng)
+        if self._plasticity_on:
+            self.brain.enable_plasticity(self.lifelike_params)
         # v7.1 chemosensory embedding: the flask's SHARED model if given, else
         # the process-wide default (random-init). Shared across the flask so the
         # precomputed E-table is built once per generation, not per worm.
@@ -134,10 +171,35 @@ class World:
         # When generational evolution is enabled, scroll the full play once
         # per generation; otherwise loop the opening passage forever (legacy
         # v6 behavior).
-        passage = os.environ.get("WORMLET_PASSAGE", "opening")
         loop = os.environ.get("WORMLET_GENERATIONS_ENABLED", "0") != "1"
-        sentences, edible_flags = get_sentences_with_flags(passage)
-        self.text_scroller = TextScroller(sentences, loop=loop, edible_flags=edible_flags)
+        if self.corpus is None or self.corpus == "hamlet":
+            # Legacy/default path, byte-identical to stock v7: hamlet with
+            # the env-selected passage.
+            passage = os.environ.get("WORMLET_PASSAGE", "opening")
+            sentences, edible_flags = get_sentences_with_flags(passage)
+        else:
+            from corpus import library
+            sentences, edible_flags = library.get_sentences_with_flags(
+                self.corpus, "full")
+        # Pace non-hamlet corpora so every flask's generation lasts about as
+        # long as hamlet act1 (~1500 lines at 4.5 s): the rollover is a JOINT
+        # barrier across flasks, and with hunger on a short-corpus flask
+        # would starve on an empty dish for hours waiting for a long one
+        # (beowulf full = 4286 lines). Denser/sparser dishes change feeding
+        # economics — recorded in the fidelity ledger. Hamlet keeps 4.5 s,
+        # byte-identical to stock.
+        if self.corpus is None or self.corpus == "hamlet":
+            self.text_scroller = TextScroller(sentences, loop=loop,
+                                              edible_flags=edible_flags)
+        else:
+            # Clamp ceiling 25 s: the daodejing is only 323 lines, so
+            # equal-duration pacing means a sparse dish (~18 chars per
+            # line every ~21 s — still ~60x the starvation line).
+            interval = min(25.0, max(1.5, 4.5 * 1500.0 / max(1, len(sentences))))
+            self.text_scroller = TextScroller(
+                sentences, loop=loop, edible_flags=edible_flags,
+                spawn_interval=interval,
+                layout=library.LAYOUTS.get(self.corpus, "horizontal"))
 
     def add_food(self, x: float, y: float) -> None:
         self.food.append(Food(x, y))
@@ -231,6 +293,20 @@ class World:
                         # capped at HISTORY_LEN. This IS the worm's residual now.
                         self._recent_eaten.insert(0, f.word)
                         del self._recent_eaten[HISTORY_LEN:]
+                        self._last_meal_tick = self.tick_count
+                        # Lifelike: eating feeds the worm and/or rewards the
+                        # brain. Reward scales with hunger — a meal found
+                        # while starving consolidates harder (dopamine).
+                        if self._hunger_on:
+                            self._reward_accum += (
+                                lifelike.REWARD_BASE + (1.0 - self.satiety))
+                            self.satiety = min(1.0, self.satiety + lifelike.SATIETY_BITE)
+                        elif self._plasticity_on:
+                            self._reward_accum += 1.0
+                        # Habituation: food is the salient event that
+                        # restores a faded response (dishabituation).
+                        if self._habituation_on:
+                            self._dishabituate()
                     self.food.pop(i)
                     continue
             i += 1
@@ -268,6 +344,13 @@ class World:
             for w in self.text_scroller.alive_words()
         ]
 
+        # A starved worm is dead: no brain, no body, no eating. The scroller
+        # keeps stepping above so the corpus still exhausts and the flask's
+        # rollover fires on time regardless of casualties.
+        if self.dead:
+            self.tick_count += 1
+            return
+
         # Brain at 2 Hz (every BRAIN_TICK_PERIOD body ticks).
         if self.tick_count % BRAIN_TICK_PERIOD == 0:
             # v7: chemosensation is expensive now (a learned embedding forward
@@ -285,8 +368,30 @@ class World:
             if chemo:
                 self.brain.stimulate_weighted(chemo)
             self._brain_tick_count += 1
+            # Spin watch: wrapped heading delta + position, 2 Hz.
+            f = self.worm.facing_dir
+            if self._last_facing is not None:
+                self._turn_window.append(
+                    abs((f - self._last_facing + math.pi) % (2 * math.pi) - math.pi))
+            self._last_facing = f
+            self._pos_window.append((self.worm.target_x, self.worm.target_y))
+            # Lifelike: consolidate rewards accumulated since the last brain
+            # tick (traces are fresh — the brain fired within trace memory of
+            # the meal), then decay traces/deltas. No-op when plasticity off.
+            if self._plasticity_on:
+                self.brain.plasticity_step(self._reward_accum)
+            # Drain regardless: with hunger on and plasticity off the accum
+            # would otherwise grow unbounded for the whole life (harmless but
+            # sloppy — audit finding).
+            self._reward_accum = 0.0
+            # Hunger: a starving worm roams — motor gain rises as satiety
+            # falls (serotonin/dopamine roam-dwell switch, crudely).
+            motor_gain = 1.0
+            if self._hunger_on:
+                motor_gain += self.lifelike_params["roam_gain"] * (1.0 - self.satiety)
             if isinstance(self.worm, WormBody):
-                self.worm.consume_motor(self.brain.accum_left, self.brain.accum_right)
+                self.worm.consume_motor(self.brain.accum_left * motor_gain,
+                                        self.brain.accum_right * motor_gain)
 
         # Body every tick. MuscleBody re-reads per-muscle activations with
         # smoothing; the IK body is driven only at brain ticks via
@@ -303,7 +408,73 @@ class World:
             self.stim_nose_touch = False
             self.stim_food_sense = False
 
+        # Hunger: metabolism runs every body tick; hitting zero is death.
+        if self._hunger_on and not self.dead:
+            self.satiety -= lifelike.SATIETY_DECAY_PER_TICK
+            if self.satiety <= 0.0:
+                self.satiety = 0.0
+                self.dead = True
+                self.death_record = {
+                    "cause": "starvation",
+                    "died_at_tick": self.tick_count,
+                    "last_meal_tick": self._last_meal_tick,
+                    # -1 last_meal_tick = never ate; the whole life was the fast.
+                    "starved_ticks": (self.tick_count - self._last_meal_tick
+                                      if self._last_meal_tick >= 0
+                                      else self.tick_count),
+                    "x": round(self.worm.target_x, 1),
+                    "y": round(self.worm.target_y, 1),
+                }
+
         self.tick_count += 1
+
+    def lifelike_checkpoint(self) -> dict | None:
+        """Serialisable within-life biology for the mid-generation checkpoint:
+        satiety and the learned plasticity deltas/traces. Without this every
+        restart was mild amnesia plus a free meal — the worm forgot what it
+        had learned this life and respawned fed. None when both features are
+        off, so stock checkpoints don't grow a key."""
+        if not (self._hunger_on or self._plasticity_on or self._habituation_on):
+            return None
+        out: dict = {}
+        if self._hunger_on:
+            out["satiety"] = self.satiety
+            out["dead"] = self.dead
+            out["last_meal_tick"] = self._last_meal_tick
+            if self.death_record is not None:
+                # Carries the "logged" flag the server sets after writing
+                # deaths.jsonl, so a restart doesn't re-log the same death.
+                out["death_record"] = self.death_record
+        if self._plasticity_on:
+            out["delta"] = self.brain._delta
+            out["trace"] = [[pre, post, v]
+                            for (pre, post), v in self.brain._trace.items()]
+        if self._habituation_on:
+            # Without this a restart would dishabituate every nose for free.
+            out["adapt"] = self._adapt
+        return out
+
+    def restore_lifelike(self, data: dict | None) -> None:
+        """Inverse of lifelike_checkpoint. Tolerates None and missing keys
+        (v1 checkpoints predate this), and ignores state for features that
+        are currently off."""
+        if not data:
+            return
+        if self._hunger_on and "satiety" in data:
+            self.satiety = float(data["satiety"])
+            self.dead = bool(data.get("dead", False))
+            self._last_meal_tick = int(data.get("last_meal_tick", -1))
+            self.death_record = data.get("death_record")
+        if self._plasticity_on and "delta" in data:
+            self.brain._delta = {pre: {post: float(v) for post, v in posts.items()}
+                                 for pre, posts in data["delta"].items()}
+            self.brain._trace = {(a, b): float(v)
+                                 for a, b, v in data.get("trace", [])}
+            self.brain._stats_cache = None  # direct _delta mutation
+        if self._habituation_on and "adapt" in data:
+            # Sorted for the same hash-seed-independent order the EMA keeps.
+            self._adapt = {n: float(data["adapt"][n])
+                           for n in sorted(data["adapt"])}
 
     def drain_eaten_words(self) -> list[tuple[int, int, str]]:
         """Return and clear the buffer of words eaten since the last drain."""
@@ -316,14 +487,119 @@ class World:
         residual term — memory lives in the context-aware embedding of each
         in-range word). Each smell already carries direction-aware L/R splits."""
         out: dict[str, float] = {}
+        # Hunger: starving worms smell harder — chemosensory gain rises as
+        # satiety falls (real starved C. elegans show heightened chemotaxis).
+        # Applied before saturation, so faint far-off words become salient to
+        # a desperate worm but strong smells still cap at 1.0.
+        gain = 1.0
+        if self._hunger_on:
+            gain += self.lifelike_params["starve_gain"] * (1.0 - self.satiety)
+        if not self._habituation_on:
+            # Stock path, verbatim: accumulating v*gain directly is NOT the
+            # same floats as sum-then-multiply, and flags-off must stay
+            # bit-identical to v7 — so the habituated path below is a
+            # separate branch, not a refactor of this one.
+            for smell in self.sensed_smells.values():
+                for n, v in smell.get("neurons", {}).items():
+                    if v > 0:
+                        out[n] = out.get(n, 0.0) + v * gain
+            # Saturate at 1.0 per neuron.
+            for k in list(out.keys()):
+                if out[k] > 1.0:
+                    out[k] = 1.0
+            return out
+        # Habituation (called once per brain tick from tick(), so this is
+        # also the adaptation clock). Baselines track the PRE-gain input:
+        # adaptation is receptor-level, hunger gain is downstream — so a
+        # worm growing desperate partially "un-adapts", which is the real
+        # interplay (starvation re-sensitises chemotaxis).
+        raw: dict[str, float] = {}
         for smell in self.sensed_smells.values():
             for n, v in smell.get("neurons", {}).items():
                 if v > 0:
-                    out[n] = out.get(n, 0.0) + v
-        # Saturate at 1.0 per neuron.
-        for k in list(out.keys()):
-            if out[k] > 1.0:
-                out[k] = 1.0
+                    raw[n] = raw.get(n, 0.0) + v
+        # EMA over the union: stimulated neurons adapt toward their input,
+        # silent ones relax toward 0 (recovery) at the same rate. Sorted so
+        # dict insertion order — and thus every downstream float sum — is
+        # independent of PYTHONHASHSEED (determinism contract).
+        rate = self.lifelike_params["adapt_rate"]
+        adapt = self._adapt
+        for n in sorted(set(adapt) | set(raw)):
+            a = adapt.get(n, 0.0) * (1.0 - rate) + raw.get(n, 0.0) * rate
+            if a > lifelike.PRUNE_EPS:
+                adapt[n] = a
+            else:
+                adapt.pop(n, None)
+        # Respond to input minus the (just-updated) baseline, floored at 0:
+        # a fully adapted channel goes silent. Gain after subtraction, cap
+        # at 1.0 as ever.
+        for n, v in raw.items():
+            e = (v - adapt.get(n, 0.0)) * gain
+            if e > 0.0:
+                out[n] = e if e < 1.0 else 1.0
+        return out
+
+    def _dishabituate(self) -> None:
+        """Eating clears dishab_relief of every adapted baseline — the meal
+        re-sensitises the nose (real dishabituation: a salient stimulus
+        restores a habituated response). At relief=1 one bite is a full
+        reset; at 0 evolution has switched dishabituation off."""
+        keep = 1.0 - self.lifelike_params["dishab_relief"]
+        for n in list(self._adapt):
+            a = self._adapt[n] * keep
+            if a > lifelike.PRUNE_EPS:
+                self._adapt[n] = a
+            else:
+                del self._adapt[n]
+
+    def _plasticity_snapshot(self) -> dict:
+        """Lifelike snapshot keys for the learned layer. One stats pass
+        covers all three fields (l1 == delta_norm)."""
+        st = self.brain.plasticity_stats()
+        return {"plasticity_delta": st["l1"],
+                "plasticity_capped": st["capped"],
+                "plasticity_edges": st["edges"]}
+
+    def _habituation_snapshot(self) -> dict:
+        """L1 of the adapted baselines — how nose-blind the worm currently
+        is. Stuck at 0 across a lineage means adapt_rate evolved to 0 (the
+        NES switched habituation off); ever-high means the worm never
+        escapes its own patch. Keys are already sorted (see _chemo_pulse),
+        so the sum is order-stable."""
+        return {"habituation": round(sum(self._adapt.values()), 3)}
+
+    def motion_stats(self) -> dict:
+        """Spin diagnostics for /api/worms: revolutions and net drift over
+        the last sim-minute. Measured baseline (seed 3, stock): a normal
+        undulating worm shows turns_min ~14 (heading wobbles with the body
+        wave) and drift_min ~400. The spinner signature is DRIFT, not turns:
+        drift_min < ~50 world units while turns_min stays >= baseline =
+        rotating in place (dish is 1600x1000)."""
+        turns = sum(self._turn_window) / (2 * math.pi)
+        if len(self._pos_window) >= 2:
+            (x0, y0), (x1, y1) = self._pos_window[0], self._pos_window[-1]
+            drift = math.hypot(x1 - x0, y1 - y0)
+        else:
+            drift = 0.0
+        return {"turns_min": round(turns, 2), "drift_min": round(drift, 1)}
+
+    def lifelike_payload(self) -> dict:
+        """Every lifelike key a public payload carries, gated per feature —
+        the ONE owner of which keys exist when. snapshot(), the focus
+        broadcast, and /api/worms all spread this verbatim; a feature wired
+        at only some sites would make the viewer and the REST API silently
+        disagree (habituation touched three call sites before this existed).
+        Empty dict with everything off, so default-off payloads are
+        unchanged byte for byte. (The overview tray deliberately carries
+        satiety/dead only — it doesn't use this.)"""
+        out: dict = {}
+        if self._hunger_on:
+            out["satiety"] = round(self.satiety, 3)
+            out["dead"] = self.dead
+        if self._plasticity_on:
+            out.update(self._plasticity_snapshot())
+        if self._habituation_on:
+            out.update(self._habituation_snapshot())
         return out
 
     def snapshot(self) -> dict:
@@ -375,4 +651,7 @@ class World:
                      "food_sense": self.stim_food_sense},
             "paused": self.paused,
             "neurons": neurons_active,
+            # Lifelike keys appear only when the features are on; the
+            # per-feature gating has one owner (lifelike_payload).
+            **self.lifelike_payload(),
         }

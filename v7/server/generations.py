@@ -35,11 +35,11 @@ import numpy as np
 
 from corpus.hamlet import is_non_reactive  # punctuation set is in PUNCTUATION below
 from server.evolution import (
-    SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT, N_ELITES,
+    SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT, FITNESS_WINDOW_FLOOR, N_ELITES,
     evolve_generation, fitness, flatten_weights, unflatten_weights, WeightDict,
 )
 from server.gardener import maybe_write_log
-from server.judge import judge_poem, ScoredWindow
+from server.judge import judge_poem, judge_description, ScoredWindow
 from server.orchestrator import Worm
 from server.poem_clean import clean as clean_punctuation
 
@@ -166,6 +166,11 @@ def _write_worm_artifacts(
         "windows_scored": len(scored),
         "gamma": GAMMA,
         "emotional_weight": EMOTIONAL_WEIGHT,
+        # Scoring-regime provenance (2026-08-15): fitness is now the
+        # per-window mean with this divisor floor; generations whose
+        # fitness.json lacks the key were scored under the old volume-paying
+        # SUM and are not comparable.
+        "window_floor": FITNESS_WINDOW_FLOOR,
     }))
 
 
@@ -351,13 +356,46 @@ def run_generation_rollover(
             # otherwise one worm might get its good windows sampled and another
             # not, making the cross-worm fitness comparison (i.e. selection)
             # unfair. Seed varies per generation for audit-trail variety.
-            scored = judge_poem(clean, worm_name=w.name, seed=state.generation)
+            scored = judge_poem(clean, worm_name=w.name, seed=state.generation,
+                                # getattr chain: rollover test doubles are poem-only worms
+                                # with no World; default hamlet.
+                                corpus=getattr(getattr(w, "world", None),
+                                               "corpus", None) or "hamlet")
         except Exception as e:
             print(f"[GENERATIONS] judge failed for {w.name}: {e}", flush=True)
             scored = []
         scored_by_worm[w.name] = scored
         fitness_by_worm[w.name] = fitness(scored)
         progress.worms_done += 1
+
+    # Judge-outage guard: if EVERY worm came back unscored, the judge is down
+    # (local endpoint offline, API key missing/unreachable) or every poem was
+    # empty — either way there is nothing to select on. Evolving would rank an
+    # all-zero field (arbitrary elites) and adapt σ on noise, silently
+    # corrupting the lineage. Raise instead: the caller logs and continues,
+    # state stays untouched, the flask never respawns, so its corpus stays
+    # exhausted and the rollover re-fires — i.e. the lineage WAITS for the
+    # judge to come back rather than taking a garbage step.
+    if not any(scored_by_worm.values()):
+        if not any(poems_clean.values()):
+            # Void generation: no worm ate a single token (mass starvation or
+            # a degenerate brood). Nothing was judged because there was
+            # nothing to judge — raising here would LIVELOCK: the corpus
+            # re-exhausts with the same empty poems forever. Respawn the same
+            # genomes instead: poems reset, satiety refills, the brood gets
+            # another life. No NES step, no generation increment.
+            print(f"[GENERATIONS] void generation in {group} — no worm ate "
+                  f"anything; respawning unchanged genomes", flush=True)
+            return {
+                w.name: json.loads(
+                    w.poem_path.parent.joinpath("weights.json").read_text())
+                for w in worms
+            }
+        raise RuntimeError(
+            f"judge produced zero scored windows across all {len(worms)} worms "
+            f"in {group} — aborting rollover; will retry when the corpus "
+            f"exhaustion re-fires"
+        )
 
     # --- Phase: evolving ---
     progress.phase = PHASE_EVOLVING
@@ -436,7 +474,15 @@ def run_generation_rollover(
     (gen_dir / "metadata.json").write_text(json.dumps({
         "group": group,
         "generation": state.generation + 1,
-        "judge_model": "claude-haiku-4-5",
+        # Record the ACTUAL judge (backend:model), not an assumption — with
+        # the openai backend or a fallback splice, "claude-haiku-4-5" would
+        # be exactly the scoring-regime misattribution CLAUDE.md warns about.
+        "judge_model": judge_description(),
+        # Corpus provenance (2026-08-15, multi-text flasks): a different text
+        # judged under a rubric naming that text is a DIFFERENT CRITIC —
+        # cross-flask fitness is never one comparable history.
+        "corpus": getattr(getattr(worms[0], "world", None), "corpus", None)
+                  or "hamlet",
         "sigma_used": state.sigma,
         "sigma_next": new_sigma,
         "sigma_scheme": ng.scheme,
