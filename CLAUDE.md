@@ -34,11 +34,18 @@ Public site: **https://wordswordsworms.org**
    deletion unstaged. There are ~215 unpushed data commits for the same reason
    — do not "clean them up".
 
-4. **There is no pytest in the venv.** Run tests with:
+4. **There is no pytest in the venv.** Run tests with (from `v7/`):
    ```
-   /home/web/.venv/bin/python tests/run_all.py            # all
-   /home/web/.venv/bin/python tests/run_all.py evolution  # substring filter
+   ./.venv/bin/python tests/run_all.py            # all — 210 tests
+   ./.venv/bin/python tests/run_all.py evolution  # substring filter
    ```
+   On the Linux server the venv is `/home/web/.venv/bin/python` instead.
+   **Use the venv, not the system python.** `nltk` and `fastapi` live only in
+   the venv, and `run_all.py` reports a module that fails to import as a
+   *failure* rather than an error — bare `python3 tests/run_all.py` on the
+   FreeBSD host silently reports 96/115 with 19 modules "failing" for no
+   reason but the interpreter. The venv also carries the vendored
+   `nltk_data`, so no corpus download is needed.
    Several test modules are pytest-style with no `__main__` block, so running
    them directly executes **nothing and exits 0**. `run_all.py` imports each
    module and calls every `test_*` function. Don't trust a bare
@@ -53,6 +60,33 @@ Public site: **https://wordswordsworms.org**
    client-side, not in the schema, or the call 400s.
 
 ## Analysing whether the worms are learning
+
+**Run the elite-vs-fresh test FIRST, before reading any fitness trend.**
+`N_ELITES` genomes are carried into the next generation *verbatim*, into slots
+0..N_ELITES-1 of the flask's worm lineup (`WORMLET_FLASK_WORM_NAMES` order);
+the remaining slots are fresh mutants. So a top-ranked genome, unchanged,
+should beat a brand-new random mutation. Measured on `data-trio-4`
+gens 1-153 (3 flasks, 459 generation-observations, 2026-09-01):
+
+    Cohen's d = -0.009,  95% CI [-0.080, +0.061]
+
+Zero, bounded tight. Consecutive-generation rank correlation was ~0 in every
+15-generation block of all three flasks, and the top-ranked worm changed in
+~90% of generations though 5 of 7 genomes were unchanged. The same null held
+for **tokens eaten** (d = +0.068), a purely behavioural measure the judge never
+touches — so it was never only judge noise. **Nothing downstream of this
+number means anything while it is zero**: the NES gradient, σ control and every
+fitness curve are all fitted to noise. Two mechanical causes were found and
+fixed on 2026-09-01 (see Current state); re-run the test before believing any
+trend recorded after that date.
+
+**A step change that appears in all flasks at once is the judge, never
+evolution** — three independent lineages on three texts cannot move together.
+Fingerprint which model scored a generation by counting windows where
+emotional AND coherence are both multiples of 5: qwen2.5:14b ≈ 28-32%
+(round-number bias, modes 35/25/45, ~40% more generous); Claude Haiku ≈ 3%
+(chance level, modes 28/24/22). On `data-trio-4` the lineage silently crossed
+that boundary four times before the judge was pinned to one backend.
 
 **Fitness regime changed 2026-08-15** (`fitness.json` carries `window_floor`
 when the new regime scored it): it is now the per-window MEAN with the divisor
@@ -73,6 +107,42 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
 
 ## Current state (2026-08-13)
 
+- **Common random numbers since 2026-09-01** (`WORMLET_COMMON_SEED=1`, the
+  default; `0` restores the old behaviour for an A/B). Every worm in a flask
+  now shares one seed per generation. The seed's entire influence on a life is
+  `Connectome.rand_excite()` — one draw of 40 random neurons kicked at birth —
+  plus the body's initial pose; the text scroller takes no rng, so worms
+  already read an identical word stream. Giving each worm its own seed
+  therefore did nothing except hand each genome a different random kick into a
+  chaotic 300-neuron network, confounded with the genome in every comparison
+  the NES made. This is the leading suspect for the d=-0.009 elite result
+  above. **Untested in production as of this writing** — verify after the
+  first rollover that all worms in a flask report the same `seed` in
+  `/api/worms`, then re-run the elite-vs-fresh test.
+- **One judge, always** (`WORMLET_JUDGE_BACKEND=anthropic`, no fallback). The
+  qwen-primary/Haiku-fallback pair spliced the lineage across two critics every
+  time the gaming PC slept. qwen is not the better judge — measured elite
+  advantage d=-0.043 under qwen, +0.119 under Haiku, neither significant; it is
+  simply more generous. Haiku is always awake, which is what a lineage needs.
+- **Judge sampling is env-tunable** (`WORMLET_JUDGE_SAMPLE_FRACTION`, default
+  0.25). 1.0 scores every window and removes which-windows-drawn variance, at
+  ~4× the judge tokens. Try common random numbers first — changing both at once
+  tells you nothing about either.
+- **σ has been pinned at the `SIGMA_MAX=3.0` cap since 2026-08-22.** Read this
+  as a *symptom*, not a setting: Rechenberg's 1/5 rule grows σ whenever more
+  than 1/5 of fresh children beat the incumbent, so a coin-flip fitness signal
+  inflates σ to the ceiling. It was made worse by cutting the flask to 7 worms
+  while `N_ELITES` stayed at 5 — that leaves **2 fresh children**, so the
+  success rate could only be 0, 0.5 or 1.0 and anything but 0/2 grew σ. Back to
+  10 worms (5 children) on 2026-09-01.
+- **Hunger and death are inert in practice.** Satiety sits at 0.96 and
+  `wormlet_alive` has been 1.0 continuously since 2026-08-15 — zero worms have
+  ever starved, and `/api/graveyard` is empty. The claim below that "volume is
+  enforced by hunger" is untrue in production: nothing enforces it. Meanwhile
+  the `FITNESS_WINDOW_FLOOR=12` divisor still pays for volume in any flask
+  eating *fewer* than 12 windows — the daodejing flask started at 8.4 and ate
+  54% more over 153 generations, against +19%/+10% for the two already above
+  the floor. That is the only direction selection has visibly moved.
 - **Chemosensory encoder: frozen UMAP** (`WORMLET_ENCODER=umap`, the default).
   The v7 learned encoder is still present and tested under
   `WORMLET_ENCODER=learned`, but it went nearly blind in production — channel
@@ -148,9 +218,14 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   Like the other lifelike genes, only a cold-started lineage evolves the two
   new params — every existing lineage (including `data-lifelike-2`) runs the
   clipped defaults.
-- **Open question:** neither v6 nor v7 has ever demonstrably learned to write
-  better poetry once fitness is normalised by volume. The above fixes remove
-  the known mechanical reasons it *couldn't*; whether it now does is untested.
+- **Open question, now with a measured answer:** neither v6 nor v7 has ever
+  demonstrably learned to write better poetry once fitness is normalised by
+  volume — and as of 2026-09-01 we know why it *couldn't*. Selection had no
+  heritable signal to act on at all (elite-vs-fresh d=-0.009; see "Analysing
+  whether the worms are learning" above), so every fix to the connectome,
+  encoder or plasticity was downstream of a measurement that could not tell two
+  genomes apart. Common random numbers and the single judge attack that
+  directly. Whether they are enough is untested.
 - The 8 live poetry flasks carry 101 generations of connectome evolved against
   the old near-blind smell field, so expect a transient.
 

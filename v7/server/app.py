@@ -553,24 +553,55 @@ def _mutate_seed(s: int) -> int:
     return (s * 1664525 + 1013904223) & 0x7FFFFFFF
 
 
+# Common random numbers (2026-09-01). The seed's ENTIRE influence on a life is
+# `Connectome.rand_excite()` — one draw of 40 random neurons kicked at birth —
+# plus the body's initial pose. The text scroller takes no rng at all, so every
+# worm in a flask already reads an identical word stream. Giving each worm its
+# OWN seed therefore did nothing except hand each genome a different random kick
+# into a chaotic 300-neuron network, and that draw was confounded with the
+# genome in every fitness comparison the NES made.
+#
+# Measured on data-trio-4 gens 1-153 (3 flasks, 459 generation-observations)
+# BEFORE this change: a top-5 genome carried over VERBATIM as an elite beat a
+# brand-new random mutant by Cohen's d = -0.009, 95% CI [-0.080, +0.061]. Zero,
+# bounded tight. Consecutive-generation rank correlation ~0; the top-ranked worm
+# changed in ~90% of generations though 5 of 7 genomes were unchanged. The same
+# null holds for tokens eaten (d = +0.068), a purely behavioural measure the
+# judge never touches — so this was never only judge noise.
+#
+# One shared seed per flask per generation is the standard ES fix (common random
+# numbers): every worm in a generation faces the identical world AND the
+# identical birth kick, so a within-generation fitness difference is
+# attributable to the genome alone. The seed still changes every generation, so
+# nothing overfits to one draw. Elites do NOT become twins — the N_ELITES
+# carried genomes are N DIFFERENT worms' genomes, never copies of one.
+# WORMLET_COMMON_SEED=0 restores the old per-worm chains exactly (A/B).
+COMMON_SEED = os.environ.get("WORMLET_COMMON_SEED", "1") not in ("0", "false", "")
+
+
 def _respawn_flask(flask: WormGroup, new_weights: dict) -> None:
-    """Install new per-worm weights + mutate per-worm seeds for the next
-    generation, and reset poem state. Caller has already persisted the
-    previous gen's artifacts (including pre-mutation seed.txt) to disk, and has
-    already stepped + rebuilt the flask's shared embedding model (v7.1), so the
-    new Worlds pick up the flask's next-generation embedder by reference."""
+    """Install new per-worm weights + step the seed for the next generation,
+    and reset poem state. Caller has already persisted the previous gen's
+    artifacts (including pre-step seed.txt) to disk, and has already stepped +
+    rebuilt the flask's shared embedding model (v7.1), so the new Worlds pick up
+    the flask's next-generation embedder by reference."""
+    # Under COMMON_SEED the whole flask advances ONE chain, anchored to the
+    # first worm's current seed so a running lineage keeps its reproducibility
+    # from (base_seed, gen_count) instead of restarting the sequence.
+    shared_seed = (_mutate_seed(flask.worms[0].seed)
+                   if COMMON_SEED and flask.worms else None)
     for w in flask.worms:
         wt = new_weights.get(w.name)
         if wt is None:
             continue
-        # Mutate this worm's seed for the new generation. Persist atomically
-        # so a crash mid-respawn leaves either the OLD or NEW seed on disk,
-        # never a partial. The per-generation snapshot in
+        # Step the seed for the new generation. Persist atomically so a crash
+        # mid-respawn leaves either the OLD or NEW seed on disk, never a
+        # partial. The per-generation snapshot in
         # data/generations/<flask>/gen-NNNN/<worm>/seed.txt records which
         # seed was used FOR THAT generation (it was already written by
         # run_generation_rollover BEFORE this respawn, capturing w.seed at
         # the moment the previous generation ran).
-        w.seed = _mutate_seed(w.seed)
+        w.seed = shared_seed if shared_seed is not None else _mutate_seed(w.seed)
         tmp = w.poem_path.parent / "seed.txt.tmp"
         tmp.write_text(str(w.seed))
         tmp.replace(w.poem_path.parent / "seed.txt")
