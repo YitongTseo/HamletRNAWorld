@@ -95,8 +95,7 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   VictoriaMetrics. If capped/edges trends toward 1 across generations, the
   NES has discovered "pin everything at DELTA_CAP" as a strategy and
   plasticity is a blanket amplifier, not learning.
-- **Habituation exists but is OFF everywhere** (`WORMLET_HABITUATION=1` to
-  enable): per-neuron chemosensory adaptation — a static smell fades
+- **Habituation is ON for poetry-1/2/3, off on poetry-4** (2026-09-01): per-neuron chemosensory adaptation — a static smell fades
   (subtractive EMA baseline, `adapt_rate` gene), silence recovers it, eating
   dishabituates (`dishab_relief` gene). Snapshot key `habituation` is the
   baseline L1: pinned at 0 across a lineage means adapt_rate evolved to 0.
@@ -109,6 +108,26 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
 - The 8 live poetry flasks carry 101 generations of connectome evolved against
   the old near-blind smell field, so expect a transient.
 
+## The two UIs
+
+There are two complete viewer front-ends. `viewer/` is **classic** (black/
+green, thumbnail-card overview) and is the default; `viewer_vivarium/` is the
+2026-08 "Tobacco & Ochre" restyle. Pick with `WORMLET_UI=classic|vivarium`,
+or per-request with `?ui=vivarium` on any page — no restart needed.
+
+The whole switch is `server/ui_variant.py`. Page routes go through
+`ui_variant.page()`, which rewrites `/static/` to `/static/<variant>/` as it
+serves the HTML. **Never hardcode `/static/…` in a `.js` or `.css` file** —
+`page()` only rewrites HTML, so such an asset silently loads from the default
+variant, which looks fine in classic and breaks only under `?ui=vivarium`.
+A test enforces this.
+
+Six files are currently identical in both trees and must be edited in both:
+`poems.js`, `focus/{dock,state,magnifier,panel-chrome,responsive}.js`. If that
+list grows, promote them to a shared `viewer_common/`.
+
+Design doc: `docs/superpowers/specs/2026-09-01-ui-variants-and-lifelike-relaunch-design.md`.
+
 ## Ops quick reference
 
 Four systemd processes, 2 flasks × 16 worms each (8 flasks / 128 worms total),
@@ -120,6 +139,13 @@ each with its **own** `WORMLET_DATA_DIR`:
 | `wormlet-poetry-2` | 8010 | `data/poetry-2` | 3–4 |
 | `wormlet-poetry-3` | 8020 | `data/poetry-3` | 5–6 |
 | `wormlet-poetry-4` | 8030 | `data/poetry-4` | 7–8 |
+
+Since 2026-09-01, poetry-1/2/3 run **lifelike mode** (`WORMLET_PLASTICITY`,
+`WORMLET_HUNGER`, `WORMLET_HABITUATION` via a `lifelike.conf` drop-in) and
+**poetry-4 is the stock control arm** — don't enable it there without
+recording why. Worms can now starve to death on 1/2/3; watch
+`deaths.jsonl` per flask. These lineages predate the feature, so their
+`_lifelike` genes stay at clipped defaults and never evolve.
 
 ```bash
 sudo -n systemctl restart wormlet-poetry-1        # canary one first
