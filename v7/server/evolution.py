@@ -184,6 +184,7 @@ def nes_update(
     sigma: float,
     lr: float = LEARNING_RATE,
     trust_radius: float = TRUST_RADIUS,
+    scale: np.ndarray | None = None,
 ) -> np.ndarray:
     """One NES gradient step toward higher score, with the step size DECOUPLED
     from sigma via a trust region.
@@ -255,10 +256,20 @@ def nes_update(
         weighted_eps += rw[rank] * eps_list[child_idx]
 
     # Natural-gradient step: magnitude scales WITH sigma.
+    # With a per-dimension `scale` the search distribution is
+    # N(theta, sigma^2 diag(s)^2); its inverse Fisher preconditioner is
+    # sigma^2 diag(s)^2, so the natural gradient picks up ONE factor of s
+    # elementwise — exactly mirroring the s applied when spawning. scale=None
+    # (isotropic) leaves this expression bit-identical to before.
     step = (lr * sigma / n) * weighted_eps
+    if scale is not None:
+        step = step * scale
 
     # Trust region: never move further than the children were sampled.
-    cap = trust_radius * sigma * np.sqrt(parent.shape[0])
+    # The sampling radius is sigma*||s|| (= sigma*sqrt(d) when s is all ones).
+    radius = (np.sqrt(parent.shape[0]) if scale is None
+              else float(np.linalg.norm(scale)))
+    cap = trust_radius * sigma * radius
     norm = float(np.linalg.norm(step))
     if norm > cap > 0.0:
         step *= cap / norm
@@ -286,19 +297,40 @@ def adapt_sigma(sigma: float, success_rate: float) -> float:
 # --- helpers --------------------------------------------------------------
 
 def spawn_population(parent: np.ndarray, n: int, sigma: float,
-                     rng: np.random.Generator) -> tuple[list[np.ndarray], list[np.ndarray]]:
+                     rng: np.random.Generator,
+                     scale: np.ndarray | None = None
+                     ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Spawn `n` FRESH Gaussian samples of the search distribution.
-    Returns (child_vectors, eps_vectors) where child[i] = parent + sigma*eps[i]
-    and eps[i] ~ N(0, I). No elite-copy here — elitism is handled in
-    evolve_generation by carrying real top-scoring genomes forward (Change 5),
-    so every sample this function makes is a genuine perturbation we can use
-    for the NES gradient estimate."""
+    Returns (child_vectors, eps_vectors) where child[i] = parent +
+    sigma*scale*eps[i] and eps[i] ~ N(0, I). No elite-copy here — elitism is
+    handled in evolve_generation by carrying real top-scoring genomes forward
+    (Change 5), so every sample this function makes is a genuine perturbation
+    we can use for the NES gradient estimate.
+
+    `scale` is a PER-DIMENSION step size, i.e. the search distribution is
+    N(theta, sigma^2 diag(scale)^2) instead of N(theta, sigma^2 I). None (or
+    all-ones) reproduces the isotropic behaviour EXACTLY — same rng draws,
+    same arithmetic — so every pre-existing lineage and every determinism
+    test is unaffected.
+
+    WHY IT EXISTS. Connectome weights are all one kind of quantity on one
+    scale, so one sigma served them fine. The _lifelike learning-rule genes
+    are not: `trace_decay` lives in 0..0.99 while `starve_gain` lives in
+    0..3, so a single sigma explores the second six times more slowly than
+    the first for no reason anyone chose. Scaling each gene by its own range
+    makes sigma mean "this fraction of the gene's range" uniformly.
+
+    NOTE the eps returned are the UNSCALED unit normals. That matters: the
+    gradient in nes_update re-applies `scale`, and eps recorded in
+    state.children must stay in unit-normal space so a later sigma change
+    reinterprets them correctly."""
     eps_list: list[np.ndarray] = []
     children: list[np.ndarray] = []
+    step = sigma if scale is None else sigma * scale
     for _ in range(n):
         eps = rng.standard_normal(parent.shape)
         eps_list.append(eps)
-        children.append(parent + sigma * eps)
+        children.append(parent + step * eps)
     return children, eps_list
 
 
@@ -332,6 +364,7 @@ def evolve_generation(
     parent_fitness: float | None = None,
     prev_best_fitness: float | None = None,  # deprecated alias for parent_fitness
     scheme: str = "vs_mean",                 # Exp-2 σ-control A/B (σ-update only)
+    scale: np.ndarray | None = None,         # per-dimension step size (see spawn_population)
 ) -> NextGen:
     """One generation of elitist NES (Changes 2 + 4 + 5).
 
@@ -358,7 +391,8 @@ def evolve_generation(
     fresh_eps = [epses[i] for i in range(n) if not is_elite[i] and epses[i] is not None]
     fresh_scores = [fitnesses[i] for i in range(n) if not is_elite[i] and epses[i] is not None]
     if fresh_eps:
-        new_parent = nes_update(parent_vec, fresh_eps, fresh_scores, sigma=sigma)
+        new_parent = nes_update(parent_vec, fresh_eps, fresh_scores, sigma=sigma,
+                                scale=scale)
     else:
         new_parent = parent_vec.copy()
 
@@ -396,7 +430,8 @@ def evolve_generation(
     # --- fill the rest with fresh samples of the UPDATED parent ---
     n_fresh = n - k
     if n_fresh > 0:
-        fresh_children, fresh_child_eps = spawn_population(new_parent, n_fresh, new_sigma, rng)
+        fresh_children, fresh_child_eps = spawn_population(new_parent, n_fresh,
+                                                          new_sigma, rng, scale=scale)
     else:
         fresh_children, fresh_child_eps = [], []
 

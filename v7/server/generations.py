@@ -41,6 +41,7 @@ from server.evolution import (
 from server.gardener import maybe_write_log
 from server.judge import judge_poem, judge_description, ScoredWindow
 from server.orchestrator import Worm
+from sim import lifelike
 from server.poem_clean import clean as clean_punctuation
 
 V6_ROOT = Path(__file__).resolve().parent.parent
@@ -124,6 +125,77 @@ class GenerationProgress:
     worms_done: int = 0
     started_at: float = 0.0   # time.time(), 0 = not started
     error: str | None = None
+
+
+def migrate_genome_layout(state: "GenerationState", worms: list[Worm]) -> bool:
+    """Bring an existing lineage's genome layout up to date, mid-flight.
+
+    Returns True if anything changed.
+
+    THE PROBLEM. A flask's genome layout (`state.parent_keys`) is fixed when
+    the lineage cold-starts. The _lifelike learning-rule genes were added
+    later, so the eight poetry flasks — 137 generations deep — had no slot
+    for them: the worms ran the hardcoded defaults and evolution could never
+    tune them. Upstream's position was that such lineages simply never get
+    the genes, because a genome that flattens to a different length than
+    `parent_keys` makes the rollover raise and the flask stops evolving.
+
+    WHY IT IS SAFE ANYWAY. Three facts, each verified against the live data:
+
+      1. `_lifelike` sorts LAST. flatten_weights orders by source name and
+         '_' (0x5F) is above every uppercase neuron name, so the block lands
+         at index 300 of 301 sources — it APPENDS to the vector. Not one
+         existing index moves, so 137 generations of learned weights keep
+         their meaning.
+
+      2. The honest eps for the current generation is ZERO. The NES gradient
+         is sum(reward * eps); the live worms were spawned before these genes
+         existed, so they explored exactly zero distance along the new axes.
+         Padding their eps with zeros is not a fudge, it is what happened,
+         and it makes the first rollover after migration a clean no-op on
+         those dimensions.
+
+      3. Seeding the genes at their current hardcoded defaults means
+         behaviour is CONTINUOUS. Generation N+1 acts like generation N;
+         the only difference is that the knobs can now drift.
+
+    The one genuine hazard is doing half the job: the rollover flattens each
+    worm's weights.json and compares it against parent_vector, so extending
+    one without the other is the shape mismatch upstream warned about. This
+    function moves both together, or neither.
+    """
+    if not lifelike.any_enabled():
+        return False
+    keys = [tuple(k) for k in (state.parent_keys or [])]
+    if any(k[0] == lifelike.LIFELIKE_KEY for k in keys):
+        return False          # already migrated
+    if not keys or state.parent_vector is None:
+        return False          # cold start handles itself via ensure_params
+
+    names = sorted(lifelike.PARAM_SPEC)
+    added = [(lifelike.LIFELIKE_KEY, n) for n in names]
+    defaults = [lifelike.PARAM_SPEC[n][0] for n in names]
+
+    # 1) every live worm's genome on disk, or the rollover's flatten of it
+    #    will be shorter than the parent it is compared against.
+    for w in worms:
+        wp = w.poem_path.parent / "weights.json"
+        genome = json.loads(wp.read_text())
+        lifelike.ensure_params(genome)
+        wp.write_text(json.dumps(genome))
+
+    # 2) the parent centroid and its key list.
+    state.parent_keys = [list(k) for k in keys] + [list(k) for k in added]
+    state.parent_vector = list(state.parent_vector) + list(defaults)
+
+    # 3) recorded eps for the CURRENTLY-LIVE children. None is left alone —
+    #    the rollover's fallback reconstructs it as (genome - parent)/sigma,
+    #    which is zero on the new dims now that both carry the same defaults.
+    for rec in (state.children or {}).values():
+        if rec.get("eps") is not None:
+            rec["eps"] = list(rec["eps"]) + [0.0] * len(added)
+
+    return True
 
 
 def _read_eaten_tokens(worm: Worm) -> list[str]:
@@ -401,8 +473,22 @@ def run_generation_rollover(
     progress.phase = PHASE_EVOLVING
     if keepalive: keepalive()
 
+    # Retrofit the _lifelike genes into a lineage that predates them, before
+    # anything reads the layout. No-op once migrated, or when the lifelike
+    # flags are off (so poetry-4, the control arm, is never touched).
+    if migrate_genome_layout(state, worms):
+        _n = len(state.parent_vector)
+        print(f"[GENERATIONS] {state.group_name}: migrated genome layout — "
+              f"_lifelike genes now evolve ({_n - len(lifelike.PARAM_SPEC)} "
+              f"-> {_n} dims)", flush=True)
+
     parent_vec = np.array(state.parent_vector, dtype=np.float64)
     parent_keys = [tuple(k) for k in state.parent_keys]  # type: ignore[arg-type]
+    # Per-dimension step size: 1.0 for connectome weights, the gene's range
+    # for each _lifelike knob. None when everything is 1.0, which keeps the
+    # arithmetic bit-identical to the pre-scaling engine for stock lineages.
+    _scale_list = lifelike.genome_scale(parent_keys)
+    scale = None if lifelike.is_isotropic(_scale_list) else np.array(_scale_list)
 
     # Gather, per live worm: its float genome, the TRUE eps it was spawned with
     # (Change 2 — read from state.children, not reconstructed from rounded
@@ -427,7 +513,12 @@ def run_generation_rollover(
         else:
             # Cold-start / first-rollover-after-upgrade fallback: no spawn record
             # on file, so reconstruct eps from the genome and treat it as fresh.
-            eps = (cur_vec - parent_vec) / state.sigma if state.sigma > 0 else np.zeros_like(parent_vec)
+            # Divide by the SAME per-dimension step the child was spawned
+            # with, or the reconstructed eps is wrong by a factor of `scale`
+            # on every lifelike gene.
+            _step = state.sigma if scale is None else state.sigma * scale
+            eps = ((cur_vec - parent_vec) / _step if state.sigma > 0
+                   else np.zeros_like(parent_vec))
             epses.append(eps)
             is_elite_flags.append(False)
 
@@ -435,7 +526,7 @@ def run_generation_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
-        scheme=SIGMA_SCHEME,
+        scheme=SIGMA_SCHEME, scale=scale,
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma
@@ -635,8 +726,22 @@ def run_experiment_rollover(
     progress.phase = PHASE_EVOLVING
     if keepalive: keepalive()
 
+    # Retrofit the _lifelike genes into a lineage that predates them, before
+    # anything reads the layout. No-op once migrated, or when the lifelike
+    # flags are off (so poetry-4, the control arm, is never touched).
+    if migrate_genome_layout(state, worms):
+        _n = len(state.parent_vector)
+        print(f"[GENERATIONS] {state.group_name}: migrated genome layout — "
+              f"_lifelike genes now evolve ({_n - len(lifelike.PARAM_SPEC)} "
+              f"-> {_n} dims)", flush=True)
+
     parent_vec = np.array(state.parent_vector, dtype=np.float64)
     parent_keys = [tuple(k) for k in state.parent_keys]  # type: ignore[arg-type]
+    # Per-dimension step size: 1.0 for connectome weights, the gene's range
+    # for each _lifelike knob. None when everything is 1.0, which keeps the
+    # arithmetic bit-identical to the pre-scaling engine for stock lineages.
+    _scale_list = lifelike.genome_scale(parent_keys)
+    scale = None if lifelike.is_isotropic(_scale_list) else np.array(_scale_list)
 
     genomes: list[np.ndarray] = []
     epses: list[np.ndarray | None] = []
@@ -657,7 +762,12 @@ def run_experiment_rollover(
             epses.append(np.array(eps_rec, dtype=np.float64) if eps_rec is not None else None)
             is_elite_flags.append(bool(rec.get("is_elite", False)))
         else:
-            eps = (cur_vec - parent_vec) / state.sigma if state.sigma > 0 else np.zeros_like(parent_vec)
+            # Divide by the SAME per-dimension step the child was spawned
+            # with, or the reconstructed eps is wrong by a factor of `scale`
+            # on every lifelike gene.
+            _step = state.sigma if scale is None else state.sigma * scale
+            eps = ((cur_vec - parent_vec) / _step if state.sigma > 0
+                   else np.zeros_like(parent_vec))
             epses.append(eps)
             is_elite_flags.append(False)
 
@@ -665,7 +775,7 @@ def run_experiment_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
-        scheme=SIGMA_SCHEME,
+        scheme=SIGMA_SCHEME, scale=scale,
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma

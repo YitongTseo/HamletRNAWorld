@@ -127,3 +127,37 @@ def pop_params(weights: dict | None) -> dict[str, float]:
         v = float(raw.get(name, default))
         out[name] = lo if v < lo else hi if v > hi else v
     return out
+
+
+def genome_scale(parent_keys) -> "list[float]":
+    """Per-dimension NES step size for a flattened genome.
+
+    Returns 1.0 for every connectome weight and (hi - lo) for each _lifelike
+    gene, so a single sigma means "this fraction of the gene's range" for all
+    of them instead of "this many absolute units". Connectome weights are all
+    the same kind of quantity, so they keep the historical scale of 1.0 and
+    every pre-existing lineage steps exactly as it did before.
+
+    Without this, sigma=0.02 moves `starve_gain` (range 0..3) by 0.7% of its
+    range per step while moving `eta` (range 0..0.5) by 4% — a 6x difference
+    nobody chose, just an artefact of the units each knob happens to use.
+
+    `parent_keys` is the (source, target) list from flatten_weights, or the
+    JSON [source, target] pairs straight out of state.json.
+    """
+    out = []
+    for k in parent_keys:
+        src, tgt = (k[0], k[1])
+        if src == LIFELIKE_KEY and tgt in PARAM_SPEC:
+            _default, lo, hi = PARAM_SPEC[tgt]
+            out.append(float(hi - lo))
+        else:
+            out.append(1.0)
+    return out
+
+
+def is_isotropic(scale) -> bool:
+    """True when every entry is 1.0 — i.e. the scaled path is a no-op and the
+    caller can pass None to keep the arithmetic bit-identical to the
+    pre-scaling engine."""
+    return all(float(x) == 1.0 for x in scale)
