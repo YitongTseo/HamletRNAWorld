@@ -263,6 +263,16 @@ class World:
 
             self.sensed_smells[key] = {
                 "word": f.word,
+                # Identity of the word this smell came from. The viewer joins
+                # smells to the food snapshot to tint each word by how much
+                # the worm wants it, and CANNOT do that on coordinates:
+                # smells are recomputed only on brain ticks (2 Hz) while the
+                # food snapshot is taken every frame (60 Hz), so the scroller
+                # has moved the word by the time the client sees both. The
+                # offset is small (~5 px) but constant, so a coordinate join
+                # silently matches NOTHING.
+                "line_id": f.line_id,
+                "word_idx": f.word_idx,
                 "x": f.x,
                 "y": f.y,
                 "distance": d,
@@ -634,6 +644,8 @@ class World:
             "smells": [
                 {
                     "word": smell["word"],
+                    "line_id": smell["line_id"],
+                    "word_idx": smell["word_idx"],
                     "x": round(smell["x"], 2),
                     "y": round(smell["y"], 2),
                     "distance": round(smell["distance"], 2),

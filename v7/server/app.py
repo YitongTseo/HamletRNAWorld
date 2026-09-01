@@ -40,6 +40,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
+from server import ui_variant
 from sim.connectome import (
     MUSCLE_PREFIXES, FOOD_SENSE_NEURONS, NOSE_TOUCH_NEURONS, HUNGER_NEURONS,
     SENSORY_NEURONS, CHEMOSENSORY_NEURONS, MOTOR_NEURONS,
@@ -80,7 +81,9 @@ if EXPERIMENT is not None:
     os.environ.setdefault("WORMLET_GENERATIONS_ENABLED", "1")
 
 V6_ROOT = Path(__file__).resolve().parent.parent
-VIEWER_DIR = V6_ROOT / "viewer"
+# Default variant's tree. Page routes go through ui_variant.page()
+# instead; this stays for non-page readers of the viewer dir.
+VIEWER_DIR = ui_variant.dir_for(ui_variant.DEFAULT)
 
 TICK_HZ = 60
 TICK_DT = 1.0 / TICK_HZ
@@ -426,7 +429,11 @@ def _build_snapshot(worm: Worm) -> dict:
             for f in w.food
         ],
         "smells": [
-            {"word": s["word"], "x": round(s["x"], 2), "y": round(s["y"], 2),
+            {"word": s["word"],
+             # See sim/world.py: the viewer joins smells to food by identity,
+             # not position — the two are sampled at different tick rates.
+             "line_id": s["line_id"], "word_idx": s["word_idx"],
+             "x": round(s["x"], 2), "y": round(s["y"], 2),
              "distance": round(s["distance"], 2),
              "pca": [round(x, 4) for x in s["pca"]],
              "neurons": s["neurons"],
@@ -1124,28 +1131,28 @@ async def disable_cdn_cache(request, call_next):
 # --- HTML pages ---
 
 @app.get("/")
-async def index():
-    return FileResponse(VIEWER_DIR / "index.html")
+async def index(request: Request):
+    return ui_variant.page(request, "index.html")
 
 
 @app.get("/focus/{name}")
-async def focus_page(name: str):
-    return FileResponse(VIEWER_DIR / "focus.html")
+async def focus_page(request: Request, name: str):
+    return ui_variant.page(request, "focus.html")
 
 
 @app.get("/focus/{flask}/{name}")
-async def focus_page_flask(flask: str, name: str):
-    return FileResponse(VIEWER_DIR / "focus.html")
+async def focus_page_flask(request: Request, flask: str, name: str):
+    return ui_variant.page(request, "focus.html")
 
 
 @app.get("/poems")
-async def poems_page():
-    return FileResponse(VIEWER_DIR / "poems.html")
+async def poems_page(request: Request):
+    return ui_variant.page(request, "poems.html")
 
 
 @app.get("/about")
-async def about_page():
-    return FileResponse(VIEWER_DIR / "about.html")
+async def about_page(request: Request):
+    return ui_variant.page(request, "about.html")
 
 
 @app.get("/healthz")
@@ -1575,8 +1582,8 @@ def _gv_summary(flask: str, n: int) -> dict | None:
 
 
 @app.get("/generations")
-async def generations_page():
-    return FileResponse(VIEWER_DIR / "generations.html")
+async def generations_page(request: Request):
+    return ui_variant.page(request, "generations.html")
 
 
 def _gv_label(name: str) -> str:
@@ -1838,7 +1845,9 @@ async def debug_add_food(name: str, request: Request):
 
 
 # Static viewer files (JS/CSS) — mounted under /static so / and /ws take precedence.
-app.mount("/static", StaticFiles(directory=str(VIEWER_DIR)), name="viewer")
+# One mount per UI variant (/static/classic, /static/vivarium) plus a bare
+# /static alias for the process default; see server/ui_variant.py.
+ui_variant.mount_all(app)
 
 # Board publish tree — the per-generation winning-worm bundles the ESP32 boards
 # pull over the tunnel (see server/board_publish.py). All poetry processes mount

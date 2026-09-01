@@ -111,7 +111,7 @@ export function drawChemoPanel(state) {
   const anyFiring = pairs.some(([L, R]) =>
     (contributions[L] && contributions[L].length) || (contributions[R] && contributions[R].length)
   );
-  let html = `<div style="font-weight:bold; margin-bottom:8px; color:${anyFiring ? '#8f8' : '#6f6'}; opacity:${anyFiring ? 1 : 0.35};">● CHEMOSENSORY STATE (${corpusPca.embeddingName || 'PCA'})</div>`;
+  let html = `<div style="font-weight:bold; margin-bottom:8px; color:${anyFiring ? '#e0c48f' : '#b3a789'}; opacity:${anyFiring ? 1 : 0.35};">● CHEMOSENSORY STATE (${corpusPca.embeddingName || 'PCA'})</div>`;
 
   // Column headers
   const labelW = 60, barW = 110;
@@ -136,7 +136,7 @@ export function drawChemoPanel(state) {
   // Footer legend
   html += `<div style="margin-top:10px; font-size:9px; opacity:0.5; line-height:1.5;">
     bars sum per-word contributions · colors are stable per word ·
-    <span style="display:inline-block; width:8px; height:8px; background:#6f9; vertical-align:middle;"></span> sensed ·
+    <span style="display:inline-block; width:8px; height:8px; background:#cfa348; vertical-align:middle;"></span> sensed ·
     <span style="display:inline-block; width:8px; height:8px; outline:1px dashed #ccc; outline-offset:-1px; vertical-align:middle;"></span> eaten (residual)
   </div>`;
 

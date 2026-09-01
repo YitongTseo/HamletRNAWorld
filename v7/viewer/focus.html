@@ -3,10 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script src="/static/palette.js?v=3"></script>
-    <title>wormlet — specimen</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+    <script src="/static/palette.js?v=2"></script>
+    <title>wormlet — focus</title>
     <link rel="stylesheet" href="/static/focus.css?v=6">
     <script type="importmap">
       {
@@ -20,13 +18,6 @@
   <body>
     <canvas id="c"></canvas>
     <canvas id="textcanvas"></canvas>
-    <div id="specimen-card">
-      <div class="binom">Caenorhabditis hamletensis</div>
-      <div class="srow" data-row="words">words ingested <b>0</b></div>
-      <div class="srow" data-row="satiety">satiety <b>—</b></div>
-      <div class="srow" data-row="learning">learning Δ <b>—</b></div>
-      <div class="srow ing" data-row="ingested">recently ingested<br><b>…</b></div>
-    </div>
     <div id="netpanel"><canvas id="netcanvas"></canvas></div>
     <div id="radarpanel"><canvas id="radarcanvas"></canvas></div>
     <div id="chemosensoryPanel"></div>
@@ -36,15 +27,13 @@
       <div id="nav"><a href="/">← all worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about">about</a><a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="opacity:0.55; font-size:11px;">by Yitong</a></div>
       <div id="experiment-switcher" style="margin-top:6px;"></div>
     </div>
-    <script src="/static/experiment_dropdown.js?v=2"></script>
+    <script src="/static/experiment_dropdown.js?v=1"></script>
     <script>
-      // Provisional title from the URL (slug form); the first WS frame
-      // carries the worm's TRUE name (msg.name) and focus/index.js corrects
-      // it — so "dowager-cixi" in the URL still titles as "dowager cixi".
-      const wormName = decodeURIComponent(location.pathname.split('/').pop() || '');
-      document.getElementById('wormtitle').textContent = wormName.replace(/-/g, ' ');
-      document.title = `wormlet — ${wormName.replace(/-/g, ' ')}`;
+      // Show worm name in the title.
+      const wormName = decodeURIComponent(location.pathname.replace(/^\/focus\//, '').replace(/\/$/, ''));
+      document.getElementById('wormtitle').textContent = wormName;
+      document.title = `wormlet — ${wormName}`;
     </script>
-    <script type="module" src="/static/focus/index.js?v=7"></script>
+    <script type="module" src="/static/focus/index.js?v=6"></script>
   </body>
 </html>

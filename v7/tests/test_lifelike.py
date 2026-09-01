@@ -295,7 +295,10 @@ def test_static_smell_fades_then_recovers():
     try:
         w = World(seed=7)
         # Full smell shape — snapshot() below serialises it for the viewer.
-        SMELL = {"k": {"word": "king", "x": 0.0, "y": 0.0, "distance": 10.0,
+        # line_id/word_idx are the viewer's join key back to the food
+        # snapshot (see World._compute_smells); snapshot() requires them.
+        SMELL = {"k": {"word": "king", "line_id": 3, "word_idx": 1,
+                       "x": 0.0, "y": 0.0, "distance": 10.0,
                        "pca": [0.0] * 12, "neurons": {"ASEL": 0.5}}}
         w.sensed_smells = dict(SMELL)
         first = w._chemo_pulse()["ASEL"]

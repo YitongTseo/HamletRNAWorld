@@ -1,13 +1,6 @@
-// Vivarium overview: a lab tray of petri dishes, one per worm.
-// Subscribes to /ws/overview (10 Hz). Each dish is a STATIC view of that
-// worm's entire private world — a fixed stage the specimen moves within.
-// Words still brighten near the worm's head, so appetite reads at a glance.
-// Click a dish to open /focus/<flask>/<name>.
-//
-// Rendering is dark-field microscopy: ivory translucent nematode (tapered
-// both ends, faint gut line, dark pharynx tip), agar vignette, glass rim.
-// Body opacity tracks satiety when the server sends it (lifelike mode);
-// dead specimens draw grey and their label turns to a red DECEASED.
+// Grid of live worm thumbnails. Subscribes to /ws/overview (10 Hz), draws
+// each worm's compact midline + a sparse smattering of nearby food words.
+// Click a card to navigate to /focus/<flask>/<name>.
 
 const WORLD_W = 1600;
 const WORLD_H = 1000;
@@ -15,56 +8,59 @@ const WORLD_H = 1000;
 const grid = document.getElementById('grid');
 const status = document.getElementById('status');
 
-const cards = new Map();          // "flask/name" -> entry
-const flaskSections = new Map();  // flask_name -> { section, sectionGrid, headerGen }
+// Palette (set by palette.js on <html> before this loads). The worm reshades
+// to the experiment's accent color; the stage stays dark in every theme so
+// the light-on-dark worms remain legible (even under the white themes).
+const _cssVar = (name, fb) => {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return (v && v.trim()) || fb;
+};
+const STAGE_BG = _cssVar('--stage', '#001');
+const WORM_COLOR = _cssVar('--accent', '#6f9');
 
-(function injectTrayStyle() {
+// "flask/name" -> { card, canvas, ctx, dpr }
+const cards = new Map();
+// flask_name -> { section, sectionGrid, headerGen }
+const flaskSections = new Map();
+
+// Inject a small bit of CSS for flask sections + denser card layout for 40+ worms.
+(function injectFlaskStyle() {
   const s = document.createElement('style');
   s.textContent = `
-    #grid { display: flex; flex-direction: column; gap: 26px; }
+    #grid { display: flex; flex-direction: column; gap: 22px; }
+    .flask-section { padding: 0 18px; }
     .flask-section > h2 {
-      margin: 18px 0 18px; font-size: 11px; font-weight: 400;
-      letter-spacing: 0.3em; text-transform: uppercase; color: var(--dim);
-      display: flex; gap: 14px; align-items: baseline;
+      margin: 12px 0 6px 0; font-size: 13px; font-weight: 600;
+      color: var(--accent, #6f9); letter-spacing: 0.5px;
+      display: flex; gap: 10px; align-items: baseline;
     }
-    .flask-section > h2 .gen { color: var(--ochre); font-size: 10.5px; letter-spacing: 0.2em; }
+    .flask-section > h2 .gen { color: var(--dim, #5a5); font-weight: 400; font-size: 11px; }
     .flask-section > .flask-grid {
-      display: grid; gap: 26px 20px;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      display: grid; gap: 10px;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
     }
-    .cell { cursor: pointer; text-align: center; }
-    .cell canvas { display: block; width: 100%; aspect-ratio: 1; }
-    .cell:hover canvas { filter: brightness(1.18); }
-    .cell .lbl { margin-top: 7px; font-size: 12px; letter-spacing: 0.06em; }
-    .cell .lbl small { display: block; color: var(--dim); font-size: 10.5px;
-                       margin-top: 3px; letter-spacing: 0.12em; }
-    .cell .lbl small.warn { color: var(--warn); }
-    .cell .recent { margin-top: 4px; color: var(--dim); font-size: 10px;
-                    font-style: italic; min-height: 13px; }
+    .flask-section .card .name { padding: 4px 8px; font-size: 11px; }
+    .flask-section .card canvas { height: 110px; }
+    .flask-section .card .recent { padding: 4px 8px; font-size: 10px; min-height: 14px; }
   `;
   document.head.appendChild(s);
 })();
 
-function ensureFlaskSection(flaskName, display, generation, corpus) {
+function ensureFlaskSection(flaskName, display, generation) {
   let entry = flaskSections.get(flaskName);
   if (!entry) {
     const section = document.createElement('div');
     section.className = 'flask-section';
-    section.dataset.flask = flaskName;
-    section.innerHTML = `<h2><span class="who"></span><span class="gen"></span></h2><div class="flask-grid"></div>`;
+    section.innerHTML = `<h2><span class="who">${display}</span><span class="gen"></span></h2><div class="flask-grid"></div>`;
     grid.appendChild(section);
     entry = {
       section,
       sectionGrid: section.querySelector('.flask-grid'),
       headerGen: section.querySelector('.gen'),
-      headerWho: section.querySelector('.who'),
     };
     flaskSections.set(flaskName, entry);
   }
-  entry.headerGen.textContent = (generation !== undefined && generation > 0) ? `generation ${generation}` : '';
-  // textContent (never innerHTML): display/corpus are server config, but
-  // the safe-sink policy is site-wide.
-  if (entry.headerWho) entry.headerWho.textContent = corpus ? `${display} \u00b7 ${corpus}` : display;
+  entry.headerGen.textContent = (generation !== undefined && generation > 0) ? `gen ${generation}` : '';
   return entry;
 }
 
@@ -72,179 +68,124 @@ function ensureCard(flaskName, wormName) {
   const key = `${flaskName}/${wormName}`;
   if (cards.has(key)) return cards.get(key);
   const flaskEntry = flaskSections.get(flaskName);
-  if (!flaskEntry) return null;
-  const cell = document.createElement('div');
-  cell.className = 'cell';
-  cell.innerHTML =
+  if (!flaskEntry) return null; // shouldn't happen — section ensured before card
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML =
+    `<div class="name"><span class="who"></span><span class="count">0 words</span></div>` +
     `<canvas></canvas>` +
-    `<div class="lbl"><span class="who"></span><small></small></div>`;
-  cell.querySelector('.who').textContent = wormName;
-  cell.addEventListener('click', () => {
-    // hyphen-slug the name so the URL carries no literal spaces
-    // ("dowager cixi" -> dowager-cixi); the server resolves the slug.
-    const slug = wormName.replace(/ /g, '-');
-    location.href = `/focus/${encodeURIComponent(flaskName)}/${encodeURIComponent(slug)}`;
+    `<div class="recent">…</div>`;
+  card.querySelector('.who').textContent = wormName;
+  card.addEventListener('click', () => {
+    location.href = `/focus/${encodeURIComponent(flaskName)}/${encodeURIComponent(wormName)}`;
   });
-  flaskEntry.sectionGrid.appendChild(cell);
-  const canvas = cell.querySelector('canvas');
+  flaskEntry.sectionGrid.appendChild(card);
+  const canvas = card.querySelector('canvas');
   const rect = canvas.getBoundingClientRect();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const px = Math.max(1, Math.round(rect.width * dpr));
-  canvas.width = px; canvas.height = px;
+  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.height = Math.max(1, Math.round(rect.height * dpr));
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
-  const entry = { cell, canvas, ctx, dpr, size: rect.width };
+  const entry = { card, canvas, ctx, dpr };
   cards.set(key, entry);
   return entry;
 }
 
-// --- dish rendering ----------------------------------------------------------
-function drawDish(entry, worm) {
-  const { ctx } = entry;
-  const S = entry.size;             // CSS px, square
-  const c = S / 2, R = S / 2 - 4;   // dish radius
-  ctx.clearRect(0, 0, S, S);
+function drawWorm(entry, worm) {
+  const { canvas, ctx } = entry;
+  const cw = canvas.width / entry.dpr;
+  const ch = canvas.height / entry.dpr;
+  ctx.clearRect(0, 0, cw, ch);
+  // Background.
+  ctx.fillStyle = STAGE_BG;
+  ctx.fillRect(0, 0, cw, ch);
 
-  // glass + agar
-  ctx.fillStyle = '#1d1710';
-  ctx.beginPath(); ctx.arc(c, c, R + 3, 0, 7); ctx.fill();
-  ctx.fillStyle = '#211a12';
-  ctx.beginPath(); ctx.arc(c, c, R, 0, 7); ctx.fill();
-  const vg = ctx.createRadialGradient(c, c, R * 0.3, c, c, R);
-  vg.addColorStop(0, 'rgba(207,163,72,0.04)');
-  vg.addColorStop(1, 'rgba(0,0,0,0.38)');
-  ctx.fillStyle = vg;
-  ctx.beginPath(); ctx.arc(c, c, R, 0, 7); ctx.fill();
-  // rim + glass highlight
-  ctx.strokeStyle = 'rgba(236,226,205,0.14)'; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(c, c, R, 0, 7); ctx.stroke();
-  ctx.strokeStyle = 'rgba(236,226,205,0.26)'; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(c, c, R + 2, Math.PI * 1.12, Math.PI * 1.45); ctx.stroke();
+  // Map world coords to canvas (letterbox to keep aspect).
+  const sx = cw / WORLD_W;
+  const sy = ch / WORLD_H;
+  const s = Math.min(sx, sy);
+  const ox = (cw - WORLD_W * s) / 2;
+  const oy = (ch - WORLD_H * s) / 2;
+  const X = (x) => ox + x * s;
+  const Y = (y) => oy + y * s;
 
-  ctx.save();
-  ctx.beginPath(); ctx.arc(c, c, R - 2, 0, 7); ctx.clip();
+  // World rect (subtle border).
+  ctx.strokeStyle = 'rgba(100,200,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(ox + 0.5, oy + 0.5, WORLD_W * s - 1, WORLD_H * s - 1);
 
-  // static framing: the worm's ENTIRE world fits inside the dish (scaled by
-  // the world diagonal so no corner is ever clipped by the circle). The dish
-  // is a fixed stage; the worm moves within it.
-  const scale = (2 * (R - 4)) / Math.hypot(WORLD_W, WORLD_H);
-  const cx = WORLD_W / 2, cy = WORLD_H / 2;
-  const X = (x) => c + (x - cx) * scale;
-  const Y = (y) => c + (y - cy) * scale;
-  const half = Math.hypot(WORLD_W, WORLD_H) / 2;  // for word-proximity fades
-
-  const dead = worm.dead === true;
-  const sat = (typeof worm.satiety === 'number') ? worm.satiety : 1;
-
-  // words on the agar — quiet ivory, brightening slightly near the head
+  // Scrolling words (food).
   if (worm.food && worm.food.length) {
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const hx = worm.head ? worm.head[0] : cx;
-    const hy = worm.head ? worm.head[1] : cy;
+    ctx.fillStyle = 'rgba(180, 200, 255, 0.45)';
+    ctx.font = `${Math.max(8, Math.round(10))}px ui-monospace, monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
     for (const f of worm.food) {
       if (!f.word) continue;
-      const d = Math.hypot(f.x - hx, f.y - hy);
-      const near = dead ? 0 : Math.max(0, 1 - d / 300);
-      ctx.font = `${near > 0.4 ? 400 : 300} ${11.5 + 3 * near}px 'Fragment Mono', monospace`;
-      ctx.fillStyle = `rgba(196,182,152,${0.38 + 0.5 * near})`;
       ctx.fillText(f.word, X(f.x), Y(f.y));
     }
   }
 
-  // the nematode: layered ivory strokes, tapered both ends
-  const M = worm.midline;
-  if (M && M.length > 3) {
-    const n = M.length;
-    const body = dead ? 0.26 : 0.42 + 0.5 * sat;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    const taper = (u) => Math.sin(Math.PI * Math.min(1, u * 0.92 + 0.05)) ** 0.55;
-    // translucent sheath
-    for (let k = 0; k < n - 1; k++) {
-      const w = taper(k / n);
-      ctx.strokeStyle = `rgba(236,226,205,${0.10 * body + 0.10 * body * w})`;
-      ctx.lineWidth = 75 * w * scale + 1.6; // exaggerated sheath — legibility over literal scale
-      ctx.beginPath();
-      ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
-      ctx.stroke();
-    }
-    // occlusion: a dark tobacco under-stroke so the body sits ON TOP of the
-    // agar text instead of dissolving into it (cream-on-cream separation)
-    for (let k = 0; k < n - 1; k++) {
-      const w = taper(k / n);
-      ctx.strokeStyle = `rgba(26,20,14,${dead ? 0.4 : 0.62})`;
-      ctx.lineWidth = 58 * w * scale + 1.6;
-      ctx.beginPath();
-      ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
-      ctx.stroke();
-    }
-    // cuticle
-    for (let k = 0; k < n - 1; k++) {
-      const w = taper(k / n);
-      ctx.strokeStyle = dead
-        ? `rgba(160,158,152,${0.35 + 0.28 * w})`
-        : `rgba(250,245,233,${0.5 * body + 0.5 * body * w})`;
-      ctx.lineWidth = 46 * w * scale + 1.1; // exaggerated cuticle — legibility over literal scale
-      ctx.beginPath();
-      ctx.moveTo(X(M[k][0]), Y(M[k][1])); ctx.lineTo(X(M[k + 1][0]), Y(M[k + 1][1]));
-      ctx.stroke();
-    }
-    // gut line
-    ctx.strokeStyle = `rgba(90,88,80,${dead ? 0.2 : 0.45 * body + 0.15})`;
-    ctx.lineWidth = 1;
+  // Worm midline.
+  if (worm.midline && worm.midline.length > 1) {
+    ctx.strokeStyle = WORM_COLOR;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(X(M[0][0]), Y(M[0][1]));
-    for (let k = 1; k < n; k++) ctx.lineTo(X(M[k][0]), Y(M[k][1]));
-    ctx.stroke();
-    // pharynx at the head
-    if (!dead && worm.head) {
-      ctx.fillStyle = `rgba(120,116,105,${0.65 * body + 0.2})`;
-      ctx.beginPath(); ctx.arc(X(worm.head[0]), Y(worm.head[1]), 2, 0, 7); ctx.fill();
+    for (let i = 0; i < worm.midline.length; i++) {
+      const [x, y] = worm.midline[i];
+      if (i === 0) ctx.moveTo(X(x), Y(y));
+      else ctx.lineTo(X(x), Y(y));
     }
+    ctx.stroke();
+    // Head dot.
+    const [hx, hy] = worm.head;
+    ctx.fillStyle = '#cfc';
+    ctx.beginPath();
+    ctx.arc(X(hx), Y(hy), 3, 0, Math.PI * 2);
+    ctx.fill();
   }
 
+  // Paused indicator.
   if (worm.paused) {
-    ctx.fillStyle = 'rgba(224,80,63,0.9)';
-    ctx.font = `500 10px 'Fragment Mono', monospace`;
-    ctx.textAlign = 'center';
-    ctx.fillText('PAUSED', c, c - R + 18);
+    ctx.fillStyle = '#fc6';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('PAUSED', 6, 4);
   }
-  ctx.restore();
 }
 
 function updateCardChrome(entry, worm) {
-  const small = entry.cell.querySelector('.lbl small');
-  if (worm.dead === true) {
-    small.textContent = 'deceased';
-    small.className = 'warn';
-  } else if (typeof worm.satiety === 'number') {
-    const starving = worm.satiety < 0.3;
-    small.textContent = starving
-      ? `starving · ${worm.word_count} words`
-      : `sat ${worm.satiety.toFixed(2)} · ${worm.word_count} words`;
-    small.className = starving ? 'warn' : '';
-  } else {
-    small.textContent = `${worm.word_count} word${worm.word_count === 1 ? '' : 's'}`;
-    small.className = '';
-  }
+  entry.card.querySelector('.count').textContent = `${worm.word_count} word${worm.word_count === 1 ? '' : 's'}`;
+  const rec = entry.card.querySelector('.recent');
+  rec.textContent = (worm.recent_words && worm.recent_words.length)
+    ? worm.recent_words.join(' · ')
+    : '…';
 }
 
 let ws = null;
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws/overview`);
-  ws.onopen = () => { status.textContent = 'LIVE'; };
-  ws.onclose = () => { status.textContent = 'DISCONNECTED · RETRYING…'; setTimeout(connect, 1000); };
+  ws.onopen = () => { status.textContent = 'live'; };
+  ws.onclose = () => { status.textContent = 'disconnected · retrying…'; setTimeout(connect, 1000); };
   ws.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (_e) { return; }
     if (msg.type !== 'overview') return;
+    // New protocol always sends a flasks[] array (single 'default' flask in
+    // legacy single-group mode). Defensive fallback: if a server somehow
+    // still sends the old `worms` shape, wrap it as one default flask.
     const flasks = msg.flasks || [{ name: 'default', display: 'Worms', generation: 0, worms: msg.worms || [] }];
     for (const flask of flasks) {
-      ensureFlaskSection(flask.name, flask.display || flask.name, flask.generation || 0, flask.corpus);
+      ensureFlaskSection(flask.name, flask.display || flask.name, flask.generation || 0);
       for (const worm of flask.worms) {
         const entry = ensureCard(flask.name, worm.name);
         if (!entry) continue;
-        drawDish(entry, worm);
+        drawWorm(entry, worm);
         updateCardChrome(entry, worm);
       }
     }
@@ -252,63 +193,35 @@ function connect() {
 }
 connect();
 
-// --- Flask cycling ----------------------------------------------------------
-// With 3+ flasks x 10 dishes the tray outgrows one screen. '[' / ']' cycle
-// focus through single-flask views; 'a' returns to the all-flasks tray.
-// Pure presentation: sections are hidden, never disconnected.
-(function setupFlaskCycling() {
-  let focus = null; // null = show all
-  function apply() {
-    const sections = document.querySelectorAll('.flask-section');
-    sections.forEach((sec) => {
-      sec.style.display = (focus === null || sec.dataset.flask === focus)
-        ? '' : 'none';
-    });
-  }
-  function cycle(dir) {
-    const names = [...document.querySelectorAll('.flask-section')]
-      .map((s) => s.dataset.flask);
-    if (!names.length) return;
-    const i = focus === null ? (dir > 0 ? -1 : 0) : names.indexOf(focus);
-    const next = i + dir;
-    focus = (next < 0 || next >= names.length) ? null : names[next];
-    apply();
-  }
-  document.addEventListener('keydown', (ev) => {
-    if (ev.target && /INPUT|TEXTAREA/.test(ev.target.tagName)) return;
-    if (ev.key === ']') cycle(1);
-    else if (ev.key === '[') cycle(-1);
-    else if (ev.key === 'a') { focus = null; apply(); }
-  });
-  // Re-apply after new sections appear (first overview frame).
-  new MutationObserver(apply).observe(document.body, {childList: true, subtree: true});
-})();
-
-// --- Generation rollover overlay --------------------------------------------
-// Polls /api/generation_status every 500ms; restyled to the observation-log
-// language but functionally identical to the old overlay.
+// --- Generation rollover overlay ---
+// Polls /api/generation_status every 500ms. Invisible during normal sim;
+// shows a centered banner with progress + LLM scoring updates while the
+// worms are frozen for end-of-generation processing.
 (function setupGenOverlay() {
   const style = document.createElement('style');
   style.textContent = `
     #gen-overlay {
       position: fixed; inset: 0; display: none;
-      background: rgba(26, 20, 14, 0.82); z-index: 9999;
+      background: rgba(0, 0, 0, 0.78); z-index: 9999;
       align-items: center; justify-content: center;
-      font-family: 'Fragment Mono', ui-monospace, monospace; font-size: 13px;
-      color: var(--ivory);
+      font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--accent, #6f9);
     }
     #gen-overlay.visible { display: flex; }
     #gen-overlay .panel {
-      min-width: 380px; max-width: 560px; padding: 24px 30px;
-      background: #1d1710; border: 1px solid #3a3226;
+      min-width: 360px; max-width: 560px;
+      padding: 22px 28px;
+      background: rgba(0, 20, 10, 0.92);
+      border: 1px solid rgba(100, 255, 200, 0.4);
+      border-radius: 6px;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
     }
-    #gen-overlay h2 { margin: 0 0 14px; font-size: 11px; font-weight: 400;
-      letter-spacing: 0.3em; text-transform: uppercase; color: var(--ochre); }
-    #gen-overlay .phase { margin-bottom: 12px; font-size: 13px; }
-    #gen-overlay .bar { height: 3px; background: #3a3226; overflow: hidden; margin-bottom: 8px; }
-    #gen-overlay .bar > div { height: 100%; background: var(--ochre); transition: width 250ms ease; }
-    #gen-overlay .meta { color: var(--dim); font-size: 11px; margin-top: 8px; }
-    #gen-overlay .err { color: var(--warn); margin-top: 10px; font-size: 12px; }
+    #gen-overlay h2 { margin: 0 0 14px 0; font-size: 15px; color: var(--accent, #6f9); }
+    #gen-overlay .phase { margin-bottom: 12px; color: #cfd; font-size: 13px; }
+    #gen-overlay .bar { height: 6px; background: rgba(100, 255, 200, 0.12); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+    #gen-overlay .bar > div { height: 100%; background: var(--accent, #6f9); transition: width 250ms ease; }
+    #gen-overlay .meta { color: var(--dim, #5a5); font-size: 11px; margin-top: 8px; }
+    #gen-overlay .err { color: #f88; margin-top: 10px; font-size: 12px; }
   `;
   document.head.appendChild(style);
 
@@ -316,7 +229,7 @@ connect();
   overlay.id = 'gen-overlay';
   overlay.innerHTML =
     `<div class="panel">` +
-    `<h2>brood turnover in progress</h2>` +
+    `<h2>generation rollover</h2>` +
     `<div class="phase">…</div>` +
     `<div class="bar"><div style="width:0%"></div></div>` +
     `<div class="meta"></div>` +
@@ -331,11 +244,11 @@ connect();
 
   const PHASE_LABELS = {
     running: 'simulation running',
-    corpus_draining: 'last words drifting off the agar…',
-    judging: 'the judge is reading the poems',
+    corpus_draining: 'last words drifting off-screen…',
+    judging: 'LLM is reading the poems',
     evolving: 'computing NES gradient',
-    committing: 'archiving the generation',
-    respawning: 'plating the next brood',
+    committing: 'committing generation to git',
+    respawning: 'spawning next generation',
   };
 
   async function tick() {
@@ -351,7 +264,7 @@ connect();
       $bar.style.width = (s.phase === 'judging' ? pct : 100) + '%';
       $meta.textContent =
         `generation ${s.generation} · flask ${s.group || '—'} · ` +
-        `${s.worms_done}/${s.worms_total} specimens judged · ${s.elapsed_s}s elapsed`;
+        `${s.worms_done}/${s.worms_total} worms scored · ${s.elapsed_s}s elapsed`;
       $err.textContent = s.error || '';
     } catch (_e) { /* server briefly unavailable mid-rollover; ignore */ }
   }

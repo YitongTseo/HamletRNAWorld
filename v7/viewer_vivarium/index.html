@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=3"></script>
+    <title>wormlet — vivarium</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --bench: #292118; --glass: #211a12; --ivory: #ece2cd;
+        --dim: #8f8266; --ochre: #cfa348; --warn: #e0503f;
+        /* legacy vars some shared scripts read */
+        --bg: #292118; --fg: #ece2cd; --accent: #cfa348;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: var(--bench); color: var(--ivory); }
+      body { font-family: 'Fragment Mono', ui-monospace, monospace; font-size: 13px; }
+      header {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
+        padding: 22px 34px 16px; border-bottom: 1px solid #3a3226;
+      }
+      header h1 {
+        margin: 0; font-family: 'Instrument Serif', serif; font-style: italic;
+        font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--ivory);
+      }
+      header h1 b { font-weight: 400; color: var(--ochre); }
+      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
+        color: var(--dim); margin-left: 14px; text-transform: none; font-style: normal; }
+      header h1 small a { color: var(--dim); }
+      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; }
+      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
+      header nav a:hover { color: var(--ochre); }
+      header nav a.here { color: var(--ochre); }
+      #status { padding: 8px 34px 0; color: var(--dim); font-size: 10.5px; letter-spacing: 0.14em; }
+      #grid { padding: 6px 34px 46px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
+        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
+      <nav><a href="/" class="here">worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about">about</a></nav>
+      <div id="experiment-switcher"></div>
+    </header>
+    <div id="status">connecting…</div>
+    <div id="grid"></div>
+    <script src="/static/experiment_dropdown.js?v=2"></script>
+    <script src="/static/index.js?v=6"></script>
+  </body>
+</html>

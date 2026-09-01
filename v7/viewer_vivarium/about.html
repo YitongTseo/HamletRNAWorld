@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=3"></script>
+    <title>wormlet · about</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: var(--bg, #000); color: var(--fg, #ece2cd); }
+      body { font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+             margin: 0; padding: 0; }
+      /* header runs full-bleed like every other page; the prose narrows */
+      main { max-width: 720px; margin: 0 auto; padding: 24px 22px 80px; }
+      header {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
+        padding: 22px 0 16px; margin-bottom: 18px; border-bottom: 1px solid #3a3226;
+      }
+      header h1 { margin: 0; font-family: var(--font-serif, serif); font-style: italic;
+                  font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--fg); }
+      header h1 b { font-weight: 400; color: var(--accent); }
+      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
+                        color: var(--dim); margin-left: 14px; font-style: normal; }
+      header h1 small a { color: var(--dim); }
+      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
+                   font-family: var(--font-mono, monospace); }
+      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
+      header nav a:hover { color: var(--accent); }
+      header nav a.here { color: var(--accent); }
+      h2 { color: var(--fg, #ece2cd); font-family: ui-monospace, monospace; font-size: 15px; margin: 28px 0 6px; border-left: 3px solid var(--accent, #cfa348); padding-left: 8px; }
+      h3 { color: var(--accent, #9ec); font-family: ui-monospace, monospace; font-size: 13px; margin: 18px 0 4px; }
+      p { margin: 6px 0 12px; opacity: 0.88; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel, rgba(20, 40, 30, 0.5)); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+      pre { padding: 8px 10px; line-height: 1.4; overflow-x: auto; }
+      a { color: var(--accent, #6cf); }
+      ul { padding-left: 22px; }
+      li { margin: 4px 0; opacity: 0.9; }
+      .lead { color: var(--fg, #ece2cd); opacity: 0.95; font-size: 15px; border-left: 3px solid var(--accent, rgba(205,127,93,0.4)); padding-left: 12px; margin: 14px 0 20px; }
+      .credit { opacity: 0.55; font-size: 11px; font-family: ui-monospace, monospace; margin-top: 40px; padding-top: 10px; border-top: 1px solid rgba(207, 163, 72, 0.14); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
+        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
+      <nav><a href="/">worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about" class="here">about</a></nav>
+      <div id="experiment-switcher"></div>
+    </header>
+    <script src="/static/experiment_dropdown.js?v=2"></script>
+    <main>
+
+    <div class="lead">
+      Forty independent <em>C. elegans</em> brains, each one a faithful port
+      of the worm's actual 302-neuron connectome, each in its own private
+      world, each eating a great text — <em>Hamlet</em>, the <em>Tao Te
+      Ching</em> in Legge's English and in the original 道德經, and
+      <em>Beowulf</em>. What they eat becomes what they write. What they
+      write is judged, and the best writers' brains seed the next
+      generation.
+    </div>
+
+    <h2>What you are looking at</h2>
+    <p>
+      Every worm is a separate simulation of <a href="https://en.wikipedia.org/wiki/Caenorhabditis_elegans" target="_blank" rel="noopener"><em>C. elegans</em></a>,
+      one of the few animals whose entire nervous system has been mapped, neuron by neuron, synapse by synapse.
+      We use that real connectome — every cell, every connection — and we drop
+      each worm into its own private copy of a text. Words drift across
+      the worm's world; the worm smells them, steers toward them, eats them.
+      The sequence of words a worm eats is its <em>poem</em>. The worms live
+      in four flasks of ten, one flask per text; each flask is a separate
+      evolving lineage with its own judge.
+    </p>
+    <p>
+      Each worm runs continuously, independently. Nobody has to watch — they
+      keep writing whether you're here or not.
+    </p>
+
+    <h2>How a worm reads a word</h2>
+    <p>
+      Real <em>C. elegans</em> sense their chemical environment through 12
+      pairs of amphid sensilla in the nose — <code>ASE</code>, <code>AWA</code>,
+      <code>AWB</code>, <code>AWC</code>, <code>ASH</code>, <code>ASI</code>,
+      <code>ASJ</code>, <code>ASK</code>, <code>ASG</code>, <code>ADL</code>,
+      <code>ADF</code>, <code>AFD</code> — left and right halves of each pair
+      allow the worm to tell <em>which side</em> a smell is coming from. That
+      bilateral asymmetry is the basis of all its navigation.
+    </p>
+    <p>
+      Every word emits a 12-channel chemical signature into those neuron
+      pairs, but the signature is made differently per text:
+    </p>
+    <ul>
+      <li><strong>Hamlet</strong> — every unique word in the play (~4,500)
+        is embedded with <code>nomic-embed-text</code> and reduced to 11
+        dimensions with UMAP: an unsupervised geometry of Shakespeare's
+        vocabulary, one dimension per neuron pair.</li>
+      <li><strong>The Tao Te Ching and Beowulf</strong> — each word is
+        rated 0–1 on <strong>11 named semantic axes</strong> (dread, warmth,
+        nature, body, motion, power, the sacred, speech, time, conflict,
+        stillness) by a large language model reading the word in its sense
+        <em>in that text</em>. So <em>sea</em> carries a trace of dread in
+        Beowulf and none in the Tao; 道 smells of the sacred, not of roads.
+        Named axes mean you can read the desire heatmap: a worm following
+        channel 10 is literally following the smell of quietness.</li>
+      <li><strong>The 12th channel is grammar.</strong> For the English
+        texts it scores how well a candidate word's part of speech continues
+        the part-of-speech sequence of the last words eaten (a trigram
+        trained on the text itself). For 道德經 it is a <em>character</em>
+        trigram: how expected is this character after the two just eaten —
+        the text's own phrase structure as a smell. Punctuation smells of
+        grammar and nothing else, so a worm can learn to end a sentence.</li>
+    </ul>
+    <p>
+      The <em>direction</em> a word is in (left of the worm, right of it,
+      dead ahead) scales the L vs R member of each neuron pair
+      asymmetrically. Same word, different position, different steering
+      signal.
+    </p>
+
+    <h2>Hunger, and death</h2>
+    <p>
+      A worm is born peckish and gets hungrier every second. Eating a word
+      feeds it; going without empties it in about ten sim-minutes. Hunger is
+      not decoration: a hungry worm smells harder and moves faster (the
+      roaming state real starved <em>C. elegans</em> enter), a fed worm
+      settles, and a worm that fails to eat <em>starves to death</em> — its
+      brain, body and mouth stop, and the corpse lies in the dish until the
+      generation ends. Every death writes a post-mortem: when, where, how
+      long since the last meal, and what the worm had learned. Eating is
+      survival, enforced by the environment rather than the judge.
+    </p>
+
+    <h2>Learning within a lifetime</h2>
+    <p>
+      Two mechanisms let a single worm change during its own life, both
+      modelled on measured <em>C. elegans</em> biology, and neither is
+      inherited — a newborn starts from its genome, like real life.
+    </p>
+    <ul>
+      <li><strong>Plasticity.</strong> Synapses whose two neurons fire
+        together are briefly marked; when the worm finds food, the marked
+        synapses strengthen (a dopamine-flavoured three-factor rule). The
+        circuit that led to a meal becomes a habit; unused learning decays
+        back toward the genome.</li>
+      <li><strong>Boredom.</strong> Each nose neuron keeps a running average
+        of what it has been smelling and responds only to the
+        <em>difference</em> — habituation, the best-documented form of worm
+        learning. A smell that just sits there fades to nothing in about ten
+        seconds, so a worm parked on a stale patch loses interest and
+        wanders toward fresher words. Eating snaps the nose awake again.</li>
+    </ul>
+    <p>
+      The knobs of both mechanisms — how fast to learn, how fast to forget,
+      how hard hunger drives the senses, how quickly boredom sets in — are
+      <em>genes</em>: evolution tunes not just what a lineage knows but how
+      it learns.
+    </p>
+
+    <h2>Evolution, and the judge</h2>
+    <p>
+      A generation lasts one pass of the flask's text (~2 hours). At
+      rollover, each worm's poem is scored by a language-model judge reading
+      sampled 15-word windows for emotional impact and coherence — the
+      rubric names the flask's own text, so a Beowulf worm is judged as a
+      Beowulf poet, and 道德經 poems are judged in Classical Chinese.
+      Fitness is <em>quality per window</em>, not volume: eating more buys
+      nothing (hunger already compels eating); only writing better pays.
+      The best genomes seed the next generation under a natural evolution
+      strategy, and the cycle repeats, unwatched, indefinitely.
+    </p>
+
+    <h2>The connectome itself</h2>
+    <p>
+      The connectome graph is a faithful port of the GoPiGo / Busbice
+      <em>C. elegans</em> network — the 302 neurons of the real animal, with
+      their actual synaptic weights. Integrate-and-fire dynamics: each neuron
+      accumulates incoming signal, fires when it crosses a threshold, sends
+      its outgoing weights forward.
+    </p>
+    <p>
+      The motor neurons drive 34 muscles (17 dorsal, 17 ventral) which steer
+      an IK chain head. The brain ticks at 2 Hz, the body at 60 Hz, both off
+      a deterministic tick counter so the trajectory is exactly reproducible
+      given <code>(weights, seed)</code>.
+    </p>
+
+    <h2>Determinism, persistence, save points</h2>
+    <p>
+      Each worm has:
+    </p>
+    <ul>
+      <li>A unique random seed that initializes its connectome activity.</li>
+      <li>Its own copy of the connectome weights file (frozen in this
+        version; the data layout already supports per-worm mutation in
+        future versions).</li>
+      <li>A poem file (<code>poem.txt</code>) that appends every eaten word
+        as it eats it.</li>
+    </ul>
+    <p>
+      Given the same seed + weights, two runs produce <em>identical</em>
+      eaten-word sequences. The sim has no wallclock dependencies internally;
+      it advances by integer body-tick counts. A determinism test in the
+      repo enforces this.
+    </p>
+
+    <h2>Why parallel worms?</h2>
+    <p>
+      Within a flask, ten worms produce ten divergent readings of the same
+      text — same connectome graph, same words drifting past, different
+      genomes. Across flasks, the same machinery reads four different
+      books; the Tao Te Ching even runs twice, once in Legge's English and
+      once in the original characters — a controlled experiment in whether
+      evolution writes different poets in different languages.
+    </p>
+
+    <h2>Hosting</h2>
+    <p>
+      The server is a single <code>uvicorn</code> + FastAPI process running
+      forty worms on one shared loop at 60 Hz. Each WebSocket subscriber gets
+      one of three feeds: a 10 Hz <em>overview</em> stream (for the gallery
+      grid), a 60 Hz <em>focus</em> stream (only when you've zoomed into a
+      worm), and an <em>event</em> stream that fires once per eaten word
+      (for the poems page). A given worm's full state is only serialized
+      when at least one viewer has clicked into it.
+    </p>
+    <p>
+      The public domain (<a href="https://wordswordsworms.org">wordswordsworms.org</a>)
+      is served through a Cloudflare Tunnel. No incoming firewall ports, no
+      public IP, free TLS. Both <code>uvicorn</code> and <code>cloudflared</code>
+      run as systemd services and survive reboots.
+    </p>
+
+    <h2>What this is not</h2>
+    <ul>
+      <li>Not a research tool. It's an art piece that happens to use real
+        neuroscience as its substrate.</li>
+      <li>Not <em>proven</em> learning. The machinery for learning now
+        exists at both timescales — within a life and across generations —
+        but whether any lineage has demonstrably learned to <em>write
+        better</em> is the open question the project exists to ask. Several
+        promising curves in its history turned out to be measurement
+        artefacts; we say so when it happens.</li>
+      <li>Not a chatbot, an LLM, or a generative model in the usual sense.
+        The "writing" is the worm's wandering trajectory through a field of
+        Shakespeare, intersected with whatever its brain happens to do.</li>
+    </ul>
+
+    <h2>Source</h2>
+    <p>
+      Built on a private fork of an existing C. elegans visualization. If
+      you'd like to peek under the hood, get in touch via
+      <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">ternalbiota.com</a>.
+    </p>
+
+    <div class="credit">
+      Created by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong Tseo</a>.
+      Texts via Project Gutenberg (public domain):
+      <a href="https://www.gutenberg.org/ebooks/1524" target="_blank" rel="noopener">Hamlet</a>,
+      <a href="https://www.gutenberg.org/ebooks/216" target="_blank" rel="noopener">Tao Teh King</a> (Legge),
+      <a href="https://www.gutenberg.org/ebooks/16328" target="_blank" rel="noopener">Beowulf</a> (Hall),
+      <a href="https://www.gutenberg.org/ebooks/7337" target="_blank" rel="noopener">道德經</a>.
+      Embedding model: <a href="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5" target="_blank" rel="noopener">nomic-ai/nomic-embed-text-v1.5</a>.
+      Connectome data via the GoPiGo / Busbice / Garrett / Churchill <em>C. elegans</em> port.
+    </div>
+    </main>
+  </body>
+</html>

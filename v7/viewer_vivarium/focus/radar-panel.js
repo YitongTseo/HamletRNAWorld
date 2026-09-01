@@ -58,8 +58,8 @@ export function toggleRadar() {
 function pcHue(i) { return Math.round((i * 360) / 12); }
 
 const EMOTION_AXIS_COLORS = {
-  joy: '#fc6', trust: '#6f9', anticipation: '#9cf', surprise: '#cfc',
-  fear: '#c6f', disgust: '#9c6', sadness: '#69c', anger: '#f66',
+  joy: '#e0c48f', trust: '#cfa348', anticipation: '#cd7f5d', surprise: '#ece2cd',
+  fear: '#8a7a9d', disgust: '#7d9d7f', sadness: '#7a93a8', anger: '#cd5d4a',
 };
 
 function _radarLayout() {
@@ -90,10 +90,20 @@ function _radarLayout() {
 export function drawRadar(state) {
   if (!radarVisible || !state || !state.corpusPca) return;
   const { corpusPca, computeWordImpact } = state;
+  // No emotion data for this corpus (e.g. 道德經 — the NRC lexicon is
+  // English-only, so every vector is empty/zero): hide the compass rather
+  // than draw a dead instrument.
+  const _hasEmotion = corpusPca.emotion_keys && corpusPca.emotions &&
+    Object.values(corpusPca.emotions).some(v => Array.isArray(v) && v.some(x => x > 0));
+  if (!_hasEmotion) {
+    const panel = radarctx.canvas.closest('.panel') || radarctx.canvas.parentElement;
+    if (panel) panel.style.display = 'none';
+    return;
+  }
   if (!corpusPca.emotion_keys || !corpusPca.emotions) {
     // Corpus PCA cache predates the emotion fields — rebuild needed.
     radarctx.clearRect(0, 0, radarcanvas.width, radarcanvas.height);
-    radarctx.fillStyle = '#fc6';
+    radarctx.fillStyle = '#cfa348';
     radarctx.font = '11px ui-monospace, monospace';
     radarctx.fillText('rebuild corpus_pca.json with emotions', 10, 20);
     return;
@@ -132,16 +142,16 @@ export function drawRadar(state) {
   ctx.clearRect(0, 0, W, H);
 
   // Title
-  ctx.fillStyle = '#8f8';
+  ctx.fillStyle = '#e0c48f';
   ctx.font = 'bold 11px ui-monospace, monospace';
   ctx.textBaseline = 'top';
   ctx.fillText('● EMOTION RADAR — what each PC is absorbing', 8, 4);
-  ctx.fillStyle = '#9c9';
+  ctx.fillStyle = '#b3a789';
   ctx.font = '9px ui-monospace, monospace';
   if (hasEmotionalSignal) {
     ctx.fillText('contribution-weighted NRC emotions per PC pair', 8, 16);
   } else {
-    ctx.fillStyle = '#fc6';
+    ctx.fillStyle = '#cfa348';
     ctx.fillText('no words with NRC emotional content nearby', 8, 16);
   }
 
@@ -156,13 +166,13 @@ export function drawRadar(state) {
     const radius = Math.min(cellW, cellH) * 0.32;
 
     // Background rings
-    ctx.strokeStyle = 'rgba(150,200,255,0.10)';
+    ctx.strokeStyle = 'rgba(236,226,205,0.20)';
     ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = 'rgba(150,200,255,0.07)';
+    ctx.strokeStyle = 'rgba(236,226,205,0.16)';
     ctx.beginPath(); ctx.arc(cx, cy, radius * 0.5, 0, Math.PI * 2); ctx.stroke();
 
     // Axis spokes + (on top-right cell only) emotion abbreviations
-    ctx.strokeStyle = 'rgba(150,200,255,0.10)';
+    ctx.strokeStyle = 'rgba(236,226,205,0.20)';
     ctx.beginPath();
     for (let a = 0; a < axes; a++) {
       const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
@@ -195,7 +205,7 @@ export function drawRadar(state) {
       const r = (w[a] / globalMax) * radius;
       if (r < 1) continue;
       const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
-      ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#fff';
+      ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#ece2cd';
       ctx.beginPath();
       ctx.arc(cx + Math.cos(ang) * r, cy + Math.sin(ang) * r, 2, 0, Math.PI * 2);
       ctx.fill();
@@ -216,7 +226,7 @@ export function drawRadar(state) {
         const ang = -Math.PI / 2 + (a / axes) * Math.PI * 2;
         const lx = cx + Math.cos(ang) * (radius + 3);
         const ly = cy + Math.sin(ang) * (radius + 3);
-        ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#fff';
+        ctx.fillStyle = EMOTION_AXIS_COLORS[emotionKeys[a]] || '#ece2cd';
         ctx.fillText(emotionKeys[a].slice(0, 3), lx, ly);
       }
     }

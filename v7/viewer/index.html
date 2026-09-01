@@ -3,50 +3,52 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script src="/static/palette.js?v=3"></script>
-    <title>wormlet — vivarium</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+    <script src="/static/palette.js?v=2"></script>
+    <title>wormlet</title>
     <style>
       :root {
-        --bench: #292118; --glass: #211a12; --ivory: #ece2cd;
-        --dim: #8f8266; --ochre: #cfa348; --warn: #e0503f;
-        /* legacy vars some shared scripts read */
-        --bg: #292118; --fg: #ece2cd; --accent: #cfa348;
+        --bg: #000;
+        --fg: #afa;
+        --accent: #6f9;
+        --dim: #5a5;
       }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; background: var(--bench); color: var(--ivory); }
-      body { font-family: 'Fragment Mono', ui-monospace, monospace; font-size: 13px; }
+      html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); }
+      body { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
       header {
-        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
-        padding: 22px 34px 16px; border-bottom: 1px solid #3a3226;
+        display: flex; align-items: baseline; justify-content: space-between;
+        padding: 12px 18px 6px 18px;
       }
-      header h1 {
-        margin: 0; font-family: 'Instrument Serif', serif; font-style: italic;
-        font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--ivory);
+      header h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--accent); }
+      header nav a { color: var(--accent); text-decoration: none; padding: 4px 8px; margin-left: 4px; }
+      header nav a:hover { background: var(--line, rgba(100, 200, 255, 0.15)); }
+      #grid {
+        display: grid; gap: 14px; padding: 12px 18px;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
       }
-      header h1 b { font-weight: 400; color: var(--ochre); }
-      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
-        color: var(--dim); margin-left: 14px; text-transform: none; font-style: normal; }
-      header h1 small a { color: var(--dim); }
-      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; }
-      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
-      header nav a:hover { color: var(--ochre); }
-      header nav a.here { color: var(--ochre); }
-      #status { padding: 8px 34px 0; color: var(--dim); font-size: 10.5px; letter-spacing: 0.14em; }
-      #grid { padding: 6px 34px 46px; }
+      .card {
+        display: flex; flex-direction: column; cursor: pointer;
+        background: rgba(0, 20, 10, 0.6);
+        border: 1px solid var(--line, rgba(100, 200, 255, 0.2));
+        border-radius: 4px; overflow: hidden;
+        transition: border-color 120ms, transform 120ms;
+      }
+      .card:hover { border-color: rgba(100, 255, 200, 0.6); transform: translateY(-1px); }
+      .card .name { padding: 6px 10px; color: var(--accent); font-weight: 600; display: flex; justify-content: space-between; }
+      .card .name .count { color: var(--dim); font-weight: 400; }
+      .card canvas { display: block; width: 100%; height: 175px; background: var(--stage, #001); }
+      .card .recent { padding: 6px 10px; color: var(--dim); font-size: 11px; min-height: 16px; }
+      #status { padding: 4px 18px; color: var(--dim); font-size: 11px; }
     </style>
   </head>
   <body>
     <header>
-      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
-        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
-      <nav><a href="/" class="here">worms</a><a href="/poems">poems</a><a href="/generations">generations</a><a href="/about">about</a></nav>
+      <h1>wormlet <span style="opacity:0.55; font-weight:400; font-size:12px;">— created by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener" style="color:var(--accent); text-decoration:underline;">Yitong</a></span></h1>
+      <nav><a href="/poems">poems</a> · <a href="/generations">generations</a> · <a href="/about">about</a></nav>
       <div id="experiment-switcher"></div>
     </header>
     <div id="status">connecting…</div>
     <div id="grid"></div>
-    <script src="/static/experiment_dropdown.js?v=2"></script>
-    <script src="/static/index.js?v=6"></script>
+    <script src="/static/experiment_dropdown.js?v=1"></script>
+    <script src="/static/index.js?v=3"></script>
   </body>
 </html>

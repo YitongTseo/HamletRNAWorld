@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="/static/palette.js?v=3"></script>
+    <title>wormlet · poems</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: var(--bg, #292118); color: var(--fg, #ece2cd); }
+      body { font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; display: flex; flex-direction: column; }
+      header {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
+        padding: 22px 34px 16px; border-bottom: 1px solid #3a3226;
+      }
+      header h1 { margin: 0; font-family: var(--font-serif, serif); font-style: italic;
+                  font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--fg); }
+      header h1 b { font-weight: 400; color: var(--accent); }
+      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
+                        color: var(--dim); margin-left: 14px; font-style: normal; }
+      header h1 small a { color: var(--dim); }
+      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
+                   font-family: var(--font-mono, monospace); }
+      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
+      header nav a:hover { color: var(--accent); }
+      header nav a.here { color: var(--accent); }
+      #columns {
+        flex: 1; display: flex; flex-direction: column; gap: 16px;
+        padding: 4px 18px 18px 18px; overflow: auto; min-height: 0;
+      }
+      .flask-wrap { display: flex; flex-direction: column; }
+      .flask-head {
+        margin: 0 0 6px 0; font-size: 12px; font-weight: 600;
+        color: var(--accent, #cfa348); letter-spacing: 0.5px;
+      }
+      .flask-grid {
+        /* Specimen records, not thumbnails: two readable cards per row on a
+           desktop, one on narrow screens (2026-08 redesign — the old
+           minmax(150px) crammed ten unreadable slivers into one strip). */
+        display: grid; gap: 22px;
+        grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      }
+      .col {
+        display: flex; flex-direction: column;
+        background: var(--panel, #211a12);
+        border: 1px solid var(--line, rgba(236,226,205,0.16));
+        border-radius: 4px;
+        overflow: hidden;
+        min-height: 280px; max-height: 60vh;
+      }
+      .col-head {
+        padding: 10px 16px; border-bottom: 1px solid var(--line, rgba(236,226,205,0.12));
+        display: flex; justify-content: space-between; align-items: baseline;
+        color: var(--fg, #ece2cd);
+        font-family: var(--font-serif, serif); font-style: italic;
+        font-size: 20px; font-weight: 400;
+      }
+      .col-head .count { color: var(--dim, #5a5); font-weight: 400; font-size: 11px; }
+      .col-body {
+        flex: 1; overflow-y: auto; padding: 14px 18px 18px; min-height: 0;
+        scroll-behavior: smooth;
+        /* Verse, not a word-list. Words are adjacent elements with no text
+           whitespace between them, so inline display had NO soft-wrap
+           opportunities (one endless line + a horizontal scrollbar) —
+           flex-wrap gives every word a break point. */
+        font-family: var(--font-serif, Georgia, serif); font-style: italic;
+        font-size: 17px; line-height: 1.55;
+        display: flex; flex-wrap: wrap; align-content: flex-start;
+        column-gap: 0.45em; row-gap: 0.6em;
+        overflow-x: hidden;
+        scrollbar-width: thin;
+        scrollbar-color: var(--line, rgba(236,226,205,0.16)) transparent;
+      }
+      .col-body .word { opacity: 0.85; }
+      .col-body .word.newest { color: var(--accent, #cfa348); opacity: 1; }
+      #status { padding: 4px 18px; color: var(--dim, #5a5); font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
+        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
+      <nav><a href="/">worms</a><a href="/poems" class="here">poems</a><a href="/generations">generations</a><a href="/about">about</a></nav>
+      <div id="experiment-switcher"></div>
+    </header>
+    <div id="status">loading…</div>
+    <div id="columns"></div>
+    <script src="/static/experiment_dropdown.js?v=2"></script>
+    <script src="/static/poems.js?v=2"></script>
+  </body>
+</html>
