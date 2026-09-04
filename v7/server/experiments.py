@@ -98,6 +98,24 @@ EXPERIMENTS: list[Experiment] = [
         blurb="Sanity check 2 — maximize nouns eaten. Can selection steer the chemosensation toward a POS class?",
     ),
     Experiment(
+        # 2026-09-05. `nouns` counts nouns, so 1,071 generations of it bought
+        # 6.1x the volume at an unchanged 23% noun share — it selected for
+        # appetite, not for taste. This arm scores the SHARE (denominator
+        # floored at NOUN_SHARE_FLOOR), which is bounded at 1.0 and therefore
+        # pays nothing for volume. Same worm, same passage, same seeds: the
+        # only difference from `nouns` is what the fitness function counts.
+        mode="noun_share",
+        label="Noun share",
+        scorer=pos_scorers.score_noun_share,
+        briefing_file="nouns.md",
+        port=8005,
+        passage="act1",
+        gardener_every=10,
+        store_full_poems=False,
+        subdomain="noun-share",
+        blurb="Sanity check 2b — maximize the FRACTION of eaten words that are nouns. Volume is worth nothing; only selectivity pays.",
+    ),
+    Experiment(
         mode="pos_chain",
         label="POS chains",
         scorer=pos_scorers.score_pos_chain,

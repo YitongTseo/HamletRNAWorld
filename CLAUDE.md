@@ -127,13 +127,22 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   `/api/worms`, then re-run the elite-vs-fresh test.
 - **The search space is maskable** (`WORMLET_EVOLVE_MASK`, default `all`).
   `chemo` freezes everything but the 228 synapses leaving the 24 amphid
-  neurons; `chemo2` also keeps the first interneuron layer (1,417). This is the
-  highest-leverage knob in `evolution.py` and it is pure arithmetic: an ES
-  gradient from λ children in d dimensions aligns with the true gradient by
-  ~√(λ/d). At the full genome with 5 fresh children that is **0.037** — every
-  step is 96% random. `chemo2` gives 0.059, `chemo` **0.148**. Freezing the
-  motor circuitry is worth ~4× for free, where TRIPLING the population is worth
-  1.7× at triple the cost. The `_lifelike` rule genes are always evolvable.
+  neurons; `chemo2` also keeps the first interneuron layer (1,417). The
+  arithmetic behind it is sound: an ES gradient from λ children in d dimensions
+  aligns with the true gradient by ~√(λ/d), so at the full genome with 5 fresh
+  children that is **0.037** — every step is 96% random — against 0.059 for
+  `chemo2` and **0.148** for `chemo`.
+  **Measured 2026-09-05, and it does NOT deliver: do not put `chemo` on a live
+  lineage.** In the host control A/B on a noise-free objective, `all` learned
+  (score 9.70 → 39.60 over 1,075 generations, p<0.0001) and `chemo` moved
+  nothing at all in 1,068 (p=0.52). A 4× better-aligned gradient onto a
+  subspace the objective does not reward is still zero: the objective was
+  `score_nouns`, a COUNT, so all the reward lay in eating MORE (words/life
+  28.9 → 175.6) and none in eating BETTER (noun share 23.6% → 23.1%, base rate
+  22.6%). Freezing the motor circuitry froze the only direction that paid.
+  Masking is worth re-testing only under an objective that pays for
+  selectivity — that is arm D of the 2×2 in `run-control.sh`. The `_lifelike`
+  rule genes are always evolvable.
   Masking happens by projecting into the subspace *inside* `evolve_generation`,
   so `sample_eps`, the multivariate-t score (which divides by d) and the trust
   region (σ√d) all see the true size — masking eps after the fact would leave
@@ -150,13 +159,17 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   0.25). 1.0 scores every window and removes which-windows-drawn variance, at
   ~4× the judge tokens. Try common random numbers first — changing both at once
   tells you nothing about either.
-- **σ has been pinned at the `SIGMA_MAX=3.0` cap since 2026-08-22.** Read this
-  as a *symptom*, not a setting: Rechenberg's 1/5 rule grows σ whenever more
-  than 1/5 of fresh children beat the incumbent, so a coin-flip fitness signal
-  inflates σ to the ceiling. It was made worse by cutting the flask to 7 worms
-  while `N_ELITES` stayed at 5 — that leaves **2 fresh children**, so the
-  success rate could only be 0, 0.5 or 1.0 and anything but 0/2 grew σ. Back to
-  10 worms (5 children) on 2026-09-01.
+- **σ sits at the `SIGMA_MAX=3.0` cap and this diagnoses NOTHING on its own.**
+  Rechenberg's 1/5 rule grows σ whenever more than 1/5 of fresh children beat
+  the incumbent, which happens both on a coin-flip fitness signal *and* on an
+  easy slope. It was previously written up here as a symptom of noise; that
+  inference was **refuted on 2026-09-05** by control arm A, which pinned at 3.0
+  with mean success 0.49 *while* learning at p<0.0001. Use elite-vs-fresh d and
+  the fitness heritability r instead — those separate the two cases, σ does
+  not. (The 2026-08-22 pinning did have a real aggravating cause: a 7-worm
+  flask with `N_ELITES` still at 5 leaves **2 fresh children**, so the success
+  rate could only be 0, 0.5 or 1.0 and anything but 0/2 grew σ. Back to 10
+  worms / 5 children on 2026-09-01.)
 - **Hunger and death are inert in practice.** Satiety sits at 0.96 and
   `wormlet_alive` has been 1.0 continuously since 2026-08-15 — zero worms have
   ever starved, and `/api/graveyard` is empty. The claim below that "volume is
