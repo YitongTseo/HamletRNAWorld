@@ -13,6 +13,8 @@ WORMLET_DEBUG_SECRET env var.
 from __future__ import annotations
 
 import asyncio
+import collections
+import gc
 import json
 import logging
 import os
@@ -45,7 +47,7 @@ from sim.connectome import (
     SENSORY_NEURONS, CHEMOSENSORY_NEURONS, MOTOR_NEURONS,
 )
 from corpus.hamlet import get_sentences
-from sim.world import World, BODY_TICK_HZ
+from sim.world import World, BODY_TICK_HZ, LIVE_WORLDS
 
 from server.orchestrator import (
     load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm,
@@ -2101,6 +2103,66 @@ async def debug_add_food(name: str, request: Request):
     body = await request.json()
     w.world.add_food(float(body["x"]), float(body["y"]))
     return {"name": name, "ok": True}
+
+
+def _deep_type_histogram(top: int) -> list[tuple[str, int]]:
+    """Full heap walk: every gc-tracked object, counted by type name. Runs in a
+    worker thread (see debug_objects) because it is O(heap) and this process
+    carries a multi-GB one."""
+    counts = collections.Counter(type(o).__name__ for o in gc.get_objects())
+    return counts.most_common(top)
+
+
+@app.get("/debug/objects", dependencies=[Depends(require_debug)])
+async def debug_objects(deep: int = 0, top: int = 40):
+    """Memory census for the long-run RSS climb (~MB/day, tick rate flat, so
+    it is pure retention rather than a growing per-tick cost).
+
+    The decisive number is `worlds.live` vs `worlds.expected`. The rollover
+    rebuilds every World once per generation, so they should stay equal. If
+    `live` climbs, the previous generations' Worlds are still referenced and
+    the leak is in whatever holds them; if it stays flat while RSS climbs, the
+    growth is NOT retained Worlds and the next step is tracemalloc / native
+    allocator territory.
+
+    Cheap by default: dict lengths and gc counters only, no heap walk. Pass
+    `?deep=1` for the by-type histogram, which walks the whole heap.
+
+    WARNING on deep=1: _start_tick_watchdog kills this process if
+    WORMS[0].world.tick_count stalls for 20s, and it reads tick_count
+    directly, so _generation_keepalive does NOT cover it. The walk is
+    therefore dispatched to a worker thread to keep the event loop (and the
+    sim) running. It is still GIL-heavy — use it sparingly, and not while a
+    rollover is in flight."""
+    out: dict = {
+        "worlds": {
+            # WeakValueDictionary — collected Worlds drop out on their own.
+            "live": len(LIVE_WORLDS),
+            "expected": len(WORMS),
+        },
+        "globals": {
+            "WORMS": len(WORMS),
+            "WORM_BY_KEY": len(WORM_BY_KEY),
+            "FLASKS": len(FLASKS),
+            "OVERVIEW_CLIENTS": len(OVERVIEW_CLIENTS),
+            "POEM_CLIENTS": len(POEM_CLIENTS),
+            # keys are never popped, only their sets drained — bounded by the
+            # flask/worm namespace, listed here so it can be ruled out on sight.
+            "FOCUS_CLIENTS": len(FOCUS_CLIENTS),
+        },
+        "gc": {
+            "counts": gc.get_count(),
+            "collected_per_gen": [s["collected"] for s in gc.get_stats()],
+            # Non-zero means objects the collector could not free (e.g. cycles
+            # through __del__) are piling up — a leak in its own right.
+            "uncollectable": len(gc.garbage),
+        },
+        "generation": (FLASKS[0].state.generation
+                       if FLASKS and FLASKS[0].state else None),
+    }
+    if deep:
+        out["by_type"] = await asyncio.to_thread(_deep_type_histogram, top)
+    return out
 
 
 # Static viewer files (JS/CSS) — mounted under /static so / and /ws take precedence.
