@@ -105,6 +105,11 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
 σ-scheme are in that generation's `metadata.json`; the parent step size is
 `delta_norm` in `selection.json`.
 
+`WORMLET_JUDGE_SAMPLE_FRACTION` is read at import (`server/judge.py`) and
+nothing on disk records what a generation was judged under, so a host running a
+non-default fraction produces fitness that looks comparable and is not. Check
+the unit's environment, not just the code, before comparing flasks.
+
 ## Current state (2026-08-13)
 
 - **Common random numbers since 2026-09-01** (`WORMLET_COMMON_SEED=1`, the
@@ -267,6 +272,17 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   the first generation and the rule genes drift from then on. **Expect a
   transient, and do not read the first few generations after the deploy as
   learning.**
+- **API cost controls (2026-09-21).** Two changes, neither of which alters a
+  single score: the meta-gardener runs every Nth epoch
+  (`WORMLET_GARDENER_EVERY_N_EPOCHS=2` via `cost.conf`; a deferred epoch leaves
+  a `gardeners_log.deferred`, which is NOT the gardener's own PASS), and its
+  per-epoch context now carries a cache breakpoint, so its three rounds stop
+  re-sending all 128 worms' metrics at full Opus price. The gardener is the
+  expensive call, not the Haiku judge — measure before optimising the wrong
+  one. **Judge sampling was deliberately left alone**: cutting windows is the
+  obvious lever and it is the wrong one to pull right now, because it adds
+  judge noise in the same generations CRN is removing it, and neither effect
+  could then be read.
 - **Open question, now with a measured answer:** neither v6 nor v7 has ever
   demonstrably learned to write better poetry once fitness is normalised by
   volume — and as of 2026-09-01 we know why it *couldn't*. Selection had no
