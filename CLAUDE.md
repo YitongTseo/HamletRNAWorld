@@ -251,7 +251,22 @@ changes or degenerate exploits, not learning. Per-worm fitness lives at
   baseline L1: pinned at 0 across a lineage means adapt_rate evolved to 0.
   Like the other lifelike genes, only a cold-started lineage evolves the two
   new params — every existing lineage (including `data-lifelike-2`) runs the
-  clipped defaults.
+  clipped defaults. **No longer true from 2026-09-21** — see the retrofit
+  below.
+- **Existing lineages now GAIN evolvable rule genes (2026-09-21).**
+  `migrate_genome_layout()` came from main written against the old linear gene
+  spec, and the merge kept the log-scaled one, so it referenced a name that no
+  longer existed. Every rollover on poetry-1/2/3 would have raised inside the
+  caller's try/except: state never written, corpus never reset, rollover
+  re-firing forever — evolution stopped on three of four units while the logs
+  said only "rollover raised; continuing". It is now ported to log
+  coordinates, which means it WORKS: on their next rollover the eight poetry
+  flasks get a `_lifelike` block appended to their genome (it sorts last, so
+  no existing index moves), seeded at the current defaults in genome
+  coordinates, with zero eps for the live children. Behaviour is continuous on
+  the first generation and the rule genes drift from then on. **Expect a
+  transient, and do not read the first few generations after the deploy as
+  learning.**
 - **Open question, now with a measured answer:** neither v6 nor v7 has ever
   demonstrably learned to write better poetry once fitness is normalised by
   volume — and as of 2026-09-01 we know why it *couldn't*. Selection had no
@@ -300,7 +315,10 @@ Since 2026-09-01, poetry-1/2/3 run **lifelike mode** (`WORMLET_PLASTICITY`,
 **poetry-4 is the stock control arm** — don't enable it there without
 recording why. Worms can now starve to death on 1/2/3; watch
 `deaths.jsonl` per flask. These lineages predate the feature, so their
-`_lifelike` genes stay at clipped defaults and never evolve.
+`_lifelike` genes ran at clipped defaults — until the 2026-09-21 retrofit,
+which appends the gene block on the next rollover for any flask with the
+lifelike flags on. poetry-4 has them off, so it is untouched and stays the
+control arm.
 
 ```bash
 sudo -n systemctl restart wormlet-poetry-1        # canary one first
