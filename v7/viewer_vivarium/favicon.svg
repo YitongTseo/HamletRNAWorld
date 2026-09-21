@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The nematode, at 16 px: one undulation of the body, ochre head.
+
+     Design notes, since favicons are all constraint. The mark is a single
+     sine because that is the one thing about this animal that survives
+     downsampling — a diagonal or S-shaped worm turns into an anonymous
+     smudge at 16 px, a wave still reads as a wave (checked at 16, 32 and
+     96). Colours are the site's Tobacco & Ochre palette: tobacco ground
+     (#292118) so the tile holds its shape against light AND dark browser
+     chrome, cream cuticle (#faf5e9) as on the agar, ochre (#cfa348) at the
+     head — the same accent the viewer uses, and it says which end eats.
+     The translucent under-stroke is the sheath from the canvas renderer
+     (viewer/index.js), kept because it softens the aliased edge at small
+     sizes. Deliberately NOT per-experiment themed: every experiment is the
+     same worm, and a tab icon that changes colour by subdomain is noise. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="7" fill="#292118"/>
+  <g fill="none" stroke-linecap="round">
+    <path d="M4 19 C 7.5 10, 12.5 10, 16 17 C 19.5 24, 24.5 24, 28 15"
+          stroke="#ece2cd" stroke-opacity="0.20" stroke-width="8"/>
+    <path d="M4 19 C 7.5 10, 12.5 10, 16 17 C 19.5 24, 24.5 24, 28 15"
+          stroke="#faf5e9" stroke-width="4.2"/>
+    <path d="M25.5 19.65 C 26.39 18.52, 27.23 16.98, 28 15"
+          stroke="#cfa348" stroke-width="4.2"/>
+  </g>
+</svg>

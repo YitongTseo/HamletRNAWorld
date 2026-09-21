@@ -62,6 +62,40 @@
   root.style.setProperty("--font-serif", '"Instrument Serif", serif');
   root.style.setProperty("--font-mono", '"Fragment Mono", ui-monospace, monospace');
 
+  // Where THIS script was loaded from. server/ui_variant.py's page() rewrites
+  // the bare static path in the HTML to a per-variant one as it serves the
+  // page, but it can't touch a path baked into a .js file — a hardcoded
+  // prefix here would keep fetching the DEFAULT variant's favicon even when
+  // this copy is running under ?ui=classic (tests/test_ui_variant.py::
+  // test_no_static_refs_outside_html fails the build on exactly that kind of
+  // literal outside HTML). Derive it instead from our own <script> tag's
+  // resolved src.
+  function selfPrefix() {
+    var el = document.currentScript;
+    if (!el) {
+      // Only null for type="module" scripts per spec (not used here) or a
+      // script inserted after parsing — fall back to finding our own tag by
+      // filename; it is always in the document by the time we run.
+      var scripts = document.getElementsByTagName("script");
+      for (var i = scripts.length - 1; i >= 0; i--) {
+        if (/palette\.js/.test(scripts[i].src)) { el = scripts[i]; break; }
+      }
+    }
+    var src = el.src;
+    return src.slice(0, src.lastIndexOf("/") + 1);
+  }
+
+  // Favicon. Injected here for the same reason the fonts are: this is the one
+  // file every page loads in <head>, so the tab mark arrives without editing
+  // six HTML files (and the next page can't forget it). Browsers that ignore
+  // SVG icons fall back to /favicon.ico, which the server answers with the
+  // same file.
+  var icon = document.createElement("link");
+  icon.rel = "icon";
+  icon.type = "image/svg+xml";
+  icon.href = selfPrefix() + "favicon.svg?v=1";
+  document.head.appendChild(icon);
+
   // Expose for other scripts (e.g. the worm canvas reads --accent/--stage).
   window.__paletteMode = mode;
   window.__palettes = PALETTES;

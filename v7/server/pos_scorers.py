@@ -245,9 +245,56 @@ def score_semantic(eaten: list[str]) -> float:
     return float(count)
 
 
+# ----- noun SHARE (added 2026-09-05) ------------------------------------
+# Why this exists, and why `nouns` was never a test of selectivity.
+#
+# score_nouns is a COUNT. A worm that eats 6x more words at an unchanged noun
+# share scores 6x higher. The `all` vs `chemo` control ran 1,071 and 1,063
+# generations on it and the result was exactly that: arm A's words-per-life
+# went 28.9 -> 175.6 (6.1x) while its noun share sat at 23.6% -> 23.1%, against
+# a corpus base rate of 22.6%. Selection did precisely what it was told; nobody
+# had told it to be selective. The docstring on score_nouns asks "can selection
+# steer the chemosensation toward a POS class?" and the function cannot answer
+# that question, because volume dominates its gradient.
+#
+# The information is available: a cross-validated logistic probe on the same 12
+# smell channels the worm receives separates NOUN from non-NOUN at AUC 0.80
+# (0.85 with an RBF expansion) over act1's 8,051 edible tokens, and eating only
+# the top-quartile-smelliest words would give 64.5% nouns against the 26.8%
+# base rate (scripts/probe_smell_decodability.py). So the nose can tell the
+# difference; the objective just never paid for using it.
+#
+# The floor is the same device as FITNESS_WINDOW_FLOOR in the poetry fitness:
+# without it, "eat exactly one noun and stop" scores a perfect 1.0. With it, a
+# worm must eat NOUN_SHARE_FLOOR words before share is measured on its true
+# denominator, so the cheapest way to a high score is to eat a normal amount
+# selectively rather than to eat almost nothing. 30 is roughly generation-1
+# volume in the control (28.9 words/life), i.e. the worms start at the floor
+# and cannot get paid for volume beyond it.
+NOUN_SHARE_FLOOR = int(os.environ.get("WORMLET_NOUN_SHARE_FLOOR", "30"))
+
+
+def score_noun_share(eaten: list[str]) -> float:
+    """Fraction of eaten words that are NOUNs, with the denominator floored.
+
+        score = nouns / max(words, NOUN_SHARE_FLOOR)
+
+    Bounded in [0, 1], so unlike score_nouns there is no reward for volume
+    once the floor is cleared — the only way up is to be choosier. Punctuation
+    is excluded from both numerator and denominator, matching score_words.
+    """
+    if not eaten:
+        return 0.0
+    tags = tag_sequence(eaten)
+    words = sum(1 for t in tags if t != ".")
+    nouns = sum(1 for t in tags if t == NOUN)
+    return float(nouns) / float(max(words, NOUN_SHARE_FLOOR))
+
+
 SCORERS = {
     "words": score_words,
     "nouns": score_nouns,
+    "noun_share": score_noun_share,
     "pos_chain": score_pos_chain,
     "semantic": score_semantic,
 }

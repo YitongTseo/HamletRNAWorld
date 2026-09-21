@@ -36,6 +36,7 @@ import numpy as np
 from corpus.hamlet import is_non_reactive  # punctuation set is in PUNCTUATION below
 from server.evolution import (
     SIGMA_INIT, GAMMA, EMOTIONAL_WEIGHT, FITNESS_WINDOW_FLOOR, N_ELITES,
+    EVOLVE_MASK, build_evolve_mask,
     evolve_generation, fitness, flatten_weights, unflatten_weights, WeightDict,
 )
 from server.gardener import maybe_write_log
@@ -526,7 +527,7 @@ def run_generation_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
-        scheme=SIGMA_SCHEME, scale=scale,
+        scheme=SIGMA_SCHEME, mask=build_evolve_mask(parent_keys), scale=scale,
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma
@@ -574,6 +575,13 @@ def run_generation_rollover(
         # cross-flask fitness is never one comparable history.
         "corpus": getattr(getattr(worms[0], "world", None), "corpus", None)
                   or "hamlet",
+        # Which [start, stop) lines this generation read. Absent for corpora
+        # that show their whole text every generation; present for beowulf,
+        # where consecutive generations read DIFFERENT windows and a fitness
+        # trend across them is a trend across two texts, not two connectomes.
+        **({"corpus_window": list(win)}
+           if (win := getattr(getattr(worms[0], "world", None),
+                              "corpus_window", None)) else {}),
         "sigma_used": state.sigma,
         "sigma_next": new_sigma,
         "sigma_scheme": ng.scheme,
@@ -775,7 +783,7 @@ def run_experiment_rollover(
     ng = evolve_generation(
         parent_vec, state.sigma, genomes, epses, is_elite_flags, scores_list,
         n_elites=N_ELITES, rng=rng, parent_fitness=state.prev_fresh_mean,
-        scheme=SIGMA_SCHEME, scale=scale,
+        scheme=SIGMA_SCHEME, mask=build_evolve_mask(parent_keys), scale=scale,
     )
     new_parent_vec = ng.new_parent
     new_sigma = ng.new_sigma

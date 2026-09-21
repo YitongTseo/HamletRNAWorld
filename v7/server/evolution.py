@@ -33,6 +33,7 @@ Public API:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -59,6 +60,44 @@ TRUST_RADIUS = 0.5       # hard cap: |Δθ| ≤ TRUST_RADIUS · σ · √d, so t
                          # can never move further than the cloud of children it
                          # actually measured. 0.5 ≈ the mean-shift-per-generation
                          # that CMA-ES uses (1/√μ_eff for μ_eff≈4).
+# --- shape of a mutation ----------------------------------------------------
+#
+# Degrees of freedom of the Student-t the children are drawn from. Set it to
+# float("inf") for the plain Gaussian, which is what every generation before
+# 2026-08-16 used and is how the A/B in tests/test_evolution.py is written.
+# (Not None: the helpers take df=None to mean "use this default", and one
+# sentinel doing both jobs silently turned an A/B into two identical runs.)
+#
+# WHY NOT GAUSSIAN. Real mutational effects are not bell-shaped. The measured
+# distributions are L-shaped and heavy-tailed: in Chlamydomonas MA lines, 95%
+# of mutations changed the expression of 0-1 genes and a 5% tail changed tens
+# or hundreds, and a single variance parameter provably fails to describe them
+# (higher moments differ between genes). Evolution mostly makes small
+# adjustments and occasionally makes a large one; a Gaussian makes neither —
+# it makes middling ones, always, in every coordinate at once.
+#
+# WHY IT DOESN'T BREAK THE ESTIMATOR (the claim I got wrong first time). The
+# eps in the NES update is not "the perturbation", it is the SCORE of the
+# search distribution, ∇_θ log p(x−θ). For an isotropic Gaussian that score
+# happens to equal eps, which is why the two are usually written the same way.
+# Swap the sampling law and the estimator stays exact provided you swap the
+# score with it. For a Student-t the score is
+#
+#     s(u) = (ν+1)·u / (ν + u²)          u = the standardised variate
+#
+# which rises, peaks, and then REDESCENDS. So the heavy tail buys genuine
+# large mutations while the update refuses to be hijacked by one: a child at
+# 10σ contributes about a fifth of what a child at 1σ contributes. That is a
+# redescending M-estimator, and it is exactly the property you want when a
+# lucky judge score lands on a wild outlier.
+#
+# ν=3 rather than 1 (Cauchy, as in fast evolutionary programming): ν>2 keeps
+# the variance finite, so σ still means what the σ-controllers and the trust
+# region assume it means. The variates are rescaled to unit variance for the
+# same reason. xNES's σ signal (‖eps‖²/d − 1) keeps its zero mean under that
+# rescaling but gets noisier; the live arms run vs_mean, which is unaffected.
+MUTATION_DF: float = 3.0
+
 GAMMA = 1.5              # fitness exponent — lowered (was 2.5) so a worm that
                          # is consistently language-like beats one lucky window
 EMOTIONAL_WEIGHT = 1.5   # vs 1.0 for coherence
@@ -253,7 +292,11 @@ def nes_update(
     rw = rank_weights(n)
     weighted_eps = np.zeros_like(parent)
     for rank, child_idx in enumerate(order):
-        weighted_eps += rw[rank] * eps_list[child_idx]
+        # The score of the search distribution, NOT the raw perturbation. They
+        # are the same thing for a Gaussian; under the heavy-tailed default
+        # (MUTATION_DF) the score redescends, so a freak child cannot drag the
+        # parent out past the cloud it actually measured.
+        weighted_eps += rw[rank] * mutation_score(eps_list[child_idx])
 
     # Natural-gradient step: magnitude scales WITH sigma.
     # With a per-dimension `scale` the search distribution is
@@ -296,6 +339,64 @@ def adapt_sigma(sigma: float, success_rate: float) -> float:
 
 # --- helpers --------------------------------------------------------------
 
+# --- which coordinates evolution is allowed to touch --------------------------
+# WORMLET_EVOLVE_MASK freezes part of the connectome so the search runs in a
+# smaller space. This is the highest-leverage knob in the file, and it is pure
+# arithmetic: an ES gradient built from `lambda` children in `d` dimensions
+# aligns with the true gradient by roughly sqrt(lambda/d). At the full genome
+# with 5 fresh children that is sqrt(5/3689) = 0.037 — every step is 96%
+# random, and no judge or model fixes it. Measured on this connectome:
+#
+#   mode      d      alignment @5 children   @15 children
+#   all     3689           0.037                0.064
+#   chemo2  1417           0.059                0.103
+#   chemo    228           0.148                0.256
+#
+# So freezing the motor circuitry is worth ~4x, free, where TRIPLING the
+# population is worth 1.7x at triple the cost (sqrt scaling is unforgiving).
+#
+# The cut is biological, not arbitrary: 24 amphid neurons carry smell into the
+# brain and 228 synapses leave them — those decide "what does this word taste
+# like and which way do I turn". The other ~3,461 are the crawling machinery. A
+# real C. elegans does not re-evolve how to crawl in order to learn what to
+# eat. What you give up is solutions routed through the motor circuit, which in
+# this project's history have mostly been the degenerate exploits.
+#
+# The lifelike rule genes are ALWAYS in the search — they are 7 coordinates and
+# they are the learning machinery itself, not locomotion.
+#
+# "all" restores today's behaviour exactly and is how the A/B is written.
+EVOLVE_MASK = os.environ.get("WORMLET_EVOLVE_MASK", "all").strip() or "all"
+
+
+def build_evolve_mask(keys: list[tuple[str, str]],
+                      mode: str | None = None) -> np.ndarray | None:
+    """Boolean mask over the flattened genome, or None for "evolve everything".
+
+    None (not an all-True mask) is deliberate: it keeps the unmasked path
+    byte-identical to before this existed, so "all" cannot regress."""
+    mode = (EVOLVE_MASK if mode is None else mode).strip()
+    if mode in ("", "all", "none", "0"):
+        return None
+    from sim.chemosensory_mapping import PC_NEURON_PAIRS
+    from sim.lifelike import LIFELIKE_KEY
+
+    amphid = {n for pair in PC_NEURON_PAIRS for n in pair}
+    if mode == "chemo":
+        allowed_src = amphid
+    elif mode == "chemo2":
+        # Also the first interneuron layer: everything the amphids synapse ONTO.
+        allowed_src = amphid | {t for (s, t) in keys if s in amphid}
+    else:
+        raise ValueError(
+            f"unknown WORMLET_EVOLVE_MASK {mode!r} — use all, chemo or chemo2")
+    mask = np.array([s in allowed_src or s == LIFELIKE_KEY for (s, _t) in keys],
+                    dtype=bool)
+    if not mask.any():
+        raise ValueError(f"WORMLET_EVOLVE_MASK={mode} matched no coordinates")
+    return mask
+
+
 def spawn_population(parent: np.ndarray, n: int, sigma: float,
                      rng: np.random.Generator,
                      scale: np.ndarray | None = None
@@ -328,10 +429,67 @@ def spawn_population(parent: np.ndarray, n: int, sigma: float,
     children: list[np.ndarray] = []
     step = sigma if scale is None else sigma * scale
     for _ in range(n):
-        eps = rng.standard_normal(parent.shape)
+        eps = sample_eps(parent.shape, rng)
         eps_list.append(eps)
         children.append(parent + step * eps)
     return children, eps_list
+
+
+def _t_scale(df: float) -> float:
+    """Factor that rescales a raw t_ν variate to unit variance (Var = ν/(ν−2))."""
+    return float(np.sqrt((df - 2.0) / df))
+
+
+def sample_eps(shape, rng: np.random.Generator,
+               df: float | None = None) -> np.ndarray:
+    """One mutation vector: unit-variance, heavy-tailed by default.
+
+    Unit variance is what keeps sigma meaning the same thing it meant under
+    the Gaussian, so the sigma controllers and the trust region need no
+    retuning (see MUTATION_DF)."""
+    df = MUTATION_DF if df is None else df
+    if not np.isfinite(df):
+        return rng.standard_normal(shape)
+    # MULTIVARIATE t: ONE chi-square scale for the whole child, not an
+    # independent draw per coordinate. This is the difference between "every
+    # synapse rolls its own dice" and "this individual carries a large-effect
+    # mutation", and at this dimensionality it is the whole ball game.
+    # Measured at d=3696, per-child ||eps||/sqrt(d):
+    #
+    #   Gaussian            p05 0.98  med 1.00  p99 1.03  max  1.04
+    #   independent t3      p05 0.91  med 0.97  p99 1.36  max  2.90
+    #   multivariate t3     p05 0.35  med 0.66  p99 3.20  max 29.5
+    #
+    # Concentration of measure eats per-coordinate tails: sum 3,696 of them
+    # and every child comes out the same size, which is exactly the
+    # middling-change-everywhere behaviour the Gaussian was rejected for.
+    # With a shared scale, 21% of children carry a mutation >1.5x the median
+    # and most carry less — the L-shape, at the level it is actually measured
+    # in nature (an individual, not a coordinate).
+    z = rng.standard_normal(shape)
+    w = rng.chisquare(df) / df
+    return _t_scale(df) * z / np.sqrt(w)
+
+
+def mutation_score(eps: np.ndarray, df: float | None = None) -> np.ndarray:
+    """∇_θ log p of the search distribution, in the same units as eps.
+
+    Identity for the Gaussian — which is why the NES update could always be
+    written in terms of eps directly — and redescending for the Student-t, so
+    an outlier child informs the step less than a moderate one rather than
+    more (MUTATION_DF)."""
+    df = MUTATION_DF if df is None else df
+    if not np.isfinite(df):
+        return eps
+    # Score of the MULTIVARIATE t: (nu+d)*u / (nu + ||u||^2), a per-child
+    # scalar times the direction. It redescends in ||eps||, so the child that
+    # gets down-weighted is the wildly-mutated INDIVIDUAL — the right unit,
+    # since that is what the judge scored. Reduces to eps as nu -> inf, and to
+    # ~eps for a typical child at finite nu.
+    c = _t_scale(df)
+    u = eps / c
+    d = u.size
+    return ((df + d) * u / (df + float(np.dot(u, u)))) / c
 
 
 @dataclass
@@ -364,6 +522,7 @@ def evolve_generation(
     parent_fitness: float | None = None,
     prev_best_fitness: float | None = None,  # deprecated alias for parent_fitness
     scheme: str = "vs_mean",                 # Exp-2 σ-control A/B (σ-update only)
+    mask: np.ndarray | None = None,          # coords evolution may touch
     scale: np.ndarray | None = None,         # per-dimension step size (see spawn_population)
 ) -> NextGen:
     """One generation of elitist NES (Changes 2 + 4 + 5).
@@ -384,6 +543,38 @@ def evolve_generation(
     genomes (top-n_elites carried verbatim, the rest fresh NES samples).
     """
     n = len(genomes)
+
+    # --- optional subspace projection (WORMLET_EVOLVE_MASK) ------------------
+    # Everything below runs at the MASKED dimension, so sample_eps, the
+    # multivariate-t score (which divides by d) and the trust region
+    # (sigma*sqrt(d)) all see the true size of the search. Masking eps after
+    # the fact would leave all three computing against d=3689 and quietly
+    # mis-scale every step.
+    full_parent = parent_vec
+    full_genomes = genomes
+    if mask is not None:
+        parent_vec = parent_vec[mask]
+        genomes = [g[mask] for g in genomes]
+        # Merge note (2026-09-21): `mask` and `scale` were written two weeks
+        # apart on separate lines and had never met. Both index by genome
+        # coordinate, so a full-length scale against a masked parent is a shape
+        # mismatch — restrict it here with everything else, or every masked run
+        # with lifelike genes dies in spawn_population.
+        if scale is not None:
+            scale = scale[mask]
+        # eps is persisted full-length, so the normal case is a plain restrict.
+        # Anything else is a genome from before a layout change: drop it rather
+        # than guess, exactly as a missing eps is dropped.
+        epses = [e[mask] if (e is not None and e.shape == full_parent.shape)
+                 else None for e in epses]
+
+    def _expand(reduced: np.ndarray, base: np.ndarray) -> np.ndarray:
+        """Masked coords from `reduced`, everything else from `base`."""
+        if mask is None:
+            return reduced
+        out = base.copy()
+        out[mask] = reduced
+        return out
 
     # --- NES gradient from fresh children only (Change 2) ---
     # Elites are not Gaussian samples of THIS parent, so including them would
@@ -425,7 +616,11 @@ def evolve_generation(
     # --- elitism: carry the top-n_elites genomes verbatim (Change 5) ---
     ranked = sorted(range(n), key=lambda i: -fitnesses[i])
     k = min(max(0, n_elites), n)
-    elite_genomes = [genomes[i].copy() for i in ranked[:k]]
+    # Elites carry their OWN full genome, not the parent's frozen half. Under a
+    # stable mask the frozen coords are identical anyway; if the mask ever
+    # changes mid-lineage this is what stops the expansion silently rewriting
+    # the part of a genome evolution is no longer allowed to see.
+    elite_genomes = [full_genomes[i].copy() for i in ranked[:k]]
 
     # --- fill the rest with fresh samples of the UPDATED parent ---
     n_fresh = n - k
@@ -435,9 +630,14 @@ def evolve_generation(
     else:
         fresh_children, fresh_child_eps = [], []
 
-    next_genomes = elite_genomes + fresh_children
-    next_epses: list[np.ndarray | None] = [None] * k + fresh_child_eps
+    new_parent_full = _expand(new_parent, full_parent)
+    next_genomes = elite_genomes + [_expand(c, new_parent_full) for c in fresh_children]
+    # eps is stored full-length (zero on frozen coords) so the on-disk format
+    # is unchanged and a mask change cannot produce a length mismatch.
+    next_epses: list[np.ndarray | None] = [None] * k + [
+        _expand(e, np.zeros_like(full_parent)) for e in fresh_child_eps]
     next_is_elite = [True] * k + [False] * n_fresh
+    new_parent = new_parent_full
 
     return NextGen(
         new_parent=new_parent,

@@ -8,21 +8,6 @@
     <style>
       html, body { margin: 0; padding: 0; height: 100%; background: var(--bg, #292118); color: var(--fg, #ece2cd); }
       body { font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; display: flex; flex-direction: column; }
-      header {
-        display: flex; align-items: baseline; justify-content: space-between; gap: 18px;
-        padding: 22px 34px 16px; border-bottom: 1px solid #3a3226;
-      }
-      header h1 { margin: 0; font-family: var(--font-serif, serif); font-style: italic;
-                  font-weight: 400; font-size: 26px; letter-spacing: 0.01em; color: var(--fg); }
-      header h1 b { font-weight: 400; color: var(--accent); }
-      header h1 small { font-weight: 300; font-size: 10px; letter-spacing: 0.08em;
-                        color: var(--dim); margin-left: 14px; font-style: normal; }
-      header h1 small a { color: var(--dim); }
-      header nav { font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase;
-                   font-family: var(--font-mono, monospace); }
-      header nav a { color: var(--dim); text-decoration: none; padding: 4px 8px; }
-      header nav a:hover { color: var(--accent); }
-      header nav a.here { color: var(--accent); }
       #columns {
         flex: 1; display: flex; flex-direction: column; gap: 16px;
         padding: 4px 18px 18px 18px; overflow: auto; min-height: 0;
@@ -75,13 +60,8 @@
       #status { padding: 4px 18px; color: var(--dim, #5a5); font-size: 11px; }
     </style>
   </head>
-  <body>
-    <header>
-      <h1><a href="/" style="color:inherit;text-decoration:none;">wormlet <b>vivarium</b></a>
-        <small>an experiment by <a href="https://www.ternalbiota.com" target="_blank" rel="noopener">Yitong</a></small></h1>
-      <nav><a href="/">worms</a><a href="/poems" class="here">poems</a><a href="/generations">generations</a><a href="/about">about</a></nav>
-      <div id="experiment-switcher"></div>
-    </header>
+  <body data-page="poems">
+    <script src="/static/header.js?v=1"></script>
     <div id="status">loading…</div>
     <div id="columns"></div>
     <script src="/static/experiment_dropdown.js?v=2"></script>

@@ -43,6 +43,51 @@
   }
   root.setAttribute("data-mode", mode);
 
+  // Type. header.js (shared with viewer_vivarium/) styles its h1 from
+  // var(--font-serif,...) and its nav from var(--font-mono,...) so one file
+  // can serve both trees' typography. Vivarium sets these to Instrument
+  // Serif / Fragment Mono and pulls the matching Google Fonts stylesheet;
+  // classic has always been one plain monospace face, so both variables
+  // just point at the same local stack here — no network fetch, and the
+  // header renders in classic's own type instead of falling back to
+  // header.js's built-in (serif) default.
+  root.style.setProperty("--font-serif", "ui-monospace, SFMono-Regular, Menlo, monospace");
+  root.style.setProperty("--font-mono", "ui-monospace, SFMono-Regular, Menlo, monospace");
+
+  // Where THIS script was loaded from. server/ui_variant.py's page() rewrites
+  // the bare static path in the HTML to a per-variant one as it serves the
+  // page, but it can't touch a path baked into a .js file — a hardcoded
+  // prefix here would keep fetching the DEFAULT variant's favicon even when
+  // this copy is running under ?ui=vivarium (tests/test_ui_variant.py::
+  // test_no_static_refs_outside_html fails the build on exactly that kind of
+  // literal outside HTML). Derive it instead from our own <script> tag's
+  // resolved src.
+  function selfPrefix() {
+    var el = document.currentScript;
+    if (!el) {
+      // Only null for type="module" scripts per spec (not used here) or a
+      // script inserted after parsing — fall back to finding our own tag by
+      // filename; it is always in the document by the time we run.
+      var scripts = document.getElementsByTagName("script");
+      for (var i = scripts.length - 1; i >= 0; i--) {
+        if (/palette\.js/.test(scripts[i].src)) { el = scripts[i]; break; }
+      }
+    }
+    var src = el.src;
+    return src.slice(0, src.lastIndexOf("/") + 1);
+  }
+
+  // Favicon. Injected here for the same reason as the theme itself: this is
+  // the one file every page loads in <head>, so the tab mark arrives
+  // without editing six HTML files (and the next page can't forget it).
+  // Browsers that ignore SVG icons fall back to /favicon.ico, which the
+  // server answers with the same file.
+  var icon = document.createElement("link");
+  icon.rel = "icon";
+  icon.type = "image/svg+xml";
+  icon.href = selfPrefix() + "favicon.svg?v=1";
+  document.head.appendChild(icon);
+
   // Expose for other scripts (e.g. the worm canvas reads --accent/--stage).
   window.__paletteMode = mode;
   window.__palettes = PALETTES;

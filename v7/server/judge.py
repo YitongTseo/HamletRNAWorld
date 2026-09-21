@@ -47,7 +47,15 @@ STRIDE = 15  # non-overlapping; matches the spec
 #     every repeat, hiding the variance of WHICH windows get drawn. Resampling
 #     windows each rep (production-faithful) flips it: more windows = MORE
 #     reproducible (m=5 τ 0.37 vs 25% τ 0.60). So we KEEP the 25% sample.
-SAMPLE_FRACTION = 0.25  # judge ~25% of windows (~40 for a full poem)
+#   * Made tunable without a deploy 2026-09-01. The trend above has no reason to
+#     stop at 25% — 1.0 scores EVERY window and removes which-windows-drawn
+#     variance entirely. It is NOT the default because it roughly quadruples
+#     judge tokens (~NZD 60/month at 30 worms and 10 generations a day, against
+#     ~NZD 15 at 0.25), and because the common-random-numbers fix landing the
+#     same day (server/app.py COMMON_SEED) removes a larger noise source for
+#     free. Measure whether CRN alone restores an elite advantage BEFORE paying
+#     for this — changing both at once tells you nothing about either.
+SAMPLE_FRACTION = float(os.environ.get("WORMLET_JUDGE_SAMPLE_FRACTION", "0.25"))
 SAMPLE_N = None         # (was 5, reverted) fixed-count path unused; fraction wins
 JUDGE_TEMPERATURE = 0.0
 MODEL = "claude-haiku-4-5"
