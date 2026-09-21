@@ -173,9 +173,18 @@ def migrate_genome_layout(state: "GenerationState", worms: list[Worm]) -> bool:
     if not keys or state.parent_vector is None:
         return False          # cold start handles itself via ensure_params
 
-    names = sorted(lifelike.PARAM_SPEC)
+    # Ported to log coordinates, 2026-09-21. This function arrived from main
+    # written against the linear PARAM_SPEC; the merge kept the log-scaled
+    # GENE_SPEC, so the retrofit now writes what the rest of the engine reads.
+    # The defaults come from ensure_params — the SAME call step 1 makes on
+    # every worm below — rather than from the spec directly: filling the parent
+    # centroid from one source and the worms from another would leave the two
+    # disagreeing by exp() on every gene, a uniform offset that reads as drift
+    # and would be attributed to selection.
+    default_block = lifelike.ensure_params({})[lifelike.LIFELIKE_KEY]
+    names = sorted(default_block)
     added = [(lifelike.LIFELIKE_KEY, n) for n in names]
-    defaults = [lifelike.PARAM_SPEC[n][0] for n in names]
+    defaults = [default_block[n] for n in names]
 
     # 1) every live worm's genome on disk, or the rollover's flatten of it
     #    will be shorter than the parent it is compared against.
@@ -480,7 +489,7 @@ def run_generation_rollover(
     if migrate_genome_layout(state, worms):
         _n = len(state.parent_vector)
         print(f"[GENERATIONS] {state.group_name}: migrated genome layout — "
-              f"_lifelike genes now evolve ({_n - len(lifelike.PARAM_SPEC)} "
+              f"_lifelike genes now evolve ({_n - len(lifelike.GENE_SPEC)} "
               f"-> {_n} dims)", flush=True)
 
     parent_vec = np.array(state.parent_vector, dtype=np.float64)
@@ -740,7 +749,7 @@ def run_experiment_rollover(
     if migrate_genome_layout(state, worms):
         _n = len(state.parent_vector)
         print(f"[GENERATIONS] {state.group_name}: migrated genome layout — "
-              f"_lifelike genes now evolve ({_n - len(lifelike.PARAM_SPEC)} "
+              f"_lifelike genes now evolve ({_n - len(lifelike.GENE_SPEC)} "
               f"-> {_n} dims)", flush=True)
 
     parent_vec = np.array(state.parent_vector, dtype=np.float64)

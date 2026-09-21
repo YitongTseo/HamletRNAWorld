@@ -95,7 +95,7 @@ def test_lifelike_block_sorts_last_so_migration_is_an_append():
     assert after_keys[:n] == before_keys, "existing genome indices moved"
     assert np.array_equal(after_vec[:n], before_vec), "existing weights changed"
     assert all(k[0] == lifelike.LIFELIKE_KEY for k in after_keys[n:])
-    assert len(after_keys) == n + len(lifelike.PARAM_SPEC)
+    assert len(after_keys) == n + len(lifelike.GENE_SPEC)
 
 
 def test_migration_extends_state_and_every_worm_together():
@@ -109,7 +109,7 @@ def test_migration_extends_state_and_every_worm_together():
 
         assert generations.migrate_genome_layout(state, worms) is True
 
-        n_genes = len(lifelike.PARAM_SPEC)
+        n_genes = len(lifelike.GENE_SPEC)
         assert len(state.parent_vector) == n_before + n_genes
         assert len(state.parent_keys) == n_before + n_genes
 
@@ -120,9 +120,14 @@ def test_migration_extends_state_and_every_worm_together():
             assert len(vec) == len(state.parent_vector)
             assert [list(k) for k in keys] == state.parent_keys
 
-        # Seeded at the current hardcoded defaults => behaviour is continuous.
-        for i, name in enumerate(sorted(lifelike.PARAM_SPEC)):
-            assert state.parent_vector[n_before + i] == lifelike.PARAM_SPEC[name][0]
+        # Seeded at the current defaults => behaviour is continuous. The
+        # values are GENOME coordinates (log/logit since 2026-08-16), read from
+        # the same ensure_params the migration writes into each worm — if the
+        # parent were seeded from phenotype values instead, parent and children
+        # would differ by exp() on every gene from the first generation.
+        block = lifelike.ensure_params({})[lifelike.LIFELIKE_KEY]
+        for i, name in enumerate(sorted(block)):
+            assert state.parent_vector[n_before + i] == block[name]
 
 
 def test_migration_is_idempotent_and_skips_the_control_arm():
@@ -163,7 +168,7 @@ def test_live_children_get_zero_eps_on_the_new_dimensions():
                  for n in ("Alice", "Bob")]
         generations.migrate_genome_layout(state, worms)
 
-        n_genes = len(lifelike.PARAM_SPEC)
+        n_genes = len(lifelike.GENE_SPEC)
         alice = state.children["Alice"]["eps"]
         assert len(alice) == d + n_genes
         assert alice[:d] == [0.5] * d, "recorded exploration was altered"
@@ -198,55 +203,51 @@ def test_scale_none_and_all_ones_are_bit_identical():
     assert np.array_equal(ua, ub)
 
 
-def test_each_gene_steps_by_the_same_fraction_of_its_own_range():
-    """The reason for scaling at all: under one isotropic sigma, starve_gain
-    (range 0..3) explores 6x more slowly than eta (range 0..0.5)."""
-    names = sorted(lifelike.PARAM_SPEC)
+def test_genome_scale_is_all_ones_under_log_coordinates():
+    """Replaces three tests of per-gene step sizes (2026-09-21 merge).
+
+    Two designs solved the same problem — one sigma cannot serve seven genes
+    with seven different units — and the log-coordinate one survived: genes
+    are stored as log(rate)/logit, so one sigma is the same proportional
+    change for every gene and there is nothing left for a per-gene step to
+    correct. genome_scale() is kept as API (generations.py calls it) but must
+    stay all-ones, because scaling an already-proportional coordinate a second
+    time would make each gene explore at (hi - lo) times the intended rate.
+
+    The tests this replaces asserted the linear design directly: that each
+    gene stepped by the same fraction of its own RANGE, that the trust region
+    was sigma*||scale||, and that a _lifelike key scaled to (hi - lo). All
+    three are statements about coordinates the engine no longer uses. If
+    per-gene scaling ever comes back, this test is the tripwire: it fails, and
+    the merge note in sim/lifelike.py says what the decision was.
+    """
+    names = sorted(lifelike.GENE_SPEC)
     keys = [("ADAL", "ADAR")] + [(lifelike.LIFELIKE_KEY, n) for n in names]
-    scale = np.array(lifelike.genome_scale(keys))
-    parent = np.array([1.0] + [lifelike.PARAM_SPEC[n][0] for n in names])
+    scale = lifelike.genome_scale(keys)
+    assert scale == [1.0] * len(keys)
+    assert lifelike.is_isotropic(scale), "all-ones scale must take the None path"
+
+    # state.json stores [src, tgt] lists, not tuples — the JSON shape must not
+    # change the answer.
+    assert lifelike.genome_scale([["ADAL", "ADAR"], ["_lifelike", "starve_gain"]]) \
+        == [1.0, 1.0]
+
+
+def test_one_sigma_moves_every_gene_by_the_same_proportion():
+    """What replaced per-gene step sizes: in log coordinates an additive step
+    of sigma is a multiplicative step of exp(sigma) on the phenotype, the same
+    proportion for a 0..0.5 gene and a 5..600 one. This is the property the
+    linear design needed a scale vector to fake."""
+    import math
     sigma = 0.02
-
-    # A one-sigma perturbation, expressed as a fraction of each gene's range.
-    fractions = []
-    for i, n in enumerate(names, start=1):
-        _d, lo, hi = lifelike.PARAM_SPEC[n]
-        fractions.append(sigma * scale[i] / (hi - lo))
-    assert max(fractions) - min(fractions) < 1e-12, \
-        f"genes explore at different rates: {dict(zip(names, fractions))}"
-    assert abs(fractions[0] - sigma) < 1e-12
-
-    # Connectome weights keep their historical absolute step.
-    assert scale[0] == 1.0
-
-    # And the scaled spawn really does move a wide-range gene further.
-    rng = np.random.default_rng(0)
-    children, _ = evolution.spawn_population(parent, 200, sigma, rng, scale=scale)
-    spread = np.std(np.array(children), axis=0)
-    i_starve = 1 + names.index("starve_gain")
-    i_eta = 1 + names.index("eta")
-    assert spread[i_starve] > 5 * spread[i_eta], \
-        "wide-range gene should move proportionally further in absolute units"
-
-
-def test_scaled_trust_region_matches_the_sampling_radius():
-    """The trust region caps |dtheta| at the radius the children were
-    actually sampled at; with a scale vector that radius is sigma*||s||,
-    not sigma*sqrt(d)."""
-    names = sorted(lifelike.PARAM_SPEC)
-    keys = [("ADAL", "ADAR")] * 50 + [(lifelike.LIFELIKE_KEY, n) for n in names]
-    scale = np.array(lifelike.genome_scale(keys))
-    parent = np.zeros(len(keys))
-    rng = np.random.default_rng(1)
-    _children, eps = evolution.spawn_population(parent, 8, 1.0, rng, scale=scale)
-    # Enormous lr so the trust region is definitely the binding constraint.
-    out = evolution.nes_update(parent, eps, list(range(8)), sigma=1.0,
-                               lr=1e6, scale=scale)
-    cap = evolution.TRUST_RADIUS * 1.0 * float(np.linalg.norm(scale))
-    assert float(np.linalg.norm(out - parent)) <= cap * (1 + 1e-9)
-
-
-def test_genome_scale_handles_json_pairs_from_state_file():
-    """state.json stores [src, tgt] lists, not tuples."""
-    keys = [["ADAL", "ADAR"], ["_lifelike", "starve_gain"]]
-    assert lifelike.genome_scale(keys) == [1.0, 3.0]
+    block = lifelike.ensure_params({})[lifelike.LIFELIKE_KEY]
+    ratios = []
+    for name, (kind, default, _lo, _hi) in lifelike.GENE_SPEC.items():
+        if kind != "log":
+            continue      # logit genes are proportional in odds, not in value
+        moved = lifelike._from_gene(name, block[name] + sigma)
+        ratios.append(moved / default)
+    assert ratios, "no log-scaled genes found"
+    assert max(ratios) - min(ratios) < 1e-9, \
+        f"genes move by different proportions: {ratios}"
+    assert abs(max(ratios) - math.exp(sigma)) < 1e-9
