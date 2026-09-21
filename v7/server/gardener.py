@@ -436,6 +436,31 @@ def _meta_log_root(flasks_root: Path) -> Path:
     return flasks_root / "meta"
 
 
+def _gardener_every_n() -> int:
+    """WORMLET_GARDENER_EVERY_N_EPOCHS: run the meta-gardener on every Nth
+    epoch only. 1 (default) = every epoch, as before. Read at call time so a
+    drop-in + restart changes it. Junk or <1 means 1 — an unparseable value
+    must not silence the gardener for good."""
+    raw = os.environ.get("WORMLET_GARDENER_EVERY_N_EPOCHS", "").strip()
+    if not raw:
+        return 1
+    try:
+        n = int(raw)
+    except ValueError:
+        return 1
+    return n if n >= 1 else 1
+
+
+def _gardener_epoch_due(generation_num: int) -> bool:
+    """Which epochs the gardener writes on. Keyed off the epoch number, not a
+    counter in memory, so a restart can't reset the cadence — and epoch 1 always
+    writes, because the first log of a lineage is the one worth having."""
+    n = _gardener_every_n()
+    if n <= 1:
+        return True
+    return generation_num <= 1 or generation_num % n == 0
+
+
 def _read_meta_log(meta_root: Path, gen: int) -> str | None:
     path = meta_root / f"gen-{gen:04d}" / "gardeners_log.md"
     return path.read_text().strip() if path.exists() else None
@@ -667,12 +692,31 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
       Round 2: shows the round-1 selected poems. Gardener picks ≤3 MORE.
       Round 3: shows everything + the round-2 poems. Gardener writes
                ≤2 sentences or PASS.
-    Returns the written log path or None (PASSed / disabled / API error)."""
+    Returns the written log path or None (PASSed / disabled / API error /
+    not this epoch's turn)."""
     if os.environ.get("WORMLET_GARDENER", "1") == "0":
         return None
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     if not flasks:
+        return None
+    if not _gardener_epoch_due(generation_num):
+        # Cost cadence (2026-09-21): these are three Opus calls carrying every
+        # worm's metrics, by far the most expensive thing a rollover does, and
+        # nothing downstream selects on them — the log is prose. Skipping is
+        # recorded as `.deferred`, NOT as the gardener choosing to rest: PASS is
+        # the gardener's decision and belongs to the artwork, this is ours.
+        epoch_dir = _meta_log_root(_generations_root()) / f"gen-{generation_num:04d}"
+        try:
+            epoch_dir.mkdir(parents=True, exist_ok=True)
+            (epoch_dir / "gardeners_log.deferred").write_text(
+                f"not the gardener's turn: WORMLET_GARDENER_EVERY_N_EPOCHS="
+                f"{_gardener_every_n()}\n"
+            )
+        except Exception:
+            pass
+        print(f"[GARDENER] epoch {generation_num}: skipped by cadence "
+              f"(every {_gardener_every_n()} epochs)", flush=True)
         return None
 
     generations_root = _generations_root()
@@ -702,24 +746,34 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
         {"type": "text", "text": META_GARDENER_TONE},
     ]
 
-    def _shared_context(extra_poems_rendered: str = "") -> str:
-        """The block the gardener sees in every round: this epoch's full
-        per-worm metrics + last 5 logs + their metrics + any poems they've
-        asked for so far."""
-        sections = [
-            f"# Epoch {generation_num} — per-worm metrics across all flasks\n\n{this_epoch_metrics}",
-            f"# Last {META_AUTO_LOG_COUNT} gardener's logs (auto-shown every round)\n\n{auto_logs_rendered}",
-            f"# Metrics for those last {META_AUTO_LOG_COUNT} epochs\n\n{auto_metrics_rendered}",
-        ]
+    # The block the gardener sees in every round: this epoch's full per-worm
+    # metrics + last 5 logs + their metrics. Byte-identical across all three
+    # rounds of this epoch, so it gets its own cache breakpoint below — the
+    # three rounds used to re-send every worm's metrics at full Opus input
+    # price. Whatever varies per round (poems chosen so far, the round's
+    # instructions) must stay AFTER the breakpoint or nothing caches.
+    shared_prefix = "\n\n".join([
+        f"# Epoch {generation_num} — per-worm metrics across all flasks\n\n{this_epoch_metrics}",
+        f"# Last {META_AUTO_LOG_COUNT} gardener's logs (auto-shown every round)\n\n{auto_logs_rendered}",
+        f"# Metrics for those last {META_AUTO_LOG_COUNT} epochs\n\n{auto_metrics_rendered}",
+    ])
+
+    def _user_blocks(instructions: str, extra_poems_rendered: str = "") -> list[dict]:
+        tail = []
         if extra_poems_rendered:
-            sections.append(f"# Poem windows you have already chosen to read\n\n{extra_poems_rendered}")
-        return "\n\n".join(sections)
+            tail.append(f"# Poem windows you have already chosen to read\n\n{extra_poems_rendered}")
+        tail.append(instructions)
+        return [
+            {"type": "text", "text": shared_prefix,
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "\n\n".join(tail)},
+        ]
 
     # --- Round 1: pick first batch of poems ---
     r1_picks: list[dict] = []
     try:
         if keepalive: keepalive()
-        user = _shared_context() + "\n\n" + META_PICK_INSTRUCTIONS_R1.format(max_poems=META_POEMS_PER_ROUND)
+        user = _user_blocks(META_PICK_INSTRUCTIONS_R1.format(max_poems=META_POEMS_PER_ROUND))
         resp = client.messages.create(
             model=MODEL,
             max_tokens=MAX_SELECTION_TOKENS,
@@ -739,7 +793,8 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
     r2_picks: list[dict] = []
     try:
         if keepalive: keepalive()
-        user = _shared_context(r1_rendered) + "\n\n" + META_PICK_INSTRUCTIONS_R2.format(max_poems=META_POEMS_PER_ROUND)
+        user = _user_blocks(META_PICK_INSTRUCTIONS_R2.format(max_poems=META_POEMS_PER_ROUND),
+                            r1_rendered)
         resp = client.messages.create(
             model=MODEL,
             max_tokens=MAX_SELECTION_TOKENS,
@@ -758,7 +813,7 @@ def maybe_write_meta_log(flasks, generation_num: int, keepalive=None) -> Path | 
     # --- Round 3: write the log ---
     try:
         if keepalive: keepalive()
-        user = _shared_context(all_poems_rendered) + "\n\n" + META_WRITE_INSTRUCTIONS
+        user = _user_blocks(META_WRITE_INSTRUCTIONS, all_poems_rendered)
         resp = client.messages.create(
             model=MODEL,
             max_tokens=MAX_LOG_TOKENS,

@@ -30,6 +30,7 @@ sudo systemctl daemon-reload
 | `sigma-scheme.conf` | 1–4 | `vs_elite` on 1–3, `sigma_anneal` on 4 (standing comparison from the Exp-2 σ A/B). |
 | `ui.conf` | 1–4 | `WORMLET_UI=classic`. Either UI is still reachable per-request with `?ui=`. |
 | `lifelike.conf` | **1–3 only** | Plasticity + hunger + habituation. **poetry-4 is deliberately the stock control arm — do not add this there** without recording why, or the comparison is lost. |
+| `cost.conf` | 1–4 | `WORMLET_GARDENER_EVERY_N_EPOCHS=2` — the meta-gardener (three Opus calls an epoch, each carrying all 128 worms' metrics) writes every second epoch instead of every one. Judge sampling is deliberately not cut here; the file says why. Goes on **all four** — the gardener is not part of the lifelike/control comparison, so an uneven cadence would only make its record patchy. |
 
 Note `.bak-*` files may sit beside these in `/etc`; systemd only loads `*.conf`,
 so they are inert history and are not tracked here.
