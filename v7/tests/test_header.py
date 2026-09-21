@@ -77,9 +77,18 @@ def test_header_styles_only_from_palette_variables():
 def test_overview_reshades_with_the_theme():
     """index.html names its colours after the bench; those names must be
     aliases of the palette, or the overview stays tobacco on every other
-    experiment subdomain while the rest of the site reshades."""
-    s = (VIEWER / "index.html").read_text()
-    for private, shared in (("--bench", "--bg"), ("--ivory", "--fg"),
-                            ("--ochre", "--accent")):
-        assert re.search(rf"{private}:\s*var\({shared}", s), \
-            f"{private} is not an alias of {shared}"
+    experiment subdomain while the rest of the site reshades.
+
+    Checked per tree and only where the private name is actually used: the
+    classic overview (2026-09-21 merge) styles straight from --bg/--fg/--accent
+    and has no bench names to alias, while the vivarium one still carries them.
+    The rule is "don't define a private colour that ignores the palette", not
+    "define these three names"."""
+    for tree in (VIEWER, V7 / "viewer_vivarium"):
+        s = (tree / "index.html").read_text()
+        for private, shared in (("--bench", "--bg"), ("--ivory", "--fg"),
+                                ("--ochre", "--accent")):
+            if not re.search(rf"{private}\s*:", s):
+                continue
+            assert re.search(rf"{private}:\s*var\({shared}", s), \
+                f"{tree.name}: {private} is not an alias of {shared}"

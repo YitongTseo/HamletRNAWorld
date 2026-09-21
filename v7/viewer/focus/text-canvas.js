@@ -15,6 +15,26 @@ import { isMobile } from './responsive.js';
 import { drawPcaPopup, isPcaVisible } from './pca-popup.js';
 
 // ---------------------------------------------------------------------------
+// Desire layer palette. Ported from the vivarium front-end, but reading the
+// experiment palette instead of its hardcoded ochre — this file is shared by
+// every experiment mode (poetry/nouns/adj_noun/pos_chain), each with its own
+// accent, so a fixed color would clash in four of them.
+// ---------------------------------------------------------------------------
+function _rgbOf(cssVar, fallback) {
+  let v = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim() || fallback;
+  if (v[0] === '#') {
+    if (v.length === 4) v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+    return [parseInt(v.slice(1, 3), 16), parseInt(v.slice(3, 5), 16), parseInt(v.slice(5, 7), 16)];
+  }
+  const m = v.match(/-?\d+(\.\d+)?/g);
+  return m ? m.slice(0, 3).map(Number) : [102, 255, 153];
+}
+// Read once: palette.js sets these on <html> before any module loads, and the
+// mode never changes within a page load.
+const DESIRE_ACCENT = _rgbOf('--accent', '#6f9');
+const DESIRE_GLOW   = _rgbOf('--fg', '#afa');
+
+// ---------------------------------------------------------------------------
 // Canvas + 2D context
 // ---------------------------------------------------------------------------
 const textcanvas = document.getElementById('textcanvas');
@@ -93,18 +113,22 @@ function drawTextCanvas(state) {
 
   // Desire layer ('d' key): per-word pull = the summed chemosensory
   // activation this word currently produces in the worm's nose — the sim's
-  // own numbers (distance × direction × meaning × hunger gain), not a
-  // recomputation. Salience, not steering: the turn decision uses the L/R
-  // split, but "which word does it want most" is honestly this sum.
-  // Keyed by rounded coords — snapshot food and smells round identically.
-  let desireByPos = null, desireMax = 0, desireTop = null;
+  // own numbers (distance x direction x meaning x hunger gain), not a
+  // recomputation here. Salience, not steering: the turn decision uses the
+  // L/R split, but "which word does it want most" is honestly this sum.
+  // Keyed by (line_id, word_idx) — the same identity wordFoodMap uses. NOT
+  // by coordinates: smells are recomputed on brain ticks (2 Hz) while food
+  // is snapshotted every frame (60 Hz), so the scroller has already moved
+  // the word ~5 px by the time both reach the client and a coordinate join
+  // matches nothing at all.
+  let desireByWord = null, desireMax = 0, desireTop = null;
   if (state.desireVisible && state.smellsData && state.smellsData.length) {
-    desireByPos = new Map();
+    desireByWord = new Map();
     for (const smell of state.smellsData) {
       let pull = 0;
       for (const v of Object.values(smell.neurons || {})) pull += v;
       if (pull <= 0) continue;
-      desireByPos.set(`${smell.x},${smell.y}`, pull);
+      desireByWord.set(`${smell.line_id}_${smell.word_idx}`, pull);
       if (pull > desireMax) { desireMax = pull; desireTop = smell; }
     }
   }
@@ -122,23 +146,28 @@ function drawTextCanvas(state) {
   }
 
   // Desire heatmap: additive radial glows under the words, so overlapping
-  // pulls stack into genuine heat. Drawn before the text so words stay
-  // crisp on top.
-  if (desireByPos && desireMax > 0) {
+  // pulls stack into genuine heat. Drawn before the text so words stay crisp
+  // on top.
+  if (desireByWord && desireMax > 0) {
     tctx.save();
     tctx.globalCompositeOperation = 'lighter';
+    const [ar, ag, ab] = DESIRE_ACCENT, [gr, gg, gb] = DESIRE_GLOW;
     for (const smell of state.smellsData) {
-      const pull = desireByPos.get(`${smell.x},${smell.y}`);
+      const pull = desireByWord.get(`${smell.line_id}_${smell.word_idx}`);
       if (pull === undefined) continue;
       const t = pull / desireMax;
-      const [gx, gy] = worldToScreen(smell.x, smell.y);
+      // Position from the CURRENT food snapshot when we have it: the smell
+      // carries where the word was on the last brain tick, which the
+      // scroller has since moved. Falling back to the smell's own coords
+      // just reinstates the small lag.
+      const fresh = wordFoodMap.get(`${smell.line_id}_${smell.word_idx}`);
+      const [gx, gy] = worldToScreen(fresh ? fresh.x : smell.x,
+                                     fresh ? fresh.y : smell.y);
       const radius = 22 + 46 * t;
       const g = tctx.createRadialGradient(gx, gy, 0, gx, gy, radius);
-      // dark-field: a pale cool luminance, like light catching the agar —
-      // desire reads as brightness, not fire (V6 observation-log restyle)
-      g.addColorStop(0.0, `rgba(236, 226, 205, ${0.20 * t + 0.03})`);
-      g.addColorStop(0.45, `rgba(207, 163, 72, ${0.09 * t})`);
-      g.addColorStop(1.0, 'rgba(207, 163, 72, 0)');
+      g.addColorStop(0.0, `rgba(${gr},${gg},${gb},${0.20 * t + 0.03})`);
+      g.addColorStop(0.45, `rgba(${ar},${ag},${ab},${0.09 * t})`);
+      g.addColorStop(1.0, `rgba(${ar},${ag},${ab},0)`);
       tctx.fillStyle = g;
       tctx.beginPath();
       tctx.arc(gx, gy, radius, 0, Math.PI * 2);
@@ -158,14 +187,15 @@ function drawTextCanvas(state) {
     // blue-grey so it recedes — echoes the bluish word color in the overview
     // view. `edible !== false` so older payloads (no flag) default to edible.
     const edible = item.edible !== false;
-    // Desire tint: cold white → warm amber → hot orange as the worm's pull
-    // toward this word rises, glow strength following. Words outside smell
-    // range (no entry) stay stock.
-    const pull = desireByPos ? desireByPos.get(`${item.x},${item.y}`) : undefined;
+    // Desire tint: wanted words brighten and pull toward the palette accent,
+    // unwanted ones stay quiet. Words outside smell range (no entry) render
+    // exactly as they always did.
+    const pull = desireByWord ? desireByWord.get(`${item.line_id}_${item.word_idx}`) : undefined;
     if (edible && pull !== undefined && desireMax > 0) {
       const t = pull / desireMax;                    // 0..1 this frame
-      // wanted words whiten and sharpen; unwanted stay quiet ivory
-      tctx.fillStyle = `rgba(${216 + 39 * t | 0}, ${228 + 27 * t | 0}, ${235 + 20 * t | 0}, ${isHovered ? 1.0 : 0.55 + 0.45 * t})`;
+      const [ar, ag, ab] = DESIRE_ACCENT, k = 0.45 * t;
+      const mix = c => (255 + (c - 255) * k) | 0;    // white -> accent
+      tctx.fillStyle = `rgba(${mix(ar)},${mix(ag)},${mix(ab)},${isHovered ? 1.0 : 0.55 + 0.45 * t})`;
     } else if (edible) {
       tctx.fillStyle = isHovered ? 'rgba(255,255,255,1.0)' : 'rgba(255,255,255,0.7)';
     } else {
@@ -178,10 +208,13 @@ function drawTextCanvas(state) {
 
   // Halo the single strongest pull — the word the worm most wants right now.
   if (desireTop) {
-    const [dx, dy] = worldToScreen(desireTop.x, desireTop.y);
+    const topFresh = wordFoodMap.get(`${desireTop.line_id}_${desireTop.word_idx}`);
+    const [dx, dy] = worldToScreen(topFresh ? topFresh.x : desireTop.x,
+                                   topFresh ? topFresh.y : desireTop.y);
     const breathe = 0.5 + 0.5 * Math.sin(performance.now() / 500);
     const r = 18 + 5 * breathe;
-    tctx.strokeStyle = `rgba(207, 163, 72, ${0.35 + 0.35 * breathe})`;
+    const [ar, ag, ab] = DESIRE_ACCENT;
+    tctx.strokeStyle = `rgba(${ar},${ag},${ab},${0.35 + 0.35 * breathe})`;
     tctx.lineWidth = 1.5;
     tctx.beginPath();
     tctx.arc(dx, dy, r, 0, Math.PI * 2);
@@ -190,9 +223,7 @@ function drawTextCanvas(state) {
 
   // PCA popup for nearest hovered word — only when the user has opened it
   // via the dock (glyph [x,y]). Default = closed.
-  // Popup only while the pointer is HELD on a word — a hover-triggered
-  // preview read as visual noise (user feedback); press-and-hold to inspect.
-  if (isPcaVisible() && state.mouseDown && nearestWord && minDist < 80 && pcaData) {
+  if (isPcaVisible() && nearestWord && minDist < 80 && pcaData) {
     drawPcaPopup(nearestWord.word, mouseScreenPos, pcaData);
   }
 }

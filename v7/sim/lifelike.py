@@ -292,3 +292,70 @@ def pop_params(weights: dict | None) -> dict[str, float]:
         "adapt_rate":    rate(phen["tau_adapt_s"]),
         "dishab_relief": phen["dishab_relief"],
     }
+
+
+# --- UNRESOLVED MERGE DECISION (2026-09-21) --------------------------------
+# Two fixes for ONE problem, written two weeks apart on two branches that
+# never met. The problem: a single additive sigma cannot serve seven learning-
+# rule genes with seven different units. At sigma=0.149 against a
+# `baseline_pull` default of 0.02, 54% of all worm-generations sat pinned at
+# zero forgetting — the genes were noise, not search.
+#
+#   * THIS branch (2026-08-16, ff943126): change the COORDINATES. Genes are
+#     stored as log(rate) / logit, so one sigma is a ~16% change whatever the
+#     units, and zero is unreachable. Measured pinning after: 0%. Three genes
+#     were renamed (tau_trace_s, tau_forget_s, tau_adapt_s) because the stored
+#     numbers now mean something else. Deployed: the jail runs this.
+#   * main (2026-09-01, 348d17f2): keep the coordinates, change the STEP.
+#     genome_scale() returns (hi - lo) per gene so one sigma means "this
+#     fraction of each gene's range", plus migrate_genome_layout() to retrofit
+#     the gene block into lineages that predate it.
+#
+# They are alternatives, not layers: apply both and each gene is rescaled
+# twice. They also disagree about live data — main's retrofit WRITES the three
+# key names (`trace_decay`, `baseline_pull`, `adapt_rate`) that this branch's
+# pop_params treats as the old format and ignores.
+#
+# What is actually on disk, checked rather than assumed: the live poetry
+# genomes carry NO gene block at all (`data/poetry-2/.../gen-0007/*/weights.json`
+# has no `_lifelike` key). Those lineages predate the feature and run clipped
+# defaults. Only the cold-started host lineages (data-trio-*) hold real genes,
+# and those are in log coordinates. So the two designs differ in what they DO
+# to the live fleet, not just in how they scale a step:
+#   * this branch leaves the 8 poetry flasks exactly as they are — learning
+#     rules stay fixed at defaults until a lineage is cold-started;
+#   * main's migrate_genome_layout() retrofits a gene block into them, which
+#     starts evolving the learning rules on lineages 101+ generations deep.
+# That is a decision about the artwork, not a merge conflict.
+#
+# Provisional resolution, chosen because it is the one that changes nothing:
+# keep the log coordinates and keep main's API, returning 1.0 everywhere — log
+# coordinates are ALREADY comparable, so there is nothing left for a per-gene
+# step to correct. is_isotropic() then sends generations.py down the
+# scale=None path, bit-identical to what production runs right now. Nothing is
+# lost: if the decision goes the other way, the bodies below are where main's
+# version goes back.
+#
+# THE DECISION IS WHOSE DESIGN SURVIVES, and it is not a code-review question:
+# whichever loses, its migration has to be disabled before a deploy, or every
+# live lineage's learning-rule genes silently reset to defaults on the next
+# rollover. See tests/test_genome_migration.py, which encodes main's design
+# and fails against this file on purpose.
+
+
+def genome_scale(parent_keys) -> "list[float]":
+    """Per-dimension NES step size for a flattened genome. All 1.0 under log
+    coordinates — see the merge note above. Kept so main's call sites in
+    server/generations.py run unchanged, and so restoring main's design is an
+    edit to one function rather than a re-merge.
+
+    `parent_keys` is the (source, target) list from flatten_weights, or the
+    JSON [source, target] pairs straight out of state.json."""
+    return [1.0 for _ in parent_keys]
+
+
+def is_isotropic(scale) -> bool:
+    """True when every entry is 1.0 — i.e. the scaled path is a no-op and the
+    caller can pass None to keep the arithmetic bit-identical to the
+    pre-scaling engine."""
+    return all(float(x) == 1.0 for x in scale)

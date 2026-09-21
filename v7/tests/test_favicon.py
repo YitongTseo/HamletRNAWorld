@@ -37,9 +37,18 @@ def test_every_page_loads_palette_js():
 
 
 def test_palette_injects_the_icon_link():
-    js = (VIEWER / "palette.js").read_text()
-    assert re.search(r'icon\.href\s*=\s*"/static/favicon\.svg', js)
-    assert 'icon.type = "image/svg+xml"' in js
+    """Was: assert the literal `icon.href = "/static/favicon.svg"`. That string
+    is now illegal — the two-tree merge (2026-09-21) brought in
+    test_ui_variant's rule that no .js may hardcode `/static/`, because
+    ui_variant.page() rewrites HTML only, so a hardcoded path would serve the
+    default variant's icon under ?ui=vivarium. The path is derived from the
+    script's own URL instead, so this checks the wiring, not the spelling."""
+    for tree in (VIEWER, V7 / "viewer_vivarium"):
+        js = (tree / "palette.js").read_text()
+        assert re.search(r'icon\.href\s*=\s*\w+\(\)\s*\+\s*"favicon\.svg', js), \
+            f"{tree.name}/palette.js does not build the icon href from its own prefix"
+        assert 'icon.type = "image/svg+xml"' in js, f"{tree.name}/palette.js"
+        assert (tree / "favicon.svg").exists(), f"{tree.name} has no favicon.svg"
 
 
 def test_server_answers_favicon_ico():
