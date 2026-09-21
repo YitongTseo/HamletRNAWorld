@@ -13,10 +13,14 @@ WORMLET_DEBUG_SECRET env var.
 from __future__ import annotations
 
 import asyncio
+import collections
+import gc
 import json
 import logging
 import os
+import resource
 import secrets
+import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -46,7 +50,7 @@ from sim.connectome import (
     SENSORY_NEURONS, CHEMOSENSORY_NEURONS, MOTOR_NEURONS,
 )
 from corpus.hamlet import get_sentences
-from sim.world import World, BODY_TICK_HZ
+from sim.world import World, BODY_TICK_HZ, LIVE_WORLDS
 
 from server.orchestrator import (
     load_worms, load_flasks, attach_flask_model, drain_and_persist, reset_worm,
@@ -1256,14 +1260,61 @@ async def favicon():
     return FileResponse(VIEWER_DIR / "favicon.svg", media_type="image/svg+xml")
 
 
+# (monotonic_at, rss_kb). at == 0.0 means never fetched; a None value IS
+# cached, so a host where ps fails costs one fork per TTL, not one per probe.
+_RSS_CACHE: tuple[float, int | None] = (0.0, None)
+_RSS_TTL_S = 30.0
+
+
+def _rss_kb() -> int | None:
+    """Current resident set size in KB, or None if `ps` won't say.
+
+    Shells out because FreeBSD has no /proc to read and the jail has no
+    psutil. Cached for _RSS_TTL_S: /healthz is hit by the metrics cron every
+    minute and by the health watchdog besides, and a fork per probe is a silly
+    price for a number that moves on the scale of minutes.
+
+    Exists because the long-run RSS climb has never actually been recorded.
+    On 2026-09-07 the process sat at 1.36 GB against a measured ~190 MB
+    baseline (13 MB bare, 116 MB after sim.world pulls in nltk, 124 MB with
+    all 30 Worlds built), with /debug/objects reporting 30/30 live Worlds and
+    ~200k gc-tracked objects — so ~1.1 GB is real but invisible to the object
+    census, and only a time series can say whether it GROWS. Between-rollover
+    slope means a leak; steps at rollovers that plateau mean the allocator is
+    holding a high-water mark and there is no leak to fix."""
+    global _RSS_CACHE
+    at, val = _RSS_CACHE
+    now = time.monotonic()
+    if at and now - at < _RSS_TTL_S:
+        return val
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())],
+                             capture_output=True, text=True, timeout=5)
+        val = int(out.stdout.strip())
+    except Exception:            # noqa: BLE001 — health must never 500 on this
+        val = None
+    _RSS_CACHE = (now, val)
+    return val
+
+
 @app.get("/healthz")
 async def healthz():
     now = time.monotonic()
     tick = WORMS[0].world.tick_count if WORMS else 0
+    # to_thread so the fork can never sit on the event loop: _start_tick_watchdog
+    # exits the process after a 20s tick stall, and /healthz is exactly what
+    # gets probed when the box is already struggling.
+    rss_kb = await asyncio.to_thread(_rss_kb)
     return JSONResponse({
         "tick": tick,
         "uptime_s": round(now - _STARTED_AT, 1),
         "last_tick_advance_s_ago": round(now - _LAST_TICK_AT, 2),
+        # Memory, for the leak hunt. rss_kb is current and can fall; peak only
+        # ever rises, which is the cleaner signal for a high-water ratchet.
+        # ru_maxrss is KB on FreeBSD and Linux alike (bytes on macOS — this
+        # never runs there).
+        "rss_kb": rss_kb,
+        "rss_peak_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         # The ACTUAL encoder in use, not a hardcoded label — this was pinned to
         # the string "learned" and so reported "learned" even after the process
         # was switched to the frozen UMAP encoder, which makes it useless for
@@ -2108,6 +2159,66 @@ async def debug_add_food(name: str, request: Request):
     body = await request.json()
     w.world.add_food(float(body["x"]), float(body["y"]))
     return {"name": name, "ok": True}
+
+
+def _deep_type_histogram(top: int) -> list[tuple[str, int]]:
+    """Full heap walk: every gc-tracked object, counted by type name. Runs in a
+    worker thread (see debug_objects) because it is O(heap) and this process
+    carries a multi-GB one."""
+    counts = collections.Counter(type(o).__name__ for o in gc.get_objects())
+    return counts.most_common(top)
+
+
+@app.get("/debug/objects", dependencies=[Depends(require_debug)])
+async def debug_objects(deep: int = 0, top: int = 40):
+    """Memory census for the long-run RSS climb (~MB/day, tick rate flat, so
+    it is pure retention rather than a growing per-tick cost).
+
+    The decisive number is `worlds.live` vs `worlds.expected`. The rollover
+    rebuilds every World once per generation, so they should stay equal. If
+    `live` climbs, the previous generations' Worlds are still referenced and
+    the leak is in whatever holds them; if it stays flat while RSS climbs, the
+    growth is NOT retained Worlds and the next step is tracemalloc / native
+    allocator territory.
+
+    Cheap by default: dict lengths and gc counters only, no heap walk. Pass
+    `?deep=1` for the by-type histogram, which walks the whole heap.
+
+    WARNING on deep=1: _start_tick_watchdog kills this process if
+    WORMS[0].world.tick_count stalls for 20s, and it reads tick_count
+    directly, so _generation_keepalive does NOT cover it. The walk is
+    therefore dispatched to a worker thread to keep the event loop (and the
+    sim) running. It is still GIL-heavy — use it sparingly, and not while a
+    rollover is in flight."""
+    out: dict = {
+        "worlds": {
+            # WeakValueDictionary — collected Worlds drop out on their own.
+            "live": len(LIVE_WORLDS),
+            "expected": len(WORMS),
+        },
+        "globals": {
+            "WORMS": len(WORMS),
+            "WORM_BY_KEY": len(WORM_BY_KEY),
+            "FLASKS": len(FLASKS),
+            "OVERVIEW_CLIENTS": len(OVERVIEW_CLIENTS),
+            "POEM_CLIENTS": len(POEM_CLIENTS),
+            # keys are never popped, only their sets drained — bounded by the
+            # flask/worm namespace, listed here so it can be ruled out on sight.
+            "FOCUS_CLIENTS": len(FOCUS_CLIENTS),
+        },
+        "gc": {
+            "counts": gc.get_count(),
+            "collected_per_gen": [s["collected"] for s in gc.get_stats()],
+            # Non-zero means objects the collector could not free (e.g. cycles
+            # through __del__) are piling up — a leak in its own right.
+            "uncollectable": len(gc.garbage),
+        },
+        "generation": (FLASKS[0].state.generation
+                       if FLASKS and FLASKS[0].state else None),
+    }
+    if deep:
+        out["by_type"] = await asyncio.to_thread(_deep_type_histogram, top)
+    return out
 
 
 # Static viewer files (JS/CSS) — mounted under /static so / and /ws take precedence.

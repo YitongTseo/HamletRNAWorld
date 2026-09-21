@@ -17,6 +17,7 @@ import json
 import math
 import os
 import random
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,6 +73,20 @@ class Food:
     line_id: int = -1
     word_idx: int = -1
     edible: bool = True  # False = inert set-dressing (no eat, no smell)
+
+
+# Diagnostic: every live World, keyed by id(). The rollover path
+# (server/app.py) replaces `w.world` once per generation, so the previous
+# generation's Worlds should be dereferenced and collected — leaving exactly
+# one live World per worm. If len(LIVE_WORLDS) climbs across generations,
+# something is still holding the old ones and THAT is the memory leak.
+#
+# WeakValueDictionary keyed by id() rather than a WeakSet because World is a
+# bare @dataclass: eq=True sets __hash__ = None, so instances are unhashable
+# and cannot go in a set. Entries vanish when the World is collected, so this
+# costs one dict insert per World built (~one per worm per generation) and
+# never itself retains anything.
+LIVE_WORLDS: "weakref.WeakValueDictionary[int, World]" = weakref.WeakValueDictionary()
 
 
 @dataclass
@@ -158,6 +173,7 @@ class World:
     death_record: dict | None = None
 
     def __post_init__(self):
+        LIVE_WORLDS[id(self)] = self   # diagnostic census; see LIVE_WORLDS
         self.rng = random.Random(self.seed)
         # Pop the _lifelike gene block BEFORE the dict reaches Connectome —
         # it's params, not a neuron. pop_params returns clipped values (or
