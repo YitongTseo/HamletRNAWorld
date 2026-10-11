@@ -73,6 +73,14 @@ Env deltas already baked into the units:
 
 ### Bring up a fresh host (e.g. wormfarm2)
 
+**Shortcut (2026-10-11):** `bin/bringup_wormfarm2.sh` does all of the below in
+one go — enables Tailscale SSH as a second door, pulls, checks venv/key, runs
+the tests, installs all 8 units + the tracked drop-ins + a host `memory.conf`
+(remapping `CPUAffinity` to the real core count), rewrites the cloudflared
+config and repoints the poetry hostnames at this box's tunnel
+(`--overwrite-dns`), then (re)starts everything. `POETRY_ONLY=1` skips the
+sanity experiments on a small box. Manual steps, for reference:
+
 ```
 git clone git@github.com:YitongTseo/HamletRNAWorld.git ~/HamletRNAWorld
 cd ~/HamletRNAWorld/v7
