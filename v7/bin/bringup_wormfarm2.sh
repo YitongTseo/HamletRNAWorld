@@ -41,7 +41,11 @@ echo "    sshd: $(systemctl is-active ssh 2>/dev/null || systemctl is-active ssh
 if command -v tailscale >/dev/null; then
   # Tailscale SSH is a second door that does not depend on sshd. Enable it so a
   # dead sshd can never lock us out again. Idempotent.
-  sudo tailscale set --ssh && echo "    tailscale ssh: enabled (works even if sshd dies)"
+  # --accept-risk: when run over Tailscale this reroutes the live session.
+  # NOTE: with the tailnet's default "check" ssh policy every new session needs
+  # a browser approval (~12h); set the ssh rule's action to "accept" in the
+  # Tailscale admin ACL to make it silent, or `sudo tailscale set --ssh=false`.
+  sudo tailscale set --ssh --accept-risk=lose-ssh && echo "    tailscale ssh: enabled (works even if sshd dies)"
 fi
 
 # ------------------------------------------------------------ 1. diagnostics
