@@ -1,0 +1,11 @@
+{
+ "revived_at": "2026-10-11T09:55:42Z",
+ "source": "../v6/data/generations/flask_2",
+ "resumed_generation": 104,
+ "parent_from": "gen-0104/Judy",
+ "archived_best_score": 189.87249318120772,
+ "archived_judge_model": "claude-haiku-4-5",
+ "archived_sigma_next": 0.02,
+ "sigma_used": 0.1,
+ "note": "v6 lineage from git (HamletRNAWorld v6/data/generations), 104 gens, judge claude-haiku-4-5, pre-2026-08-15 fitness regime"
+}
