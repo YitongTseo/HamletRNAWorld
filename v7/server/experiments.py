@@ -196,7 +196,12 @@ def by_mode(mode: str) -> Experiment | None:
 
 def all_for_dropdown() -> list[dict]:
     """Display-order list for the frontend dropdown. Each entry is a dict
-    safe to JSON-serialize into the page."""
+    safe to JSON-serialize into the page.
+
+    Poetry flasks only (2026-10-12): the deterministic POS sanity experiments
+    (words / nouns / noun_share / pos_chain / semantic) stay in the registry so
+    WORMLET_EXPERIMENT_MODE still runs them, but they are no longer offered in
+    the public switcher — wormfarm2 serves the poetry run alone."""
     return [
         {
             "mode": e.mode,
@@ -205,4 +210,5 @@ def all_for_dropdown() -> list[dict]:
             "blurb": e.blurb,
         }
         for e in EXPERIMENTS
+        if e.scorer is None
     ]

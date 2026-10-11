@@ -19,7 +19,14 @@ resume point:
                                               worm, else the winner)
   <data-dir>/generations/<flask>/gen-NNNN/    trimmed copy (what the purge
                                               leaves: scores + winner genome)
+                                              of the newest generation, or of
+                                              EVERY archived one with --all-gens
+                                              so /generations shows the whole
+                                              history
   <data-dir>/generations/<flask>/provenance.json
+
+--archive-only skips state.json and the live worm dirs (safe while the
+process is running) and only lays down the trimmed gen-NNNN copies.
 
 Stop the owning wormlet process first; start it after. The archived genomes
 have no _lifelike block — migrate_genome_layout appends it on the first
@@ -50,6 +57,36 @@ def gen_dirs(src: Path) -> list[tuple[int, Path]]:
     return sorted(out)
 
 
+def copy_archive(gens: list[tuple[int, Path]], gen_root: Path) -> int:
+    """Lay a trimmed copy of each (n, gen_dir) under gen_root: the files the
+    post-commit purge leaves behind (scores, per-worm fitness, flask metadata)
+    plus the winner's genome + poem. Skips a gen whose source IS the target.
+    Byte-identical copies, so git stores them as the blobs it already has."""
+    n_copied = 0
+    for _, gen_dir in gens:
+        dst_gen = gen_root / gen_dir.name
+        if gen_dir.resolve() == dst_gen.resolve():
+            continue
+        meta = json.loads((gen_dir / "metadata.json").read_text())
+        winner = (meta.get("ranks") or [None])[0]
+        if dst_gen.exists():
+            shutil.rmtree(dst_gen)
+        dst_gen.mkdir(parents=True)
+        for f in KEEP_FLASK:
+            if (gen_dir / f).exists():
+                shutil.copy2(gen_dir / f, dst_gen / f)
+        for wd in gen_dir.iterdir():
+            if not wd.is_dir():
+                continue
+            (dst_gen / wd.name).mkdir()
+            keep = KEEP_WORM + (KEEP_WINNER if wd.name == winner else ())
+            for f in keep:
+                if (wd / f).exists():
+                    shutil.copy2(wd / f, dst_gen / wd.name / f)
+        n_copied += 1
+    return n_copied
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, type=Path)
@@ -58,6 +95,10 @@ def main() -> int:
     ap.add_argument("--n-worms", type=int, default=16)
     ap.add_argument("--sigma", type=float, default=None)
     ap.add_argument("--note", default="")
+    ap.add_argument("--all-gens", action="store_true",
+                    help="copy a trimmed record of every archived generation, not just the newest")
+    ap.add_argument("--archive-only", action="store_true",
+                    help="only copy gen-NNNN records; leave state.json and live worms alone")
     a = ap.parse_args()
 
     gens = gen_dirs(a.src)
@@ -85,6 +126,11 @@ def main() -> int:
 
     gen_root = a.data_dir / "generations" / a.flask
     gen_root.mkdir(parents=True, exist_ok=True)
+    if a.archive_only:
+        n_copied = copy_archive(gens if a.all_gens else gens[-1:], gen_root)
+        print(f"{a.data_dir.name}/{a.flask}: archived {n_copied} generation record(s) "
+              f"from {a.src} (gen {gens[0][0]}..{N}); state + worms untouched")
+        return 0
     state = {
         "group_name": a.flask,
         "generation": N,
@@ -116,23 +162,8 @@ def main() -> int:
         src_seed = gen_dir / name / "seed.txt"
         (wdir / "seed.txt").write_text(src_seed.read_text() if src_seed.exists() else str(1000 + i))
 
-    # Trimmed archive of the resume generation (skip if src IS the dst tree).
-    dst_gen = gen_root / gen_dir.name
-    if gen_dir.resolve() != dst_gen.resolve():
-        if dst_gen.exists():
-            shutil.rmtree(dst_gen)
-        dst_gen.mkdir(parents=True)
-        for f in KEEP_FLASK:
-            if (gen_dir / f).exists():
-                shutil.copy2(gen_dir / f, dst_gen / f)
-        for wd in gen_dir.iterdir():
-            if not wd.is_dir():
-                continue
-            (dst_gen / wd.name).mkdir()
-            keep = KEEP_WORM + (KEEP_WINNER if wd.name == winner else ())
-            for f in keep:
-                if (wd / f).exists():
-                    shutil.copy2(wd / f, dst_gen / wd.name / f)
+    # Trimmed archive of the resume generation (or of every archived one).
+    copy_archive(gens if a.all_gens else gens[-1:], gen_root)
 
     (gen_root / "provenance.json").write_text(json.dumps({
         "revived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
