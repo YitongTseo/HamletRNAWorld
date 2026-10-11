@@ -1,0 +1,11 @@
+{
+ "revived_at": "2026-10-11T09:55:45Z",
+ "source": "data/poetry-2/generations/flask_2",
+ "resumed_generation": 7,
+ "parent_from": "gen-0007/Grace",
+ "archived_best_score": 30.021702452493255,
+ "archived_judge_model": "claude-haiku-4-5",
+ "archived_sigma_next": 0.1489590958144,
+ "sigma_used": 0.1,
+ "note": "own poetry-2 lineage from git (gen-0007, 2026-07-10)"
+}
