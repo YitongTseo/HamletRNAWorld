@@ -48,7 +48,7 @@ def test_pop_params_defaults_match_the_hand_tuned_phenotype():
     describe is the same one: the derived per-tick rates must land on the
     values that were hardcoded before the reparameterisation."""
     p = lifelike.pop_params(None)
-    assert p["eta"] == 0.05
+    assert abs(p["eta"] - 0.05) < 1e-9             # log/exp round trip; exact == fails on some libms
     assert abs(p["trace_decay"] - 0.85) < 0.01      # tau_trace 3 s
     assert abs(p["baseline_pull"] - 0.0124) < 1e-3  # tau_forget 40 s (was 0.02)
     assert abs(p["adapt_rate"] - 0.05) < 0.01       # tau_adapt 10 s
