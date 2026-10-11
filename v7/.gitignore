@@ -8,7 +8,14 @@
 # So the whole data/ tree is ignored. (Any data/ files still TRACKED from before
 # this change are intentionally left alone until an off-disk backup exists — do
 # NOT `git rm`/reset them, since those files live only on this disk.)
-data/
+# 2026-10-11: brains are archived in git again (WORMLET_GIT_COMMIT=1 on a
+# single host, see app.py epoch rollover). Only each poetry process's
+# generations/ tree is tracked; live flask state and the sanity experiments
+# stay ignored.
+data/*
+!data/poetry-*/
+data/poetry-*/*
+!data/poetry-*/generations/
 __pycache__/
 *.pyc
 .cloudflared/

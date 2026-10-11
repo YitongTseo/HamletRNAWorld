@@ -777,6 +777,26 @@ def _run_all_flask_rollovers_sync() -> None:
     else:
         LOG.info("epoch %d board publish skipped (disabled or no winner)", epoch_num)
 
+    # --- Optional: archive every worm's brain in git (WORMLET_GIT_COMMIT=1) ---
+    # Re-enabled 2026-10-11 now that ONE host runs all poetry processes: the
+    # four processes serialize on _repo_commit_lock, so the cross-server race
+    # that bloated history in July cannot recur. One commit per epoch carries
+    # every flask's generations/ tree + the meta log; the purge below then
+    # trims local disk, since git holds the full record again. Needs
+    # v7/.gitignore to let data/poetry-*/generations/ through.
+    committed = False
+    if os.environ.get("WORMLET_GIT_COMMIT", "0") == "1" and epoch_num >= 1:
+        from server.generations import _git_commit
+        paths = [GENERATIONS_ROOT / f.name for f in FLASKS] + [GENERATIONS_ROOT / "meta"]
+        paths = [q for q in paths if q.exists()]
+        msg = (f"epoch {epoch_num:04d} [{GENERATIONS_ROOT.parent.name}]: "
+               f"winner={global_winner_flask}/{global_winner_worm} ({global_winner_score:.3f})")
+        try:
+            committed = _git_commit(msg, paths, keepalive=_generation_keepalive)
+        except Exception:
+            LOG.exception("epoch %d git commit raised; data still on disk", epoch_num)
+        LOG.info("epoch %d git commit %s", epoch_num, "pushed" if committed else "skipped/failed")
+
     # --- Purge bulky files only after the winner is safely published ---
     # Global-winner policy: only the (global_winner_flask, global_winner_worm)
     # pair gets its weights.json + poem_clean.txt kept. Every other worm in
@@ -786,7 +806,7 @@ def _run_all_flask_rollovers_sync() -> None:
     # weights survive. Non-winner weights become ephemeral (as before, they were
     # only ever kept in git history).
     purge_anyway = os.environ.get("WORMLET_PURGE_ANYWAY", "0") == "1"
-    if published or purge_anyway:
+    if published or committed or purge_anyway:
         for flask in FLASKS:
             gen = flask.state.generation if flask.state else 0
             if gen < 1:

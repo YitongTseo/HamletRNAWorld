@@ -6,7 +6,9 @@
 #     bash ~/HamletRNAWorld/v7/bin/bringup_wormfarm2.sh
 #
 # Options (env vars):
-#     POETRY_ONLY=1      skip the 4 sanity experiments (saves RAM + CPU)
+#     POETRY_ONLY=1      poetry only: stop + disable the 4 sanity experiments
+#     GIT_BRAINS=0       don't commit+push every generation's brains to GitHub
+#                        (default 1: WORMLET_GIT_COMMIT=1 drop-in on the poetry units)
 #     SKIP_DNS=1         don't repoint the poetry hostnames at this tunnel
 #     SKIP_TESTS=1       don't run tests/run_all.py before starting
 #
@@ -54,10 +56,13 @@ echo "    previous boot ended: $(sudo journalctl --list-boots --no-pager 2>/dev/
 step "2. Update code"
 if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then
   echo "    stashing local edits:"; git -C "$REPO" status --short --untracked-files=no | sed 's/^/      /'
-  git -C "$REPO" stash -q && STASHED=1
+  # Kept in the stash, NOT popped: the per-epoch commit does `git pull --rebase`,
+  # which refuses to run over unstaged edits. `git stash list` to get them back.
+  git -C "$REPO" stash -q && echo "    (kept in 'git stash list')"
 fi
 git -C "$REPO" pull -q --ff-only origin main && echo "    pulled" || warn "git pull failed — continuing with the checked-out code"
-[ "${STASHED:-0}" = 1 ] && { git -C "$REPO" stash pop -q || warn "stash pop conflicted; your edits are in 'git stash list'"; }
+git -C "$REPO" config pull.rebase true
+git -C "$REPO" config rebase.autoStash true
 git -C "$REPO" log -1 --format='    at %h %ad %s' --date=short
 
 # ------------------------------------------------------------------ 3. venv
@@ -127,12 +132,26 @@ if [ "${POETRY_ONLY:-0}" != 1 ]; then
     printf '# %s: host memory ceiling\n[Service]\nMemoryMax=%s\n' "$(hostname)" "$SANITY_MEM" | sudo tee "/etc/systemd/system/$u.service.d/memory.conf" >/dev/null
   done
 fi
+# Archive brains in git: one commit per epoch per process, serialized by the
+# repo lock, then the local purge keeps the disk tidy. `zz-` so it sorts after
+# board.conf (drop-ins apply alphabetically; last wins).
+for u in "${POETRY[@]}"; do
+  if [ "${GIT_BRAINS:-1}" = 1 ]; then
+    printf '# push every generation'"'"'s brains to GitHub, then purge locally\n[Service]\nEnvironment=WORMLET_GIT_COMMIT=1\n' | sudo tee "/etc/systemd/system/$u.service.d/zz-git.conf" >/dev/null
+  else
+    sudo rm -f "/etc/systemd/system/$u.service.d/zz-git.conf"
+  fi
+done
+if [ "${POETRY_ONLY:-0}" = 1 ]; then
+  sudo systemctl disable -q --now "${SANITY[@]}" 2>/dev/null
+  echo "    sanity experiments: stopped + disabled (data kept under data/experiments/)"
+fi
 sudo mkdir -p /home/web/board_publish && sudo chown web:web /home/web/board_publish
 sudo cp "$V7/deploy/wormlet-healthcheck.service" "$V7/deploy/wormlet-healthcheck.timer" /etc/systemd/system/
 sudo install -m 0755 "$V7/deploy/wormlet-healthcheck" /usr/local/bin/wormlet-healthcheck
 sudo systemctl daemon-reload
 echo "    units: ${UNITS[*]}"
-echo "    drop-ins: $n_drop tracked + memory.conf (poetry $POETRY_MEM, sanity $SANITY_MEM); cores=$NCPU"
+echo "    drop-ins: $n_drop tracked + memory.conf (poetry $POETRY_MEM, sanity $SANITY_MEM) + git brains=${GIT_BRAINS:-1}; cores=$NCPU"
 
 # ------------------------------------------------------------ 6. cloudflare
 step "6. Cloudflare tunnel: serve ALL hostnames from this box"
