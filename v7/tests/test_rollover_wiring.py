@@ -55,7 +55,10 @@ def _make_worms(root: Path) -> list[FakeWorm]:
     return worms
 
 
-def _fake_judge(tokens, worm_name, seed=None, corpus="hamlet"):
+def _fake_judge(tokens, worm_name, seed=None, corpus="hamlet", **kwargs):
+    # **kwargs absorbs flask=/generation=, which the rollover now passes for
+    # the human backend's ballot path. A double that pins the signature turns
+    # every new optional kwarg into eight identical red tests.
     """W0 is clearly the best, W1 second, rest mediocre — a stable ranking."""
     score = {"W0": 90, "W1": 75}.get(worm_name, 25)
     return [ScoredWindow(0, tokens[:3], score, score)]

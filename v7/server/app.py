@@ -58,6 +58,7 @@ from server.orchestrator import (
 )
 from server.worm_group import WormGroup
 from server import flask_embedder as flask_emb
+from server.judge import JudgeAwaitingHuman
 from server import embedding
 from sim.flask_body import build_flask_body
 from server import generations as gens_mod
@@ -126,6 +127,16 @@ EMBEDDING_SEED: int = int(os.environ.get("WORMLET_EMBEDDING_SEED", "0"))
 
 GENERATION_PROGRESS = GenerationProgress()
 GENERATION_GRACE_S = 3.0           # seconds after corpus exhausts before scoring fires
+# A rollover that aborts leaves every flask's corpus_exhausted flag set, so
+# the 3s grace above is satisfied again immediately and the rollover re-fires
+# ~every 3 seconds. That is right for a transient judge outage and wrong for
+# WORMLET_JUDGE_BACKEND=human, where the "outage" is a person who has not sat
+# down yet: it would spin the whole judging phase and a log line every 3s for
+# hours. Back off instead. Only JudgeAwaitingHuman sets this — a real judge
+# failure keeps the fast retry it has always had.
+ROLLOVER_HUMAN_COOLDOWN_S = float(
+    os.environ.get("WORMLET_HUMAN_POLL_S", "60"))
+_ROLLOVER_RETRY_AFTER: float = 0.0  # time.monotonic() deadline; 0 = go now
 
 # Sentinel the external systemd healthcheck checks for: while it exists, the
 # watchdog skips probing/restarting (a rollover is intentionally busy). Lives
@@ -688,6 +699,13 @@ def _run_all_flask_rollovers_sync() -> None:
                                if flask.state.best_score_history else 0.0),
                 "generation": flask.state.generation,
             }
+        except JudgeAwaitingHuman as e:
+            # Not an error: the lineage is waiting for its verdict. INFO, no
+            # traceback, and back off so this does not repeat every 3s.
+            global _ROLLOVER_RETRY_AFTER
+            _ROLLOVER_RETRY_AFTER = time.monotonic() + ROLLOVER_HUMAN_COOLDOWN_S
+            LOG.info("%s — ballots filed, waiting %.0fs before re-checking",
+                     e, ROLLOVER_HUMAN_COOLDOWN_S)
         except Exception:
             LOG.exception("flask %s rollover raised; continuing", flask.name)
 
@@ -998,7 +1016,8 @@ async def sim_loop():
                         GENERATION_PROGRESS.phase = PHASE_CORPUS_DRAINING
                         LOG.info("epoch corpus exhausted; %.1fs grace before rollover",
                                  GENERATION_GRACE_S)
-                    elif time.monotonic() - epoch_exhausted_at >= GENERATION_GRACE_S:
+                    elif (time.monotonic() - epoch_exhausted_at >= GENERATION_GRACE_S
+                          and time.monotonic() >= _ROLLOVER_RETRY_AFTER):
                         epoch_exhausted_at = None
                         await _trigger_generation_rollover()
                 else:

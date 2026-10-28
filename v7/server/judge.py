@@ -18,8 +18,10 @@ Public API:
     judge_poem(tokens, worm_name, seed=None) -> list[ScoredWindow]
 
 The judge is pluggable: WORMLET_JUDGE_BACKEND=anthropic (default, the path
-described above) or openai (any OpenAI-compatible /v1/chat/completions —
-Ollama, LM Studio, llama.cpp server, vLLM). See the backend block below.
+described above), openai (any OpenAI-compatible /v1/chat/completions —
+Ollama, LM Studio, llama.cpp server, vLLM), or human (a person ranks the
+flask's worms through the bench UI; no LLM, no API spend). See the backend
+block below.
 """
 from __future__ import annotations
 
@@ -28,10 +30,12 @@ import os
 import random
 import re
 import socket
+import tempfile
 import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 import anthropic
 
@@ -72,6 +76,11 @@ MAX_OUTPUT_TOKENS = 8192  # 210 sampled windows × ~8 tokens output + buffer
 #     only the transport differs. Calibration is NOT: a small local model is a
 #     different critic, so fitness histories judged by different models must
 #     never be compared as if they were one judge.
+#   * "human" — a PERSON is the critic. No network call at all: the backend
+#     drops a ballot on disk, and reads back a verdict the bench UI wrote.
+#     Missing verdict raises JudgeAwaitingHuman, which the rollover's
+#     all-zero guard turns into "the lineage waits". See the human block
+#     further down for the full protocol and the scoring map.
 # Env is read at call time, not import, so tests and multi-process configs can
 # switch backends without reimporting the module.
 #   WORMLET_JUDGE_MODEL     required for openai (e.g. "gemma3:4b"); optional
@@ -99,6 +108,10 @@ def _judge_fallback() -> str | None:
 
 def _judge_model(backend: str | None = None) -> str:
     backend = backend or _judge_backend()
+    if backend == "human":
+        # Provenance needs to name WHO, not what: two people are two critics
+        # exactly the way two models are. Default is deliberately not a name.
+        return os.environ.get("WORMLET_JUDGE_HUMAN", "unnamed")
     if backend == "anthropic":
         # WORMLET_JUDGE_MODEL doubles as the anthropic override, but ONLY if
         # it names a claude model — when anthropic runs as the FALLBACK the
@@ -115,11 +128,17 @@ def _judge_model(backend: str | None = None) -> str:
     )
 
 
-def _openai_payload(user_prompt: str, corpus: str = "hamlet") -> dict:
+def _openai_payload(user_prompt: str, corpus: str = "hamlet",
+                    model: str | None = None) -> dict:
     """Request body for /chat/completions. No cache_control — OpenAI-compatible
-    servers don't speak it, and local models don't bill input anyway."""
+    servers don't speak it, and local models don't bill input anyway.
+
+    `model` overrides WORMLET_JUDGE_MODEL for callers that know which model
+    they want. The bench does: it would otherwise have to set the env var
+    around the call, and process-global state is not a safe way to pass an
+    argument in a server handling concurrent requests."""
     return {
-        "model": _judge_model("openai"),
+        "model": model or _judge_model("openai"),
         "max_tokens": MAX_OUTPUT_TOKENS,
         "temperature": JUDGE_TEMPERATURE,
         "stream": False,
@@ -153,7 +172,8 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: float) -> dict
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _complete_openai(user_prompt: str, corpus: str = "hamlet") -> str:
+def _complete_openai(user_prompt: str, corpus: str = "hamlet",
+                     model: str | None = None) -> str:
     base = os.environ.get("WORMLET_JUDGE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
     headers: dict[str, str] = {}
     key = os.environ.get("WORMLET_JUDGE_API_KEY")
@@ -174,7 +194,8 @@ def _complete_openai(user_prompt: str, corpus: str = "hamlet") -> str:
             time.sleep(delay)
         try:
             payload = _http_post_json(
-                base + "/chat/completions", _openai_payload(user_prompt, corpus),
+                base + "/chat/completions",
+                _openai_payload(user_prompt, corpus, model),
                 headers, timeout,
             )
             break
@@ -190,6 +211,190 @@ def _complete_openai(user_prompt: str, corpus: str = "hamlet") -> str:
         raise RuntimeError(
             f"unexpected /chat/completions response shape from {base}: {e!r}"
         ) from e
+
+
+# --- the human backend ------------------------------------------------------
+# WORMLET_JUDGE_BACKEND=human makes a PERSON the critic. There is no network
+# call, no model, and no API spend.
+#
+# WHAT THE PERSON ACTUALLY HAS TO DO, AND WHY IT IS SO LITTLE
+# ----------------------------------------------------------
+# Selection is rank-based. evolution.nes_update weights children by
+# evolution.rank_weights, and for a 10-worm flask that vector is
+#
+#     [1.331  0.638  0.233  -0.055  -0.278  -0.374 x5]
+#
+# Three facts follow, and they are the whole reason a human judge is viable:
+#   1. Absolute fitness VALUES are never read by the NES step — only the
+#      order. Any monotone rescaling of the numbers below changes nothing.
+#   2. The top three carry 100% of the positive gradient weight.
+#   3. Ranks 6-10 are mathematically IDENTICAL. There is no information in
+#      distinguishing the losers, so the UI must not ask anyone to try.
+# So one verdict = an ordered list of the best few worms. Not 10 rankings,
+# and emphatically not ~14 window scores x 10 worms the way an LLM judge is
+# asked for them.
+#
+# THE PROTOCOL — two directories under WORMLET_DATA_DIR
+# ----------------------------------------------------
+#   ballots/<flask>/gen-NNNN/<worm>.json    written by THIS backend
+#   verdicts/<flask>/gen-NNNN.json          written by the bench UI
+#
+# One ballot file PER WORM, never one merged file per generation: the per-worm
+# file is written with a single atomic rename and no read-modify-write, so an
+# aborted or re-fired rollover can never interleave two worms into a torn
+# ballot. The bench reads the directory.
+#
+# A ballot carries every sampled window, not the subset the bench chooses to
+# show. The record of what the worm produced must not depend on what the
+# reader was shown.
+#
+# Verdict shape:
+#   {"flask": "flask_1", "generation": 256, "judge": "joe",
+#    "decided_at": 1760000000.0,
+#    "top": ["<worm_a>", "<worm_b>", "<worm_c>"],      # ordered, 1-5 entries
+#    "starred": {"<worm_a>": [45, 120]},               # optional, keepsake
+#    "coherence": {"<worm_a>": {"45": 72}}}            # optional, see below
+#
+# STARS DELIBERATELY DO NOT ENTER FITNESS. They are a commonplace book of
+# lines worth keeping, and they annotate the generation artifacts. Letting
+# them move fitness would mean a heavily-starred third-place worm could
+# overtake first place — i.e. the arithmetic silently contradicting the
+# person's own stated order. `top` is the only selection signal, so the
+# fitness ordering provably equals the human's ordering.
+#
+# THE TWO AXES. The person scores ONE thing: is this fragment any good. That
+# lands on `emotional`. `coherence` ("reads as language rather than noise")
+# is mechanical, so the bench may fill it from a local model and put it in
+# the verdict; when it does, the two axes keep meaning what they say. When
+# the verdict has no coherence block — local model offline, or never
+# configured — coherence MIRRORS emotional, and the column then carries no
+# independent information. Check metadata.json's judge_model before reading
+# anything into a human lineage's coherence numbers.
+_HUMAN_TIER_SCORES = (92, 78, 64, 54, 48)  # the person's 1st..5th
+_HUMAN_REST_SCORE = 30                     # everyone else; NES ties them anyway
+
+
+class JudgeAwaitingHuman(RuntimeError):
+    """No verdict on disk yet for this flask-generation.
+
+    Raised per worm, so the rollover's judge-outage guard in
+    generations.py sees an all-unscored field and aborts WITHOUT touching
+    state: the flask never respawns, its corpus stays exhausted, and the
+    rollover re-fires. That is the entire scheduler for a human-paced
+    lineage — it waits, and it never spends a generation nobody judged.
+
+    Carried as its own type so app.py can log it at INFO on a cooldown
+    instead of dumping a traceback every few seconds while someone takes
+    their time (see _ROLLOVER_COOLDOWN_S there).
+    """
+
+    def __init__(self, flask: str, generation: int, verdict_path: Path):
+        self.flask = flask
+        self.generation = generation
+        self.verdict_path = verdict_path
+        super().__init__(
+            f"awaiting human verdict for {flask} gen-{generation:04d} "
+            f"({verdict_path})"
+        )
+
+
+def _human_root(kind: str) -> Path:
+    """`ballots` or `verdicts` under the lineage's own data dir. Resolved at
+    call time, like every other env read in this module, so a test or an
+    experiment process can point it elsewhere without a reimport."""
+    base = os.environ.get("WORMLET_DATA_DIR")
+    root = Path(base) if base else Path(__file__).resolve().parents[2] / "v6" / "data"
+    return root / kind
+
+
+def _ballot_path(flask: str, generation: int, worm_name: str) -> Path:
+    return (_human_root("ballots") / flask / f"gen-{generation:04d}"
+            / f"{worm_name}.json")
+
+
+def _verdict_path(flask: str, generation: int) -> Path:
+    return _human_root("verdicts") / flask / f"gen-{generation:04d}.json"
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write via a temp file in the SAME directory then rename, so the bench
+    never reads a half-written ballot. Same-directory is the point: rename is
+    only atomic within a filesystem."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _complete_human(sampled: list[tuple[int, list[str]]], worm_name: str,
+                    flask: str, generation: int, corpus: str) -> str:
+    """Drop this worm's ballot, then read the verdict and emit the same CSV
+    an LLM backend would return, so judge_poem's parsing, renumber guard and
+    ScoredWindow construction are shared verbatim.
+
+    Window labels are PROMPT INDICES (0..n-1), matching _format_user_prompt,
+    because that is what _parse_scores expects and what judge_poem maps back
+    to true token offsets. The ballot records the true token offsets as well,
+    since the verdict's `starred` list refers to them."""
+    ballot = _ballot_path(flask, generation, worm_name)
+    # Idempotent: the rollover re-fires every cooldown until a verdict lands,
+    # and rewriting would churn the file the bench is reading.
+    #
+    # An existing ballot is still the RIGHT one, which matters because the
+    # verdict's `starred` entries are token offsets into this exact stream.
+    # Two things hold it still: the flask does not respawn until the rollover
+    # completes, and TextScroller.corpus_exhausted — the condition that
+    # triggered this rollover — is only true once every sentence has spawned
+    # and no line is left on screen. There is physically nothing left to eat
+    # while we wait, so the stream cannot grow under the ballot.
+    if not ballot.exists():
+        _write_atomic(ballot, json.dumps({
+            "flask": flask,
+            "generation": generation,
+            "corpus": corpus,
+            "worm": worm_name,
+            "created_at": time.time(),
+            # prompt index -> (true token offset, tokens). The bench shows
+            # `text`; the verdict refers to windows by `idx`.
+            "windows": [{"i": i, "idx": idx, "text": " ".join(toks)}
+                        for i, (idx, toks) in enumerate(sampled)],
+        }, indent=1))
+
+    verdict_file = _verdict_path(flask, generation)
+    try:
+        verdict = json.loads(verdict_file.read_text())
+    except FileNotFoundError:
+        raise JudgeAwaitingHuman(flask, generation, verdict_file) from None
+    except (OSError, ValueError) as e:
+        # A corrupt verdict must NOT be silently treated as "not yet judged",
+        # or the lineage waits forever on a file that will never parse.
+        raise RuntimeError(f"unreadable verdict {verdict_file}: {e!r}") from e
+
+    top = [str(n) for n in (verdict.get("top") or [])]
+    if worm_name in top:
+        rank = top.index(worm_name)
+        emotional = (_HUMAN_TIER_SCORES[rank] if rank < len(_HUMAN_TIER_SCORES)
+                     else _HUMAN_REST_SCORE)
+    else:
+        emotional = _HUMAN_REST_SCORE
+
+    coh_map = (verdict.get("coherence") or {}).get(worm_name) or {}
+    lines = []
+    for i, (idx, _toks) in enumerate(sampled):
+        # Keys may arrive as ints (python-written) or strings (JSON round
+        # trip), and the value is clamped by _parse_scores anyway.
+        coh = coh_map.get(str(idx), coh_map.get(idx))
+        coherence = int(coh) if isinstance(coh, (int, float)) else emotional
+        lines.append(f"{i},{emotional},{coherence}")
+    return "\n".join(lines)
 
 # {corpus_title} is filled per flask (corpus/library.TITLES). Three variants
 # means three prompt-cache entries — ~350 tokens each, negligible; within one
@@ -342,14 +547,21 @@ def _complete_anthropic(user_prompt: str, worm_name: str,
 
 def judge_poem(tokens: list[str], worm_name: str,
                seed: int | None = None,
-               corpus: str = "hamlet") -> list[ScoredWindow]:
+               corpus: str = "hamlet",
+               flask: str | None = None,
+               generation: int | None = None) -> list[ScoredWindow]:
     """Score a worm's poem by sampling ~25% of its 15-token windows and
     sending them to Claude in one prompt-cached call.
 
     Returns one ScoredWindow per sampled window. Windows the API failed
     to score are silently dropped — the caller can detect this by
     comparing len(result) to the expected sample count and decide whether
-    to retry or accept partial coverage."""
+    to retry or accept partial coverage.
+
+    `flask` and `generation` are only consulted by the human backend, which
+    files its ballots per flask-generation. They are keyword-optional so
+    every existing caller and test double keeps working unchanged; the human
+    backend refuses to run without them rather than guessing a path."""
     windows = make_windows(tokens)
     if not windows:
         return []
@@ -375,15 +587,32 @@ def judge_poem(tokens: list[str], worm_name: str,
                 text = _complete_anthropic(user_prompt, worm_name, corpus)
             elif be == "openai":
                 text = _complete_openai(user_prompt, corpus)
+            elif be == "human":
+                if flask is None or generation is None:
+                    raise RuntimeError(
+                        "WORMLET_JUDGE_BACKEND=human needs flask= and "
+                        "generation= passed to judge_poem — a ballot has "
+                        "nowhere to go without them"
+                    )
+                text = _complete_human(sampled, worm_name, flask, generation,
+                                       corpus)
             else:
                 raise RuntimeError(
-                    f"unknown judge backend {be!r} — use 'anthropic' or 'openai'"
+                    f"unknown judge backend {be!r} — use 'anthropic', "
+                    f"'openai' or 'human'"
                 )
             if be != backends[0]:
                 print(f"[JUDGE] primary backend failed; scored {worm_name} via "
                       f"FALLBACK {be} ({_judge_model(be)}) — splice caveat applies",
                       flush=True)
             break
+        except JudgeAwaitingHuman:
+            # NOT a failure — "not yet". Must never fall through to a paid
+            # backend: with human primary and anthropic fallback, every
+            # generation the person had not got round to judging would be
+            # silently bought from the API instead, which is the exact spend
+            # a human judge exists to end. The lineage waits.
+            raise
         except Exception as e:
             last_err = e
             if be != backends[-1]:
@@ -416,6 +645,34 @@ def judge_poem(tokens: list[str], worm_name: str,
             e, c = scores[i]
             out.append(ScoredWindow(idx=idx, tokens=toks, emotional=e, coherence=c))
     return out
+
+
+def score_windows_openai(sampled: list[tuple[int, list[str]]],
+                         corpus: str = "hamlet",
+                         model: str | None = None) -> dict[int, tuple[int, int]]:
+    """Score windows on a local OpenAI-compatible endpoint and return
+    {true_token_offset: (emotional, coherence)}.
+
+    Exists for the bench UI, which uses a local model for the MECHANICAL
+    axis only — "does this read as language" — and leaves the aesthetic call
+    to the person. It deliberately goes through the same rubric,
+    _format_user_prompt and _parse_scores as the judging path rather than
+    growing a second prompt: every compliance fix in those functions was
+    paid for by a real failure (notably qwen2.5:14b answering a single
+    window with fifteen invented lines, 2026-08-14), and a parallel prompt
+    would re-learn all of them.
+
+    Raises on an unreachable endpoint. Callers are expected to degrade —
+    the bench shows a banner and shortlists without a model. This must
+    never be wired into judge_poem's human path: a lineage that stalls
+    because a gaming PC is asleep is not a human-paced lineage.
+    """
+    if not sampled:
+        return {}
+    text = _complete_openai(_format_user_prompt(sampled), corpus, model)
+    by_prompt_idx = _parse_scores(text)
+    return {idx: by_prompt_idx[i] for i, (idx, _t) in enumerate(sampled)
+            if i in by_prompt_idx}
 
 
 def judge_system_prompt(corpus: str = "hamlet") -> str:

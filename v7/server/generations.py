@@ -40,7 +40,8 @@ from server.evolution import (
     evolve_generation, fitness, flatten_weights, unflatten_weights, WeightDict,
 )
 from server.gardener import maybe_write_log
-from server.judge import judge_poem, judge_description, ScoredWindow
+from server.judge import (JudgeAwaitingHuman, judge_poem, judge_description,
+                          ScoredWindow)
 from server.orchestrator import Worm
 from sim import lifelike
 from server.poem_clean import clean as clean_punctuation
@@ -425,6 +426,7 @@ def run_generation_rollover(
     poems_clean: dict[str, list[str]] = {}
     scored_by_worm: dict[str, list[ScoredWindow]] = {}
     fitness_by_worm: dict[str, float] = {}
+    awaiting: JudgeAwaitingHuman | None = None
 
     for w in worms:
         if keepalive: keepalive()
@@ -442,13 +444,35 @@ def run_generation_rollover(
                                 # getattr chain: rollover test doubles are poem-only worms
                                 # with no World; default hamlet.
                                 corpus=getattr(getattr(w, "world", None),
-                                               "corpus", None) or "hamlet")
+                                               "corpus", None) or "hamlet",
+                                # Human backend only: where this worm's ballot
+                                # is filed. The generation number is the one
+                                # the ARTIFACTS will carry (state.generation+1,
+                                # see gen_dir below), not the seed's — so a
+                                # ballot sits beside the gen-NNNN it produced.
+                                flask=group, generation=state.generation + 1)
+        except JudgeAwaitingHuman as e:
+            # Expected and quiet, and deliberately NOT re-raised here: every
+            # worm must get through judge_poem so every worm files its
+            # ballot. Bailing on the first would leave the bench with a
+            # one-worm page and nothing to rank. Raised once after the loop.
+            awaiting = e
+            scored = []
         except Exception as e:
             print(f"[GENERATIONS] judge failed for {w.name}: {e}", flush=True)
             scored = []
         scored_by_worm[w.name] = scored
         fitness_by_worm[w.name] = fitness(scored)
         progress.worms_done += 1
+
+    # Human judge pending: every ballot for this flask-generation is now on
+    # disk, so there is something to rank. Raise the typed exception rather
+    # than falling into the generic all-zero guard below — app.py logs this
+    # one at INFO on a cooldown instead of a traceback every few seconds.
+    # Same effect on the lineage either way: state untouched, no respawn,
+    # corpus stays exhausted, rollover re-fires.
+    if awaiting is not None and not any(scored_by_worm.values()):
+        raise awaiting
 
     # Judge-outage guard: if EVERY worm came back unscored, the judge is down
     # (local endpoint offline, API key missing/unreachable) or every poem was
