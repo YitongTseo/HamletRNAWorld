@@ -1,0 +1,3 @@
+# epoch 68 — 2026-11-02T08:04:53Z
+
+Both flasks' best fitness is now drifting *downward* across the last five epochs (Flask 1: 0.80→0.59, Flask 2: 0.71→0.51) while σ sits pinned at its 0.020 floor and the winner changes every epoch — that's not a lead failing to hold, it's the whole population slowly sinking, the clearest sign yet that selection has lost its grip and the gradient is just judge noise. Frank's gen-68 window in Flask 2 (E=58, "quintessence of dust, paragon in form") is the one genuinely Shakespearean fragment in the batch, and it comes from the flask's rank-0 worm for once — but I've learned not to expect it back next epoch.
