@@ -4,7 +4,7 @@
 lines were reconciled (PRs #8, #9, #1, #7, #10) and `main` became a truthful
 description of the project for the first time since 2026-08-15.
 
-**The goal:** jtrotsky's worms currently run on droog; the intent is to move
+**The goal:** jtrotsky's worms currently run on his own host; the intent is to move
 them onto YitongTseo's server, which is already running a different, larger
 population.
 
@@ -13,10 +13,10 @@ population.
 ## What is actually running, on each side
 
 Read from the launch scripts, not from documentation — this repo's own ops
-section described a fleet that no longer matched droog, which is exactly the
+section described a fleet that no longer matched that host, which is exactly the
 mistake this section exists to prevent.
 
-| | droog (jtrotsky) | YitongTseo's host |
+| | jtrotsky's host | YitongTseo's host |
 |---|---|---|
 | lineage | `/var/wormlet/data-trio-5`, generation 188 | per this repo's CLAUDE.md ops section — **unverified, see below** |
 | shape | 3 flasks x 10 worms = 30 | 4 units, 8 flasks x 16 worms = 128 |
@@ -25,9 +25,9 @@ mistake this section exists to prevent.
 | gardener | **off** (`WORMLET_GARDENER=0`) | on |
 | lifelike | plasticity + hunger + habituation + punct smell, `COMMON_SEED=1` | 1-3 lifelike, 4 is the stock control arm |
 | launch | Bastille jail, `daemon(8)`, `restart-worms.sh` | systemd, `/home/web/.venv` |
-| public | worms.droog.nz (Cloudflare tunnel) | wordswordsworms.org |
+| public | a self-hosted mirror (since retired) | wordswordsworms.org |
 
-**Verify the right-hand column before planning against it.** droog had already
+**Verify the right-hand column before planning against it.** That host had already
 drifted from what CLAUDE.md claimed — different flask count, different texts,
 gardener disabled — and the docs did not know. Read the live systemd units and
 `/healthz` on that host.

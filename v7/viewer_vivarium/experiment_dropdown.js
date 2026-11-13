@@ -49,7 +49,7 @@
     // Self-hosted guard: option URLs are built server-side from the
     // PRODUCTION domain (WORMLET_DOMAIN), so on a local/self-hosted
     // deployment none of them point at the host we're actually on and
-    // selecting one navigates OFF the site (observed: worms.droog.nz ->
+    // selecting one navigates OFF the site (observed: a self-hosted mirror ->
     // poetry-3.wordswordsworms.org). If no option resolves to this host,
     // those sibling processes don't exist here — hide the switcher.
     const here = window.location.host;

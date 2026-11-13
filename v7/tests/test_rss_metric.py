@@ -79,7 +79,7 @@ def test_metrics_script_pushes_the_series():
     """The cron scraper is the only thing that turns /healthz into history."""
     script = Path("/data/homelab/jails/wormlet/wormlet-metrics.sh")
     if not script.exists():
-        return          # not on droog; the server-side keys are tested above
+        return          # not on the deploy host; the server-side keys are tested above
     body = script.read_text()
     assert "wormlet_rss_bytes" in body
     assert "wormlet_rss_peak_bytes" in body
