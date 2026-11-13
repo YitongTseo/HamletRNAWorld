@@ -198,7 +198,7 @@ the unit's environment, not just the code, before comparing flasks.
 - **No repetition penalty.** Fitness is the judge's rating alone.
 - **Fitness is quality-per-window since 2026-08-15** (mean with divisor
   floored at `FITNESS_WINDOW_FLOOR=12`). Volume is enforced by hunger
-  (starvation), not by the judge. The lifelike lineage on droog
+  (starvation), not by the judge. The lifelike lineage on the second host
   (`data-lifelike-2`, flask_1) crossed the regime at gen 8.
 - **Plasticity saturation is observable:** `plasticity_capped`/
   `plasticity_edges` in worm snapshots and `wormlet_plasticity_capped` in
